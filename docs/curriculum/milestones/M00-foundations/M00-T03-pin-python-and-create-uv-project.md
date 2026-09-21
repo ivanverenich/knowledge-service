@@ -7,7 +7,7 @@ depends_on: ["M00-T02"]
 estimate: 75m
 topics: ["python","tooling","testing"]
 deliverables: ["pyproject.toml","uv.lock",".python-version"]
-status: planned
+status: completed
 ---
 
 # M00-T03 — Pin Python 3.14 and create the uv project
@@ -62,4 +62,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m00-t03: pin python and create uv project`.
-

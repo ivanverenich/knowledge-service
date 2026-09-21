@@ -1,0 +1,23 @@
+[project]
+name = "knowledge-service"
+version = "0.1.0"
+description = "Provider-agnostic organizational knowledge service"
+readme = "README.md"
+authors = [
+    { name = "Ivan Verenich", email = "ivanverenich@gmail.com" }
+]
+requires-python = ">=3.14,<3.15"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pyright",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
