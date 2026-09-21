@@ -7,7 +7,7 @@ depends_on: ["M00-T01"]
 estimate: 60m
 topics: ["python","tooling","testing"]
 deliverables: ["Git repository","LICENSE",".gitignore"]
-status: planned
+status: completed
 ---
 
 # M00-T02 — Initialize Git and the public license
@@ -62,4 +62,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m00-t02: initialize git and license`.
-
