@@ -7,7 +7,7 @@ depends_on: ["M00-T05"]
 estimate: 60m
 topics: ["python","tooling","testing"]
 deliverables: ["pytest configuration","first test"]
-status: planned
+status: completed
 ---
 
 # M00-T06 — Establish the pytest loop

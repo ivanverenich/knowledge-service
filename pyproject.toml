@@ -15,6 +15,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
+    "pytest-timeout",
     "ruff",
 ]
 
@@ -66,3 +67,23 @@ venvPath = "."
 venv = ".venv"
 include = ["src", "tests"]
 exclude = ["**/__pycache__", "**/.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-m", "not live"]
+markers = [
+    "integration: needs a real boundary such as PostgreSQL, Redis, or HTTP",
+    "live: calls a real provider or Source and is never on by default",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+timeout = 30
+
+[tool.coverage.run]
+source = ["knowledge_service"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
