@@ -7,7 +7,7 @@ depends_on: ["M00-T04"]
 estimate: 75m
 topics: ["python","tooling","testing"]
 deliverables: ["Ruff configuration","type-checker configuration"]
-status: planned
+status: completed
 ---
 
 # M00-T05 — Configure formatting, linting, and type checking
