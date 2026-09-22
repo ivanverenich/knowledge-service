@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from rag-project!")
+"""Permission-aware organizational knowledge service."""

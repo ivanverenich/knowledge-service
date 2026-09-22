@@ -7,7 +7,7 @@ depends_on: ["M00-T03"]
 estimate: 60m
 topics: ["python","tooling","testing"]
 deliverables: ["src package","tests package","layout note"]
-status: planned
+status: completed
 ---
 
 # M00-T04 — Choose the initial package layout
@@ -62,4 +62,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m00-t04: choose the initial package layout`.
-
