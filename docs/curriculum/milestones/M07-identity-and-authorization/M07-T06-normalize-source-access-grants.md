@@ -63,4 +63,3 @@ Permission-aware RAG is a security system: identity, source grants, storage pred
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m07-t06: normalize source access grants`.
-

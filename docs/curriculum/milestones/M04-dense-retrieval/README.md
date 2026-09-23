@@ -16,4 +16,3 @@ Dense retrieval becomes trustworthy only when embedding versioning, publication,
 | [M04-T10](M04-T10-migrate-embedding-models-safely.md) | critical | 90m | Migrate embedding models safely |
 | [M04-T11](M04-T11-benchmark-vector-query-plans.md) | critical | 90m | Benchmark vector query plans |
 | [M04-T12](M04-T12-pass-the-dense-retrieval-gate.md) | critical | 90m | Pass the dense-retrieval understanding gate |
-

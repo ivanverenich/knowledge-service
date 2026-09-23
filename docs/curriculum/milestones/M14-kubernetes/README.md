@@ -18,4 +18,3 @@ Kubernetes is learned as a second deployment adapter, preserving application int
 | [M14-T12](M14-T12-provision-optional-eks.md) | optional | 90m | Provision optional EKS |
 | [M14-T13](M14-T13-compare-ecs-and-kubernetes.md) | optional | 75m | Compare ECS and Kubernetes |
 | [M14-T14](M14-T14-pass-the-kubernetes-gate.md) | optional | 90m | Pass the Kubernetes understanding gate |
-

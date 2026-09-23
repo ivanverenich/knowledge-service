@@ -16,4 +16,3 @@ A narrow end-to-end slice reveals integration costs before retrieval, persistenc
 | [M01-T10](M01-T10-capture-model-usage-and-cost-inputs.md) | critical | 75m | Capture model usage and cost inputs |
 | [M01-T11](M01-T11-write-walking-skeleton-contract-tests.md) | critical | 75m | Write walking-skeleton contract tests |
 | [M01-T12](M01-T12-pass-the-walking-skeleton-gate.md) | critical | 90m | Pass the walking-skeleton understanding gate |
-

@@ -20,4 +20,3 @@ Agentic behavior earns a place only when bounded workflows improve a measured ou
 | [M11-T14](M11-T14-test-agent-prompt-injection.md) | optional | 90m | Test agent prompt injection |
 | [M11-T15](M11-T15-document-agent-operating-policy.md) | optional | 60m | Document agent operating policy |
 | [M11-T16](M11-T16-pass-the-agents-and-mcp-gate.md) | optional | 90m | Pass the agents and MCP understanding gate |
-

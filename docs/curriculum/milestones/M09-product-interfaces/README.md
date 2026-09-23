@@ -16,4 +16,3 @@ Protocol adapters should make the same deep application behavior useful without 
 | [M09-T10](M09-T10-apply-identity-aware-rate-limits.md) | critical | 90m | Apply identity-aware rate limits |
 | [M09-T11](M09-T11-publish-interface-contract-documentation.md) | critical | 75m | Publish interface contract documentation |
 | [M09-T12](M09-T12-pass-the-product-interface-gate.md) | critical | 90m | Pass the product-interface understanding gate |
-

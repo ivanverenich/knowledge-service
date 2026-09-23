@@ -64,4 +64,3 @@ A production-shaped project must turn tested code into reproducible, least-privi
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m12-t14: rehearse rollback and roll forward`.
-

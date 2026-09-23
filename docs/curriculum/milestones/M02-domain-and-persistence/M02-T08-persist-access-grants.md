@@ -62,4 +62,3 @@ Durable identities, versions, and transactions make later synchronization and au
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m02-t08: persist access grants`.
-

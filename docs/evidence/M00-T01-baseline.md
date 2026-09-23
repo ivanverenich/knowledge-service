@@ -1,6 +1,6 @@
 # M00-T01 — Workspace baseline
 
-Captured: 2026-09-21 16:03 WEST  
+Captured: 2026-09-21 16:03 WEST
 Workspace: `/Users/ivanverenich/Documents/searching_job/rag_project`
 
 ## Purpose

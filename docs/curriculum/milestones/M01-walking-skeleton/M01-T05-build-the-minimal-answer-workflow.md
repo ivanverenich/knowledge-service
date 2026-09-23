@@ -62,4 +62,3 @@ A narrow end-to-end slice reveals integration costs before retrieval, persistenc
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m01-t05: build the minimal answer workflow`.
-

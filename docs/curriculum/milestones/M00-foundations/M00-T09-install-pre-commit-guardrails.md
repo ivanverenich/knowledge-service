@@ -7,7 +7,7 @@ depends_on: ["M00-T08"]
 estimate: 75m
 topics: ["python","tooling","testing"]
 deliverables: ["pre-commit configuration"]
-status: planned
+status: completed
 ---
 
 # M00-T09 — Install pre-commit guardrails
@@ -62,4 +62,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m00-t09: install pre commit guardrails`.
-

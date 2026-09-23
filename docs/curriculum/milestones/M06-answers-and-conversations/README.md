@@ -18,4 +18,3 @@ Generation is reliable only when Evidence budgets, citations, abstention, stream
 | [M06-T12](M06-T12-resolve-follow-up-questions.md) | critical | 90m | Resolve follow-up Questions |
 | [M06-T13](M06-T13-map-streaming-failures-safely.md) | critical | 90m | Map streaming failures safely |
 | [M06-T14](M06-T14-pass-the-answering-gate.md) | critical | 90m | Pass the answering understanding gate |
-

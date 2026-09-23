@@ -62,4 +62,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m00-t05: configure format lint and types`.
-

@@ -20,4 +20,3 @@ Local inference and tuning are evidence-driven alternatives whose runtime, data,
 | [M15-T14](M15-T14-package-a-model-card-and-adapter.md) | optional | 75m | Package a model card and adapter |
 | [M15-T15](M15-T15-make-the-build-versus-buy-decision.md) | optional | 75m | Make the build-versus-buy decision |
 | [M15-T16](M15-T16-pass-the-local-ml-gate.md) | optional | 90m | Pass the local ML understanding gate |
-

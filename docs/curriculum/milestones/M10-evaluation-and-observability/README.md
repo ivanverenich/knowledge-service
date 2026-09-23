@@ -22,4 +22,3 @@ Quality, security, latency, and cost become engineering constraints only when re
 | [M10-T16](M10-T16-load-test-chat-with-concurrent-ingestion.md) | critical | 90m | Load-test chat with concurrent ingestion |
 | [M10-T17](M10-T17-assemble-the-release-evidence-report.md) | critical | 75m | Assemble the release evidence report |
 | [M10-T18](M10-T18-pass-the-evaluation-and-observability-gate.md) | critical | 90m | Pass the evaluation and observability understanding gate |
-

@@ -18,4 +18,3 @@ Durable identities, versions, and transactions make later synchronization and au
 | [M02-T12](M02-T12-create-real-database-test-fixtures.md) | critical | 90m | Create real-database test fixtures |
 | [M02-T13](M02-T13-add-essential-relational-indexes.md) | critical | 75m | Add essential relational indexes |
 | [M02-T14](M02-T14-pass-the-persistence-gate.md) | critical | 90m | Pass the persistence understanding gate |
-

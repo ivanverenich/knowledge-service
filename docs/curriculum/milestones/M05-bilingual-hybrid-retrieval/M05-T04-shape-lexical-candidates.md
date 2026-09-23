@@ -63,4 +63,3 @@ English and Ukrainian retrieval claims require separate lexical, semantic, fusio
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m05-t04: shape lexical candidates`.
-

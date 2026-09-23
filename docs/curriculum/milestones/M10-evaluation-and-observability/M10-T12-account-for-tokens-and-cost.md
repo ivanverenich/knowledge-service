@@ -64,4 +64,3 @@ Quality, security, latency, and cost become engineering constraints only when re
 ## Git checkpoint
 
 Commit only with complete evidence, using intent: `m10-t12: account for tokens and cost`.
-

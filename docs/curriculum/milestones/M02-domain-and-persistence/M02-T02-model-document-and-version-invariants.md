@@ -62,4 +62,3 @@ Durable identities, versions, and transactions make later synchronization and au
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m02-t02: model document and version invariants`.
-

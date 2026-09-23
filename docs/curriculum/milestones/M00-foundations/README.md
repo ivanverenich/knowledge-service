@@ -18,4 +18,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 | [M00-T12](M00-T12-translate-reference-project-lessons.md) | critical | 60m | Translate the reference-project lessons |
 | [M00-T13](M00-T13-validate-documentation-links.md) | critical | 75m | Validate planning-document links |
 | [M00-T14](M00-T14-pass-the-foundations-gate.md) | critical | 90m | Pass the foundations understanding gate |
-

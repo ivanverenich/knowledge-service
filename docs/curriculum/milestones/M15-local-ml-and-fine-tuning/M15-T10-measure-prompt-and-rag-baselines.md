@@ -64,4 +64,3 @@ Local inference and tuning are evidence-driven alternatives whose runtime, data,
 ## Git checkpoint
 
 Commit only after acceptance and teardown/rollback evidence exists, using intent: `m15-t10: measure prompt and rag baselines`.
-

@@ -18,4 +18,3 @@ Two local formats prove the Source seam and normalization pipeline before a remo
 | [M03-T12](M03-T12-reconcile-a-document-transactionally.md) | critical | 90m | Reconcile a Document transactionally |
 | [M03-T13](M03-T13-reconcile-deletions-with-tombstones.md) | critical | 75m | Reconcile deletions with tombstones |
 | [M03-T14](M03-T14-pass-the-local-ingestion-gate.md) | critical | 90m | Pass the local-ingestion understanding gate |
-

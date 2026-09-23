@@ -22,4 +22,3 @@ A complete ephemeral AWS path teaches infrastructure ownership, security, cost, 
 | [M13-T16](M13-T16-automate-staging-deployment.md) | critical | 90m | Automate staging deployment |
 | [M13-T17](M13-T17-run-restore-load-and-failure-drills.md) | critical | 90m | Run restore, load, and failure drills |
 | [M13-T18](M13-T18-pass-the-aws-and-terraform-gate.md) | critical | 90m | Pass the AWS and Terraform understanding gate |
-

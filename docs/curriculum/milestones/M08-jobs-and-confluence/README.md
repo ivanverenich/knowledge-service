@@ -20,4 +20,3 @@ Remote synchronization needs durable outcomes, idempotency, and source-specific 
 | [M08-T14](M08-T14-map-confluence-permissions.md) | critical | 90m | Map Confluence permissions |
 | [M08-T15](M08-T15-build-confluence-contract-fixtures.md) | critical | 75m | Build Confluence contract fixtures |
 | [M08-T16](M08-T16-pass-the-jobs-and-confluence-gate.md) | critical | 90m | Pass the jobs-and-Confluence understanding gate |
-

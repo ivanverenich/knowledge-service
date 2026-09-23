@@ -62,4 +62,3 @@ Two local formats prove the Source seam and normalization pipeline before a remo
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m03-t05: extract text from pdf`.
-

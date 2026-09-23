@@ -64,4 +64,3 @@ Remote synchronization needs durable outcomes, idempotency, and source-specific 
 ## Git checkpoint
 
 Commit only with complete evidence, using intent: `m08-t03: enforce job idempotency`.
-

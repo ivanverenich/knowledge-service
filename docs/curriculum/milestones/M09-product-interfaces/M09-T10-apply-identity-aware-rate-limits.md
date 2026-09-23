@@ -64,4 +64,3 @@ Protocol adapters should make the same deep application behavior useful without 
 ## Git checkpoint
 
 Commit only with complete evidence, using intent: `m09-t10: apply identity aware rate limits`.
-

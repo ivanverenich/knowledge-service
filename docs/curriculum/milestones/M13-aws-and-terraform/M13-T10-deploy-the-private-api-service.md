@@ -64,4 +64,3 @@ A complete ephemeral AWS path teaches infrastructure ownership, security, cost, 
 ## Git checkpoint
 
 Commit only after acceptance and teardown/rollback evidence exists, using intent: `m13-t10: deploy the private api service`.
-

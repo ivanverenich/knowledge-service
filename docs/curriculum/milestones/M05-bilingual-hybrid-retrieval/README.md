@@ -20,4 +20,3 @@ English and Ukrainian retrieval claims require separate lexical, semantic, fusio
 | [M05-T14](M05-T14-classify-queries-for-rewriting.md) | critical | 60m | Classify queries for rewriting |
 | [M05-T15](M05-T15-implement-measured-query-rewriting.md) | critical | 90m | Implement measured query rewriting |
 | [M05-T16](M05-T16-pass-the-hybrid-retrieval-gate.md) | critical | 90m | Pass the hybrid-retrieval understanding gate |
-

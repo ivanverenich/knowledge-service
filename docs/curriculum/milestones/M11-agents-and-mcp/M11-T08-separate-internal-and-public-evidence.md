@@ -64,4 +64,3 @@ Agentic behavior earns a place only when bounded workflows improve a measured ou
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m11-t08: separate internal and public evidence`.
-

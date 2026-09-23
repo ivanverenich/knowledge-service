@@ -63,4 +63,3 @@ Generation is reliable only when Evidence budgets, citations, abstention, stream
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m06-t11: construct bounded history`.
-

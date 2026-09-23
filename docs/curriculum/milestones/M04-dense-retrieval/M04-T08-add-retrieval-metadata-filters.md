@@ -63,4 +63,3 @@ Dense retrieval becomes trustworthy only when embedding versioning, publication,
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m04-t08: add retrieval metadata filters`.
-

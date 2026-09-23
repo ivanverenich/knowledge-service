@@ -26,3 +26,11 @@ check:
 	uv run ruff check .
 	uv run pyright
 	uv run pytest --cov=knowledge_service --cov-report=term-missing
+
+.PHONY: hooks-install hooks
+
+hooks-install:
+	uv run pre-commit install
+
+hooks:
+	uv run pre-commit run --all-files

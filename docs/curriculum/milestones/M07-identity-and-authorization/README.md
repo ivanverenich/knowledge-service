@@ -20,4 +20,3 @@ Permission-aware RAG is a security system: identity, source grants, storage pred
 | [M07-T14](M07-T14-write-durable-audit-events.md) | critical | 90m | Write durable audit events |
 | [M07-T15](M07-T15-build-the-authorization-adversarial-suite.md) | critical | 90m | Build the authorization adversarial suite |
 | [M07-T16](M07-T16-pass-the-authorization-gate.md) | critical | 90m | Pass the authorization understanding gate |
-

@@ -64,4 +64,3 @@ Agentic behavior earns a place only when bounded workflows improve a measured ou
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m11-t02: build a tool calling loop without a framework`.
-

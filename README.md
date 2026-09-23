@@ -50,3 +50,22 @@ make check             Run every non-live quality gate with coverage
 
 Example of the command: UV_CACHE_DIR=/tmp/uv-cache-rag-project make test-unit
 ```
+
+## Pre-commit hooks
+
+Install the repository hook once per clone:
+
+```text
+UV_CACHE_DIR=/tmp/uv-cache-rag-project make hooks-install
+```
+
+After installation, the configured hooks run automatically when you commit.
+Run them manually across the repository when you want early feedback:
+
+```text
+UV_CACHE_DIR=/tmp/uv-cache-rag-project make hooks
+```
+
+If a hook reformats a file or fails, review the result, stage any intended
+changes, and commit again. The manual command checks all files; the Git hook
+normally checks files included in the commit.

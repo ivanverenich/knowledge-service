@@ -64,4 +64,3 @@ Kubernetes is learned as a second deployment adapter, preserving application int
 ## Git checkpoint
 
 Commit only after acceptance and teardown/rollback evidence exists, using intent: `m14-t13: compare ecs and kubernetes`.
-

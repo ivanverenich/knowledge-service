@@ -20,4 +20,3 @@ A production-shaped project must turn tested code into reproducible, least-privi
 | [M12-T14](M12-T14-rehearse-rollback-and-roll-forward.md) | critical | 90m | Rehearse rollback and roll-forward |
 | [M12-T15](M12-T15-prove-backup-and-restore.md) | critical | 90m | Prove backup and restore |
 | [M12-T16](M12-T16-pass-the-container-and-cicd-gate.md) | critical | 90m | Pass the containers and CI/CD understanding gate |
-

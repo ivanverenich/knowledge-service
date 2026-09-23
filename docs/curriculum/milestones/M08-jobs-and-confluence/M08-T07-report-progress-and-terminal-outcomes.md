@@ -64,4 +64,3 @@ Remote synchronization needs durable outcomes, idempotency, and source-specific 
 ## Git checkpoint
 
 Commit only with complete evidence, using intent: `m08-t07: report progress and terminal outcomes`.
-
