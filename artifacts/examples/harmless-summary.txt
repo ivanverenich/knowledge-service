@@ -1,0 +1,4 @@
+artifact: synthetic-summary
+status: example
+records: 0
+sensitive_content: none

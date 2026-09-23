@@ -7,7 +7,7 @@ depends_on: ["M00-T10"]
 estimate: 45m
 topics: ["python","tooling","testing"]
 deliverables: ["artifact convention"]
-status: planned
+status: completed
 ---
 
 # M00-T11 — Define evidence and artifact conventions

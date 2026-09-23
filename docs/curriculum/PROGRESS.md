@@ -14,7 +14,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M00-T08 — Model typed configuration](milestones/M00-foundations/M00-T08-model-typed-configuration.md) | completed | 2026-09-23 | [Typed configuration evidence](../evidence/M00-T08-typed-configuration.md) | Pydantic Settings provides safe local defaults, production-only credential validation, redacted secrets, and deterministic environment-isolated tests. |
 | [M00-T09 — Install pre-commit guardrails](milestones/M00-foundations/M00-T09-install-pre-commit-guardrails.md) | completed | 2026-09-23 | [Pre-commit guardrails evidence](../evidence/M00-T09-pre-commit-guardrails.md) | Versioned safety hooks plus local Ruff, Pyright, and unit-test hooks run automatically on commit; synthetic secret and oversized-file probes were rejected. |
 | [M00-T10 — Create the CI skeleton](milestones/M00-foundations/M00-T10-create-the-ci-skeleton.md) | completed | 2026-09-23 | [CI skeleton evidence](../evidence/M00-T10-ci-skeleton.md) | GitHub Actions style, type, and deterministic-test jobs use locked uv setup, caching, cancellation, least permissions, explicit timeouts, and existing Makefile commands. |
+| [M00-T11 — Define evidence and artifact conventions](milestones/M00-foundations/M00-T11-define-evidence-and-artifact-conventions.md) | completed | 2026-09-23 | [Evidence and artifact conventions evidence](../evidence/M00-T11-evidence-and-artifact-conventions.md) | Durable evidence stays under `docs/evidence/`; generated artifacts are categorized and ignored by default, with a harmless retained example and documented sensitive paths. |
 
 ## Next unblocked task
 
-[M00-T11 — Define evidence and artifact conventions](milestones/M00-foundations/M00-T11-define-evidence-and-artifact-conventions.md)
+[M00-T12 — Translate the reference-project lessons](milestones/M00-foundations/M00-T12-translate-reference-project-lessons.md)
