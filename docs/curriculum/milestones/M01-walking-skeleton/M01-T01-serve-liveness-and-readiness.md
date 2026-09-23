@@ -7,7 +7,7 @@ depends_on: ["M00-T14"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["application factory","health endpoints"]
-status: planned
+status: completed
 ---
 
 # M01-T01 — Serve liveness and readiness

@@ -8,11 +8,13 @@ authors = [
 ]
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "fastapi>=0.141.1",
     "pydantic-settings>=2.15.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pre-commit>=4.6.2",
     "pyright",
     "pytest",

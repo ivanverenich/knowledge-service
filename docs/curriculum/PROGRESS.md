@@ -18,7 +18,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M00-T12 — Translate the reference-project lessons](milestones/M00-foundations/M00-T12-translate-reference-project-lessons.md) | completed | 2026-09-23 | [Reference-project lessons evidence](../evidence/M00-T12-reference-project-lessons.md) | Concrete browser-use paths are mapped to local interfaces and reproducibility practices; provider, agent, browser, and CI-scale complexity is explicitly rejected. |
 | [M00-T13 — Validate planning-document links](milestones/M00-foundations/M00-T13-validate-documentation-links.md) | completed | 2026-09-23 | [Documentation-link validation evidence](../evidence/M00-T13-validate-documentation-links.md) | Repeatable link, front-matter, duplicate-ID, and dependency validation added with deterministic tests and a `make docs-check` entrypoint. |
 | [M00-T14 — Pass the foundations gate](milestones/M00-foundations/M00-T14-pass-the-foundations-gate.md) | completed | 2026-09-23 | [Foundations gate evidence](../evidence/M00-T14-foundations-gate.md) | Toolchain and package layout explained, development loop redrawn, production configuration failure diagnosed, and a test-environment check added. |
+| [M01-T01 — Serve liveness and readiness](milestones/M01-walking-skeleton/M01-T01-serve-liveness-and-readiness.md) | completed | 2026-09-23 | [Liveness and readiness evidence](../evidence/M01-T01-liveness-readiness.md) | FastAPI factory and provider-independent health endpoints added with deterministic async interface tests. |
 
 ## Next unblocked task
 
-[M01-T01 — Serve liveness and readiness](milestones/M01-walking-skeleton/M01-T01-serve-liveness-and-readiness.md)
+[M01-T02 — Define Question and Answer contracts](milestones/M01-walking-skeleton/M01-T02-define-question-and-answer-contracts.md)
