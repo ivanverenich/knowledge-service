@@ -49,6 +49,17 @@ def test_missing_model_api_key_in_production(monkeypatch: pytest.MonkeyPatch) ->
         Settings()
 
 
+def test_test_environment_does_not_require_model_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_SERVICE_ENVIRONMENT", "test")
+
+    settings = Settings()
+
+    assert settings.environment == "test"
+    assert settings.model_api_key is None
+
+
 def test_redaction_of_model_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     raw_value = "visible-test-value"
     monkeypatch.setenv("KNOWLEDGE_SERVICE_MODEL_API_KEY", raw_value)

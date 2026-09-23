@@ -7,7 +7,7 @@ depends_on: ["M00-T13"]
 estimate: 90m
 topics: ["python","tooling","testing"]
 deliverables: ["M00 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M00-T14 — Pass the foundations understanding gate
