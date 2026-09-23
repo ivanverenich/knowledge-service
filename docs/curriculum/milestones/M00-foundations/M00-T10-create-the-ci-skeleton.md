@@ -7,7 +7,7 @@ depends_on: ["M00-T09"]
 estimate: 90m
 topics: ["python","tooling","testing"]
 deliverables: ["CI workflow"]
-status: planned
+status: completed
 ---
 
 # M00-T10 — Create the CI skeleton
