@@ -16,7 +16,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M00-T10 — Create the CI skeleton](milestones/M00-foundations/M00-T10-create-the-ci-skeleton.md) | completed | 2026-09-23 | [CI skeleton evidence](../evidence/M00-T10-ci-skeleton.md) | GitHub Actions style, type, and deterministic-test jobs use locked uv setup, caching, cancellation, least permissions, explicit timeouts, and existing Makefile commands. |
 | [M00-T11 — Define evidence and artifact conventions](milestones/M00-foundations/M00-T11-define-evidence-and-artifact-conventions.md) | completed | 2026-09-23 | [Evidence and artifact conventions evidence](../evidence/M00-T11-evidence-and-artifact-conventions.md) | Durable evidence stays under `docs/evidence/`; generated artifacts are categorized and ignored by default, with a harmless retained example and documented sensitive paths. |
 | [M00-T12 — Translate the reference-project lessons](milestones/M00-foundations/M00-T12-translate-reference-project-lessons.md) | completed | 2026-09-23 | [Reference-project lessons evidence](../evidence/M00-T12-reference-project-lessons.md) | Concrete browser-use paths are mapped to local interfaces and reproducibility practices; provider, agent, browser, and CI-scale complexity is explicitly rejected. |
+| [M00-T13 — Validate planning-document links](milestones/M00-foundations/M00-T13-validate-documentation-links.md) | completed | 2026-09-23 | [Documentation-link validation evidence](../evidence/M00-T13-validate-documentation-links.md) | Repeatable link, front-matter, duplicate-ID, and dependency validation added with deterministic tests and a `make docs-check` entrypoint. |
 
 ## Next unblocked task
 
-[M00-T13 — Validate planning-document links](milestones/M00-foundations/M00-T13-validate-documentation-links.md)
+[M00-T14 — Pass the foundations gate](milestones/M00-foundations/M00-T14-pass-the-foundations-gate.md)

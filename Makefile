@@ -34,3 +34,8 @@ hooks-install:
 
 hooks:
 	uv run pre-commit run --all-files
+
+.PHONY: docs-check
+
+docs-check:
+	uv run python scripts/validate_docs.py

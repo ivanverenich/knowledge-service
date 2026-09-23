@@ -7,7 +7,7 @@ depends_on: ["M00-T12"]
 estimate: 75m
 topics: ["python","tooling","testing"]
 deliverables: ["documentation validator"]
-status: planned
+status: completed
 ---
 
 # M00-T13 — Validate planning-document links
