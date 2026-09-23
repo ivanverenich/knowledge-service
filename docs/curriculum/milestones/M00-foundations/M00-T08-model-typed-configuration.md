@@ -7,7 +7,7 @@ depends_on: ["M00-T07"]
 estimate: 90m
 topics: ["python","tooling","testing"]
 deliverables: ["settings model",".env.example"]
-status: planned
+status: completed
 ---
 
 # M00-T08 — Model typed configuration
@@ -62,4 +62,3 @@ A reproducible engineering loop prevents every later experiment from being confu
 ## Git checkpoint
 
 Commit only after acceptance evidence exists, with intent: `m00-t08: model typed configuration`.
-
