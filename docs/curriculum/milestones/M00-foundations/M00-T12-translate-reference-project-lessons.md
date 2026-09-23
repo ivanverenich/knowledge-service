@@ -7,7 +7,7 @@ depends_on: ["M00-T11"]
 estimate: 60m
 topics: ["python","tooling","testing"]
 deliverables: ["reference comparison"]
-status: planned
+status: completed
 ---
 
 # M00-T12 — Translate the reference-project lessons
