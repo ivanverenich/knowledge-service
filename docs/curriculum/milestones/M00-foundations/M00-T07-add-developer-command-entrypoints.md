@@ -7,7 +7,7 @@ depends_on: ["M00-T06"]
 estimate: 75m
 topics: ["python","tooling","testing"]
 deliverables: ["developer commands"]
-status: planned
+status: completed
 ---
 
 # M00-T07 — Add developer command entrypoints

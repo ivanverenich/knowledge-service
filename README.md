@@ -33,3 +33,20 @@ The completed system will ingest local documents and Confluence, normalize conte
 ## Scope guardrail
 
 These files describe work; they are not the finished implementation. Do not skip a task merely because a later document shows the intended design. The purpose is to reproduce the reasoning, tests, failure evidence, and operational understanding one small checkpoint at a time.
+
+## Developer commands
+
+Run the development loop through the repository `Makefile`:
+
+```text
+make setup             Sync the locked development environment
+make format            Format source and test files
+make format-check      Check formatting without modifying files
+make lint              Run Ruff linting
+make typecheck         Run Pyright
+make test-unit         Run deterministic unit tests
+make test-integration  Run non-live integration tests
+make check             Run every non-live quality gate with coverage
+
+Example of the command: UV_CACHE_DIR=/tmp/uv-cache-rag-project make test-unit
+```
