@@ -7,7 +7,7 @@ depends_on: ["M01-T01"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["Pydantic transport contracts"]
-status: planned
+status: completed
 ---
 
 # M01-T02 — Define Question and Answer contracts
