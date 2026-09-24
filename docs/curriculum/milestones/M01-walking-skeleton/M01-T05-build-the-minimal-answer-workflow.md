@@ -7,7 +7,7 @@ depends_on: ["M01-T04"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["question-answer module"]
-status: planned
+status: completed
 ---
 
 # M01-T05 — Build the minimal Answer workflow
