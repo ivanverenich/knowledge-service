@@ -7,7 +7,7 @@ depends_on: ["M01-T05"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["native answer endpoint"]
-status: planned
+status: completed
 ---
 
 # M01-T06 — Expose the native Answer endpoint
