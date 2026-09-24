@@ -7,7 +7,7 @@ depends_on: ["M01-T03"]
 estimate: 90m
 topics: ["fastapi","async","llm"]
 deliverables: ["OpenAI chat adapter"]
-status: planned
+status: completed
 ---
 
 # M01-T04 — Implement the OpenAI chat adapter
