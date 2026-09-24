@@ -20,7 +20,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M00-T14 — Pass the foundations gate](milestones/M00-foundations/M00-T14-pass-the-foundations-gate.md) | completed | 2026-09-23 | [Foundations gate evidence](../evidence/M00-T14-foundations-gate.md) | Toolchain and package layout explained, development loop redrawn, production configuration failure diagnosed, and a test-environment check added. |
 | [M01-T01 — Serve liveness and readiness](milestones/M01-walking-skeleton/M01-T01-serve-liveness-and-readiness.md) | completed | 2026-09-23 | [Liveness and readiness evidence](../evidence/M01-T01-liveness-readiness.md) | FastAPI factory and provider-independent health endpoints added with deterministic async interface tests. |
 | [M01-T02 — Define Question and Answer contracts](milestones/M01-walking-skeleton/M01-T02-define-question-and-answer-contracts.md) | completed | 2026-09-24 | [Question and Answer contracts evidence](../evidence/M01-T02-question-answer-contracts.md) | Provider-neutral Pydantic transport contracts, validation tests, and generated OpenAPI schema assertions added. |
+| [M01-T03 — Design the ChatModel port](milestones/M01-walking-skeleton/M01-T03-design-the-chat-model-port.md) | completed | 2026-09-24 | [ChatModel port evidence](../evidence/M01-T03-chat-model-port.md) | Provider-neutral async model protocol, deterministic fake adapter, typed failure, and cancellation tests added. |
 
 ## Next unblocked task
 
-[M01-T03 — Design the ChatModel port](milestones/M01-walking-skeleton/M01-T03-design-the-chat-model-port.md)
+[M01-T04 — Implement the OpenAI chat adapter](milestones/M01-walking-skeleton/M01-T04-implement-the-openai-chat-adapter.md)

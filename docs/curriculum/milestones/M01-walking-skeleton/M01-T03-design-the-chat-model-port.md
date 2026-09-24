@@ -7,7 +7,7 @@ depends_on: ["M01-T02"]
 estimate: 90m
 topics: ["fastapi","async","llm"]
 deliverables: ["ChatModel port","fake adapter"]
-status: planned
+status: completed
 ---
 
 # M01-T03 — Design the ChatModel port
