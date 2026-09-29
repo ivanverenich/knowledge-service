@@ -21,6 +21,7 @@ class FakeChatModel:
         question: Question,
         *,
         request_id: UUID,
+        timeout_seconds: float,
     ) -> Answer:
         if self.raise_error:
             raise ChatModelUnavailable()
@@ -35,3 +36,33 @@ class FakeChatModel:
                 total_tokens=2,
             ),
         )
+
+
+class SlowChatModel:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cleaned_up = asyncio.Event()
+
+    async def answer(
+        self,
+        question: Question,
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> Answer:
+        self.started.set()
+
+        try:
+            await self.release.wait()
+            return Answer(
+                text=f"Fake answer to: {question.text}",
+                request_id=request_id,
+                usage=Usage(
+                    input_tokens=1,
+                    output_tokens=1,
+                    total_tokens=2,
+                ),
+            )
+        finally:
+            self.cleaned_up.set()

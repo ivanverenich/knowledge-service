@@ -15,6 +15,7 @@ async def test_chat_model_returns_structured_answer() -> None:
     result = await model.answer(
         Question(text="What is the capital of France?"),
         request_id=request_id,
+        timeout_seconds=2.0,
     )
 
     assert result.request_id == request_id
@@ -29,6 +30,7 @@ async def test_chat_model_raiser_error() -> None:
         await model.answer(
             Question(text="What is the capital of France?"),
             request_id=request_id,
+            timeout_seconds=2.0,
         )
 
 
@@ -40,6 +42,7 @@ async def test_chat_model_cancel_request() -> None:
         model.answer(
             Question(text="What is the capital of France?"),
             request_id=request_id,
+            timeout_seconds=2.0,
         )
     )
 

@@ -25,7 +25,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M01-T05 — Build the minimal Answer workflow](milestones/M01-walking-skeleton/M01-T05-build-the-minimal-answer-workflow.md) | completed | 2026-09-24 | [Minimal Answer workflow evidence](../evidence/M01-T05-answer-workflow.md) | Provider-neutral Question-to-Answer workflow added with deterministic success and typed-failure tests. |
 | [M01-T06 — Expose the native Answer endpoint](milestones/M01-walking-skeleton/M01-T06-expose-the-native-answer-endpoint.md) | completed | 2026-09-24 | [Native Answer endpoint evidence](../evidence/M01-T06-native-answer-endpoint.md) | Native HTTP endpoint added with stable validation and provider-error responses, request IDs, and deterministic boundary tests. |
 | [M01-T07 — Define the error taxonomy](milestones/M01-walking-skeleton/M01-T07-define-the-error-taxonomy.md) | completed | 2026-09-29 | [Error taxonomy evidence](../evidence/M01-T07-error-taxonomy.md) | Provider-neutral failure categories now assign public responses, retry ownership, and telemetry outcomes; cancellation propagation and safe boundary mappings are tested. |
+| [M01-T08 — Make cancellation and timeouts explicit](milestones/M01-walking-skeleton/M01-T08-make-cancellation-and-timeouts-explicit.md) | completed | 2026-09-29 | [Cancellation and timeout evidence](../evidence/M01-T08-cancellation-and-timeouts.md) | Added finite workflow deadlines, bounded model-adapter timeouts, typed deadline failure, cancellation propagation, cleanup tests, and safe public timeout mapping. |
 
 ## Next unblocked task
 
-[M01-T08 — Make cancellation and timeouts explicit](milestones/M01-walking-skeleton/M01-T08-make-cancellation-and-timeouts-explicit.md)
+[M01-T09 — Request structured model output](milestones/M01-walking-skeleton/M01-T09-request-structured-model-output.md)

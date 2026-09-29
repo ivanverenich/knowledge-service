@@ -7,7 +7,7 @@ depends_on: ["M01-T07"]
 estimate: 90m
 topics: ["fastapi","async","llm"]
 deliverables: ["deadline policy","cancellation tests"]
-status: planned
+status: completed
 ---
 
 # M01-T08 — Make cancellation and timeouts explicit

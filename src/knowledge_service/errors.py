@@ -42,6 +42,10 @@ class AuthorizationDenied(Exception):
     """The caller may not perform the requested operation."""
 
 
+class AnswerDeadlineExceeded(Exception):
+    """The complete answer operation exceeded its deadline."""
+
+
 POLICIES = {
     FailureKind.VALIDATION: FailurePolicy(
         422,
@@ -95,7 +99,7 @@ def classify_failure(error: BaseException) -> FailureKind:
         return FailureKind.AUTHORIZATION
     if isinstance(error, ChatModelRateLimited):
         return FailureKind.CAPACITY
-    if isinstance(error, ChatModelError):
+    if isinstance(error, (AnswerDeadlineExceeded, ChatModelError)):
         return FailureKind.DEPENDENCY
     return FailureKind.INTERNAL
 

@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from fakes import FakeChatModel
+from fakes import FakeChatModel, SlowChatModel
 from knowledge_service.app import create_app
 from knowledge_service.contracts import Answer, Question
 from knowledge_service.errors import AuthorizationDenied
@@ -75,7 +75,13 @@ class ErrorModel:
     def __init__(self, error: BaseException) -> None:
         self.error = error
 
-    async def answer(self, question: Question, *, request_id: UUID) -> Answer:
+    async def answer(
+        self,
+        question: Question,
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> Answer:
         raise self.error
 
 
@@ -181,3 +187,19 @@ async def test_answer_endpoint_returns_validation_error() -> None:
         "message": "Request validation failed",
         "request_id": REQUEST_ID,
     }
+
+
+async def test_answer_endpoint_returns_correct_response_on_timeout() -> None:
+    model = SlowChatModel()
+    workflow = AnswerWorkflow(model=model, timeout_seconds=0.01)
+    app = create_app(workflow=workflow)
+
+    async with get_client(app) as client:
+        response = await client.post(
+            "/v1/answer",
+            json={"text": "A Question"},
+            headers={"X-Request-ID": REQUEST_ID},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "dependency_unavailable"

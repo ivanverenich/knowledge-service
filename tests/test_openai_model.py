@@ -9,7 +9,7 @@ import httpx2
 import openai
 import pytest
 from openai import AsyncOpenAI
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from knowledge_service.contracts import Question
 from knowledge_service.model import (
@@ -64,7 +64,9 @@ def response_with_usage() -> SimpleNamespace:
 async def test_success_maps_response_and_request_metadata() -> None:
     adapter, client = make_adapter(response_with_usage())
 
-    result = await adapter.answer(Question(text="A question"), request_id=REQUEST_ID)
+    result = await adapter.answer(
+        Question(text="A question"), request_id=REQUEST_ID, timeout_seconds=2.0
+    )
 
     assert result.text == "The answer"
     assert result.request_id == REQUEST_ID
@@ -73,7 +75,7 @@ async def test_success_maps_response_and_request_metadata() -> None:
         {
             "model": "test-model",
             "input": "A question",
-            "timeout": 5.0,
+            "timeout": 2.0,
             "extra_headers": {"X-Request-ID": str(REQUEST_ID)},
         }
     ]
@@ -91,7 +93,9 @@ async def test_missing_usage_raises_typed_malformed_response() -> None:
     adapter, _ = make_adapter(SimpleNamespace(output_text="No usage", usage=None))
 
     with pytest.raises(ChatModelMalformedResponse, match="Missing usage data"):
-        await adapter.answer(Question(text="A question"), request_id=REQUEST_ID)
+        await adapter.answer(
+            Question(text="A question"), request_id=REQUEST_ID, timeout_seconds=2.0
+        )
 
 
 async def test_timeout_is_translated() -> None:
@@ -99,7 +103,9 @@ async def test_timeout_is_translated() -> None:
     adapter, _ = make_adapter(openai.APITimeoutError(request))
 
     with pytest.raises(ChatModelTimeout):
-        await adapter.answer(Question(text="A question"), request_id=REQUEST_ID)
+        await adapter.answer(
+            Question(text="A question"), request_id=REQUEST_ID, timeout_seconds=2.0
+        )
 
 
 async def test_rate_limit_is_translated() -> None:
@@ -109,11 +115,32 @@ async def test_rate_limit_is_translated() -> None:
     adapter, _ = make_adapter(error)
 
     with pytest.raises(ChatModelRateLimited):
-        await adapter.answer(Question(text="A question"), request_id=REQUEST_ID)
+        await adapter.answer(
+            Question(text="A question"), request_id=REQUEST_ID, timeout_seconds=2.0
+        )
 
 
 async def test_cancellation_is_preserved() -> None:
     adapter, _ = make_adapter(asyncio.CancelledError())
 
     with pytest.raises(asyncio.CancelledError):
-        await adapter.answer(Question(text="A question"), request_id=REQUEST_ID)
+        await adapter.answer(
+            Question(text="A question"), request_id=REQUEST_ID, timeout_seconds=2.0
+        )
+
+
+@pytest.mark.parametrize(
+    ("timeout_seconds"),
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        0.0,
+        -1.0,
+    ],
+)
+def test_settings_raises_exception_on_incorrect_timeout_values(
+    timeout_seconds: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        OpenAISettings(model_timeout_seconds=timeout_seconds)

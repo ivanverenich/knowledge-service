@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from knowledge_service.errors import (
+    AnswerDeadlineExceeded,
     AuthorizationDenied,
     FailureKind,
     RetryOwner,
@@ -25,6 +26,7 @@ from knowledge_service.model import (
         (ChatModelUnavailable(), FailureKind.DEPENDENCY),
         (ChatModelMalformedResponse("bad response"), FailureKind.DEPENDENCY),
         (ChatModelTimeout(), FailureKind.DEPENDENCY),
+        (AnswerDeadlineExceeded(), FailureKind.DEPENDENCY),
         (ChatModelRateLimited(), FailureKind.CAPACITY),
         (asyncio.CancelledError(), FailureKind.CANCELLATION),
         (RuntimeError("unexpected"), FailureKind.INTERNAL),
