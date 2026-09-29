@@ -7,7 +7,7 @@ depends_on: ["M01-T06"]
 estimate: 60m
 topics: ["fastapi","async","llm"]
 deliverables: ["error taxonomy","exception mapping"]
-status: planned
+status: completed
 ---
 
 # M01-T07 — Define the error taxonomy

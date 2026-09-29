@@ -1,5 +1,6 @@
 """Tests FastAPI application."""
 
+import asyncio
 from uuid import UUID
 
 import httpx
@@ -9,8 +10,8 @@ from fastapi import FastAPI
 from fakes import FakeChatModel
 from knowledge_service.app import create_app
 from knowledge_service.contracts import Answer, Question
+from knowledge_service.errors import AuthorizationDenied
 from knowledge_service.model import (
-    ChatModelError,
     ChatModelRateLimited,
     ChatModelTimeout,
 )
@@ -71,14 +72,14 @@ async def test_answer_endpoint_returns_answer() -> None:
 
 
 class ErrorModel:
-    def __init__(self, error: ChatModelError) -> None:
+    def __init__(self, error: BaseException) -> None:
         self.error = error
 
     async def answer(self, question: Question, *, request_id: UUID) -> Answer:
         raise self.error
 
 
-def error_workflow(error: ChatModelError) -> AnswerWorkflow:
+def error_workflow(error: BaseException) -> AnswerWorkflow:
     return AnswerWorkflow(model=ErrorModel(error))
 
 
@@ -87,20 +88,32 @@ def error_workflow(error: ChatModelError) -> AnswerWorkflow:
     [
         (
             ChatModelTimeout(),
-            504,
-            "model_timeout",
-            "The model request timed out",
+            503,
+            "dependency_unavailable",
+            "A required service is unavailable",
         ),
         (
             ChatModelRateLimited(),
             429,
-            "model_rate_limited",
-            "The model rate limit was reached",
+            "capacity_exceeded",
+            "Service capacity was exceeded",
+        ),
+        (
+            AuthorizationDenied(),
+            403,
+            "authorization_denied",
+            "Access denied",
+        ),
+        (
+            RuntimeError(),
+            500,
+            "internal_error",
+            "An internal error occurred",
         ),
     ],
 )
-async def test_answer_endpoint_maps_model_errors(
-    error: ChatModelError,
+async def test_answer_endpoint_maps_failures(
+    error: BaseException,
     status_code: int,
     code: str,
     message: str,
@@ -120,6 +133,18 @@ async def test_answer_endpoint_maps_model_errors(
         "message": message,
         "request_id": REQUEST_ID,
     }
+
+
+async def test_answer_endpoint_preserves_cancellation() -> None:
+    app = create_app(workflow=error_workflow(asyncio.CancelledError()))
+
+    async with get_client(app) as client:
+        with pytest.raises(asyncio.CancelledError):
+            await client.post(
+                "/v1/answer",
+                json={"text": "A question"},
+                headers={"X-Request-ID": REQUEST_ID},
+            )
 
 
 async def test_answer_endpoint_returns_workflow_unavailable_error() -> None:

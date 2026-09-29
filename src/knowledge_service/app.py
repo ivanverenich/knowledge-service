@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
@@ -6,7 +7,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from knowledge_service.contracts import Answer, ErrorResponse, Question
-from knowledge_service.model import ChatModelRateLimited, ChatModelTimeout
+from knowledge_service.errors import (
+    FailureKind,
+    classify_failure,
+    policy_for,
+)
 from knowledge_service.workflow import AnswerWorkflow
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
@@ -31,6 +36,28 @@ def error_response(
     )
 
 
+def failure_response(
+    *,
+    kind: FailureKind,
+    request_id: UUID,
+) -> JSONResponse:
+    policy = policy_for(kind)
+
+    status_code = policy.status_code
+    public_code = policy.public_code
+    client_message = policy.client_message
+
+    if status_code is None or public_code is None or client_message is None:
+        raise RuntimeError("Failure policy has no public HTTP response")
+
+    return error_response(
+        status_code=status_code,
+        code=public_code,
+        message=client_message,
+        request_id=request_id,
+    )
+
+
 def request_id_from(request: Request) -> UUID:
     raw_request_id = request.headers.get("X-Request-ID")
     if raw_request_id is None:
@@ -52,11 +79,8 @@ def create_app(
         request: Request,
         _error: RequestValidationError,
     ) -> JSONResponse:
-        return error_response(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            code="validation_error",
-            message="Request validation failed",
-            request_id=request_id_from(request),
+        return failure_response(
+            kind=FailureKind.VALIDATION, request_id=request_id_from(request)
         )
 
     @app.get("/health/live")
@@ -96,18 +120,11 @@ def create_app(
                 question,
                 request_id=request_id,
             )
-        except ChatModelTimeout:
-            return error_response(
-                status_code=504,
-                code="model_timeout",
-                message="The model request timed out",
-                request_id=request_id,
-            )
-        except ChatModelRateLimited:
-            return error_response(
-                status_code=429,
-                code="model_rate_limited",
-                message="The model rate limit was reached",
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return failure_response(
+                kind=classify_failure(error),
                 request_id=request_id,
             )
 
