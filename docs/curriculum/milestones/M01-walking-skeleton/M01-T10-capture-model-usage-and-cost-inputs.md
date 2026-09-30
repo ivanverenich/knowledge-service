@@ -7,7 +7,7 @@ depends_on: ["M01-T09"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["usage model","price configuration"]
-status: planned
+status: completed
 ---
 
 # M01-T10 — Capture model usage and cost inputs

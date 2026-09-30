@@ -53,6 +53,7 @@ def make_adapter(result: Any) -> tuple[OpenAIChatModel, FakeClient]:
         model_api_key=SecretStr("test-key"),
         model_name="test-model",
         model_timeout_seconds=5.0,
+        model_price_id="test-price-v1",
     )
     adapter = OpenAIChatModel(cast(AsyncOpenAI, client), settings)
     return adapter, client
@@ -78,7 +79,15 @@ def response_with_invalid_answer_error() -> ValidationError:
     raise AssertionError("Expected invalid answer data to fail validation")
 
 
-async def test_success_maps_response_and_request_metadata() -> None:
+async def test_success_maps_response_and_request_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((10.0, 10.025))
+    monkeypatch.setattr(
+        "knowledge_service.openai_model.time.perf_counter",
+        lambda: next(ticks),
+    )
+
     adapter, client = make_adapter(response_with_usage())
 
     result = await adapter.answer(
@@ -89,6 +98,12 @@ async def test_success_maps_response_and_request_metadata() -> None:
 
     assert result.text == "The answer"
     assert result.request_id == REQUEST_ID
+    assert result.usage.provider == "openai"
+    assert result.usage.model == "test-model"
+    assert result.usage.price_id == "test-price-v1"
+    assert result.usage.latency_ms == 25
+    assert result.usage.input_tokens == 3
+    assert result.usage.output_tokens == 2
     assert result.usage.total_tokens == 5
     assert client.responses.calls == [
         {

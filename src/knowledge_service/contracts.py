@@ -14,8 +14,12 @@ class Question(BaseModel):
 
 
 class Usage(BaseModel):
-    """Usage information for the knowledge service."""
+    """Safe model usage metadata for one answer."""
 
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    price_id: str | None = None
+    latency_ms: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)

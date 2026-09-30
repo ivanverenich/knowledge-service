@@ -28,9 +28,54 @@ def test_invalid_question_text_rejected(payload: dict[str, str]) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"input_tokens": -1, "output_tokens": 0, "total_tokens": 0},
-        {"input_tokens": 0, "output_tokens": -1, "total_tokens": 0},
-        {"input_tokens": 0, "output_tokens": 0, "total_tokens": -1},
+        {
+            "provider": "OpenAI",
+            "model": "gpt4o-min",
+            "latency_ms": 0,
+            "input_tokens": -1,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        },
+        {
+            "provider": "OpenAI",
+            "model": "gpt4o-min",
+            "latency_ms": 0,
+            "input_tokens": 0,
+            "output_tokens": -1,
+            "total_tokens": 0,
+        },
+        {
+            "provider": "OpenAI",
+            "model": "gpt4o-min",
+            "latency_ms": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": -1,
+        },
+        {
+            "provider": "OpenAI",
+            "model": "gpt4o-min",
+            "latency_ms": -1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        },
+        {
+            "provider": "OpenAI",
+            "model": "",
+            "latency_ms": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        },
+        {
+            "provider": "",
+            "model": "gpt4o-min",
+            "latency_ms": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        },
     ],
 )
 def test_negative_usage_rejected(payload: dict[str, int]) -> None:

@@ -31,6 +31,10 @@ class FakeChatModel:
             text=f"Fake answer to: {question.text}",
             request_id=request_id,
             usage=Usage(
+                provider="OpenAI",
+                model="gpt4o-mini",
+                price_id=None,
+                latency_ms=50,
                 input_tokens=1,
                 output_tokens=1,
                 total_tokens=2,
@@ -59,6 +63,10 @@ class SlowChatModel:
                 text=f"Fake answer to: {question.text}",
                 request_id=request_id,
                 usage=Usage(
+                    provider="OpenAI",
+                    model="gpt4o-mini",
+                    price_id=None,
+                    latency_ms=50,
                     input_tokens=1,
                     output_tokens=1,
                     total_tokens=2,

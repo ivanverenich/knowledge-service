@@ -1,6 +1,7 @@
 """OpenAI implementation of the provider-neutral ChatModel interface."""
 
 import asyncio
+import time
 from uuid import UUID
 
 import openai
@@ -29,6 +30,7 @@ class OpenAISettings(BaseSettings):
     model_name: str = "gpt-4.1-mini"
     model_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     model_api_key: SecretStr | None = None
+    model_price_id: str | None = None
 
 
 class OpenAIChatModel:
@@ -49,6 +51,7 @@ class OpenAIChatModel:
             timeout_seconds,
             self._settings.model_timeout_seconds,
         )
+        started_at = time.perf_counter()
         try:
             response = await self._client.responses.parse(
                 model=self._settings.model_name,
@@ -85,10 +88,16 @@ class OpenAIChatModel:
         if generated is None:
             raise ChatModelMalformedResponse("Missing structured answer")
 
+        latency_ms = round((time.perf_counter() - started_at) * 1_000)
+
         return Answer(
             text=generated.text,
             request_id=request_id,
             usage=Usage(
+                provider="openai",
+                model=self._settings.model_name,
+                price_id=self._settings.model_price_id,
+                latency_ms=latency_ms,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.total_tokens,
