@@ -30,6 +30,12 @@ class Answer(BaseModel):
     citations: list[str] = Field(default_factory=list)
 
 
+class GeneratedAnswer(BaseModel):
+    """Structured content returned by a chat model."""
+
+    text: str = Field(min_length=1)
+
+
 class ErrorResponse(BaseModel):
     """An error response in the knowledge service."""
 

@@ -5,13 +5,20 @@ from uuid import UUID
 
 import openai
 from openai import AsyncOpenAI
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings
 
-from knowledge_service.contracts import Answer, Question, Usage
+from knowledge_service.contracts import (
+    Answer,
+    GeneratedAnswer,
+    Question,
+    Usage,
+)
 from knowledge_service.model import (
     ChatModelMalformedResponse,
     ChatModelRateLimited,
+    ChatModelRefused,
+    ChatModelStructuredOutputUnsupported,
     ChatModelTimeout,
 )
 
@@ -43,9 +50,10 @@ class OpenAIChatModel:
             self._settings.model_timeout_seconds,
         )
         try:
-            response = await self._client.responses.create(
+            response = await self._client.responses.parse(
                 model=self._settings.model_name,
                 input=question.text,
+                text_format=GeneratedAnswer,
                 timeout=request_timeout_seconds,
                 extra_headers={"X-Request-ID": str(request_id)},
             )
@@ -53,14 +61,32 @@ class OpenAIChatModel:
             raise ChatModelTimeout from error
         except openai.RateLimitError as error:
             raise ChatModelRateLimited from error
+        except ValidationError as error:
+            raise ChatModelMalformedResponse("Invalid structured answer") from error
+        except openai.BadRequestError as error:
+            if error.param == "text.format" and error.code == "unsupported_value":
+                raise ChatModelStructuredOutputUnsupported from error
+            raise
         except asyncio.CancelledError:
             raise
+
+        if any(
+            content.type == "refusal"
+            for item in response.output
+            if item.type == "message"
+            for content in item.content
+        ):
+            raise ChatModelRefused
 
         if response.usage is None:
             raise ChatModelMalformedResponse("Missing usage data")
 
+        generated = response.output_parsed
+        if generated is None:
+            raise ChatModelMalformedResponse("Missing structured answer")
+
         return Answer(
-            text=response.output_text,
+            text=generated.text,
             request_id=request_id,
             usage=Usage(
                 input_tokens=response.usage.input_tokens,

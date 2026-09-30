@@ -11,13 +11,21 @@ import pytest
 from openai import AsyncOpenAI
 from pydantic import SecretStr, ValidationError
 
-from knowledge_service.contracts import Question
+from knowledge_service.contracts import (
+    GeneratedAnswer,
+    Question,
+)
 from knowledge_service.model import (
     ChatModelMalformedResponse,
     ChatModelRateLimited,
+    ChatModelRefused,
+    ChatModelStructuredOutputUnsupported,
     ChatModelTimeout,
 )
-from knowledge_service.openai_model import OpenAIChatModel, OpenAISettings
+from knowledge_service.openai_model import (
+    OpenAIChatModel,
+    OpenAISettings,
+)
 
 REQUEST_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -27,7 +35,7 @@ class FakeResponses:
         self.result = result
         self.calls: list[dict[str, Any]] = []
 
-    async def create(self, **kwargs: Any) -> Any:
+    async def parse(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
         if isinstance(self.result, BaseException):
             raise self.result
@@ -52,7 +60,8 @@ def make_adapter(result: Any) -> tuple[OpenAIChatModel, FakeClient]:
 
 def response_with_usage() -> SimpleNamespace:
     return SimpleNamespace(
-        output_text="The answer",
+        output=[],
+        output_parsed=SimpleNamespace(text="The answer"),
         usage=SimpleNamespace(
             input_tokens=3,
             output_tokens=2,
@@ -61,11 +70,21 @@ def response_with_usage() -> SimpleNamespace:
     )
 
 
+def response_with_invalid_answer_error() -> ValidationError:
+    try:
+        GeneratedAnswer.model_validate({"unexpected": "shape"})
+    except ValidationError as error:
+        return error
+    raise AssertionError("Expected invalid answer data to fail validation")
+
+
 async def test_success_maps_response_and_request_metadata() -> None:
     adapter, client = make_adapter(response_with_usage())
 
     result = await adapter.answer(
-        Question(text="A question"), request_id=REQUEST_ID, timeout_seconds=2.0
+        Question(text="A question"),
+        request_id=REQUEST_ID,
+        timeout_seconds=2.0,
     )
 
     assert result.text == "The answer"
@@ -75,6 +94,7 @@ async def test_success_maps_response_and_request_metadata() -> None:
         {
             "model": "test-model",
             "input": "A question",
+            "text_format": GeneratedAnswer,
             "timeout": 2.0,
             "extra_headers": {"X-Request-ID": str(REQUEST_ID)},
         }
@@ -90,7 +110,13 @@ def test_configured_api_key_is_redacted_and_available() -> None:
 
 
 async def test_missing_usage_raises_typed_malformed_response() -> None:
-    adapter, _ = make_adapter(SimpleNamespace(output_text="No usage", usage=None))
+    adapter, _ = make_adapter(
+        SimpleNamespace(
+            output_text="No usage",
+            output=[],
+            usage=None,
+        )
+    )
 
     with pytest.raises(ChatModelMalformedResponse, match="Missing usage data"):
         await adapter.answer(
@@ -144,3 +170,91 @@ def test_settings_raises_exception_on_incorrect_timeout_values(
 ) -> None:
     with pytest.raises(ValidationError):
         OpenAISettings(model_timeout_seconds=timeout_seconds)
+
+
+def test_generated_answer_requires_non_empty_text() -> None:
+    assert GeneratedAnswer(text="A useful answer").text == "A useful answer"
+
+    with pytest.raises(ValidationError):
+        GeneratedAnswer(text="")
+
+
+async def test_refusal_raises_typed_failure() -> None:
+    refusal = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="refusal")],
+    )
+    response = SimpleNamespace(
+        output=[refusal],
+        output_parsed=None,
+        usage=SimpleNamespace(
+            input_tokens=3,
+            output_tokens=2,
+            total_tokens=5,
+        ),
+    )
+    adapter, _ = make_adapter(response)
+
+    with pytest.raises(ChatModelRefused):
+        await adapter.answer(
+            Question(text="A question"),
+            request_id=REQUEST_ID,
+            timeout_seconds=2.0,
+        )
+
+
+async def test_invalid_structured_data_raises_typed_failure() -> None:
+    adapter, _ = make_adapter(response_with_invalid_answer_error())
+
+    with pytest.raises(ChatModelMalformedResponse):
+        await adapter.answer(
+            Question(text="A question"),
+            request_id=REQUEST_ID,
+            timeout_seconds=2.0,
+        )
+
+
+async def test_unsupported_structured_output_raises_typed_failure() -> None:
+    request = httpx2.Request("POST", "https://example.test")
+    response = httpx2.Response(400, request=request)
+    error = openai.BadRequestError(
+        "Structured output is unsupported",
+        response=response,
+        body={
+            "message": "Structured output is unsupported",
+            "param": "text.format",
+            "code": "unsupported_value",
+            "type": "invalid_request_error",
+        },
+    )
+    adapter, _ = make_adapter(error)
+
+    with pytest.raises(ChatModelStructuredOutputUnsupported):
+        await adapter.answer(
+            Question(text="A question"),
+            request_id=REQUEST_ID,
+            timeout_seconds=2.0,
+        )
+
+
+async def test_unsupported_structured_output_raises_bad_request_failure() -> None:
+    request = httpx2.Request("POST", "https://example.test")
+    response = httpx2.Response(400, request=request)
+    error = openai.BadRequestError(
+        "Structured output is unsupported",
+        response=response,
+        body={
+            "message": "Structured output is unsupported",
+            "param": "input",
+            "code": "unsupported_value",
+            "type": "invalid_request_error",
+        },
+    )
+    adapter, _ = make_adapter(error)
+
+    with pytest.raises(openai.BadRequestError):
+        await adapter.answer(
+            Question(text="A question"),
+            request_id=REQUEST_ID,
+            timeout_seconds=2.0,
+        )

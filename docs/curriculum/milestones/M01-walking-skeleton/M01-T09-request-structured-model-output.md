@@ -7,7 +7,7 @@ depends_on: ["M01-T08"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["structured-output contract"]
-status: planned
+status: completed
 ---
 
 # M01-T09 — Request structured model output

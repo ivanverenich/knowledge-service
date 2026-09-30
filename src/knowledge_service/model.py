@@ -13,7 +13,7 @@ class ChatModelUnavailable(ChatModelError):
 
 
 class ChatModelMalformedResponse(ChatModelError):
-    """The selected model missing usage data"""
+    """The selected model missing usage data or invalid/missing structured answer"""
 
     def __init__(self, message: str) -> None:
         self.message = message
@@ -25,6 +25,14 @@ class ChatModelTimeout(ChatModelError):
 
 class ChatModelRateLimited(ChatModelError):
     """The selected model has reachted request limit"""
+
+
+class ChatModelRefused(ChatModelError):
+    """The model declined to provide an answer."""
+
+
+class ChatModelStructuredOutputUnsupported(ChatModelError):
+    """The selected model cannot provide structured output."""
 
 
 class ChatModel(Protocol):
