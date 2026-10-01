@@ -28,7 +28,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M01-T08 — Make cancellation and timeouts explicit](milestones/M01-walking-skeleton/M01-T08-make-cancellation-and-timeouts-explicit.md) | completed | 2026-09-29 | [Cancellation and timeout evidence](../evidence/M01-T08-cancellation-and-timeouts.md) | Added finite workflow deadlines, bounded model-adapter timeouts, typed deadline failure, cancellation propagation, cleanup tests, and safe public timeout mapping. |
 | [M01-T09 — Request structured model output](milestones/M01-walking-skeleton/M01-T09-request-structured-model-output.md) | completed | 2026-09-30 | [Structured model output evidence](../evidence/M01-T09-structured-model-output.md) | Added a provider-neutral generated-answer schema, structured parsing, typed refusal/malformed/capability failures, and deterministic adapter tests. |
 | [M01-T10 — Capture model usage and cost inputs](milestones/M01-walking-skeleton/M01-T10-capture-model-usage-and-cost-inputs.md) | completed | 2026-09-30 | [Model usage and cost evidence](../evidence/M01-T10-model-usage-and-cost-inputs.md) | Added safe usage metadata, configurable price IDs, deterministic latency measurement, and Decimal-based cost estimates from injected price data. |
+| [M01-T11 — Write walking-skeleton contract tests](milestones/M01-walking-skeleton/M01-T11-write-walking-skeleton-contract-tests.md) | completed | 2026-10-01 | [Walking-skeleton contract tests evidence](../evidence/M01-T11-walking-skeleton-contract-tests.md) | Shared fake/OpenAI adapter contract covers success, typed failure, and cancellation; live provider smoke test is opt-in. |
 
 ## Next unblocked task
 
-[M01-T11 — Write walking-skeleton contract tests](milestones/M01-walking-skeleton/M01-T11-write-walking-skeleton-contract-tests.md)
+[M01-T12 — Pass the walking-skeleton understanding gate](milestones/M01-walking-skeleton/M01-T12-pass-the-walking-skeleton-gate.md)

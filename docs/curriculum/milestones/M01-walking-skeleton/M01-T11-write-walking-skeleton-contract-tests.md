@@ -7,7 +7,7 @@ depends_on: ["M01-T10"]
 estimate: 75m
 topics: ["fastapi","async","llm"]
 deliverables: ["adapter contract suite"]
-status: planned
+status: completed
 ---
 
 # M01-T11 — Write walking-skeleton contract tests
