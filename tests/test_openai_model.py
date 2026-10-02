@@ -62,7 +62,9 @@ def make_adapter(result: Any) -> tuple[OpenAIChatModel, FakeClient]:
 def response_with_usage() -> SimpleNamespace:
     return SimpleNamespace(
         output=[],
-        output_parsed=SimpleNamespace(text="The answer"),
+        output_parsed=SimpleNamespace(
+            text="The answer", summary="A short fake summary."
+        ),
         usage=SimpleNamespace(
             input_tokens=3,
             output_tokens=2,
@@ -73,7 +75,7 @@ def response_with_usage() -> SimpleNamespace:
 
 def response_with_invalid_answer_error() -> ValidationError:
     try:
-        GeneratedAnswer.model_validate({"unexpected": "shape"})
+        GeneratedAnswer.model_validate({"text": "Answer without a summary"})
     except ValidationError as error:
         return error
     raise AssertionError("Expected invalid answer data to fail validation")
@@ -97,6 +99,7 @@ async def test_success_maps_response_and_request_metadata(
     )
 
     assert result.text == "The answer"
+    assert result.summary == "A short fake summary."
     assert result.request_id == REQUEST_ID
     assert result.usage.provider == "openai"
     assert result.usage.model == "test-model"
@@ -188,10 +191,22 @@ def test_settings_raises_exception_on_incorrect_timeout_values(
 
 
 def test_generated_answer_requires_non_empty_text() -> None:
-    assert GeneratedAnswer(text="A useful answer").text == "A useful answer"
+    assert (
+        GeneratedAnswer(
+            text="A useful answer",
+            summary="A short fake summary.",
+        ).text
+        == "A useful answer"
+    )
 
     with pytest.raises(ValidationError):
-        GeneratedAnswer(text="")
+        GeneratedAnswer(
+            text="",
+            summary="A short fake summary.",
+        )
+
+    with pytest.raises(ValidationError):
+        GeneratedAnswer(text="A useful answer", summary="")
 
 
 async def test_refusal_raises_typed_failure() -> None:

@@ -68,7 +68,9 @@ async def test_answer_endpoint_returns_answer() -> None:
             headers={"X-Request-ID": REQUEST_ID},
         )
         assert response.status_code == 200
-        assert response.json()["request_id"] == REQUEST_ID
+        body = response.json()
+        assert body["request_id"] == REQUEST_ID
+        assert body["summary"] == "A short fake summary."
 
 
 class ErrorModel:

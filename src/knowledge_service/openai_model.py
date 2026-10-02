@@ -92,6 +92,7 @@ class OpenAIChatModel:
 
         return Answer(
             text=generated.text,
+            summary=generated.summary,
             request_id=request_id,
             usage=Usage(
                 provider="openai",

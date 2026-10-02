@@ -29,6 +29,7 @@ class Answer(BaseModel):
     """An answer in the knowledge service."""
 
     text: str
+    summary: str = Field(min_length=1, max_length=280)
     request_id: UUID
     usage: Usage
     citations: list[str] = Field(default_factory=list)
@@ -38,6 +39,11 @@ class GeneratedAnswer(BaseModel):
     """Structured content returned by a chat model."""
 
     text: str = Field(min_length=1)
+    summary: str = Field(
+        min_length=1,
+        max_length=280,
+        description="A concise summary of the answer.",
+    )
 
 
 class ErrorResponse(BaseModel):

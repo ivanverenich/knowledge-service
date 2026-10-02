@@ -56,7 +56,9 @@ def openai_model(responses: StubResponses) -> ChatModel:
 def openai_success() -> ChatModel:
     response = SimpleNamespace(
         output=[],
-        output_parsed=SimpleNamespace(text="A managed answer"),
+        output_parsed=SimpleNamespace(
+            text="A managed answer", summary="A short fake summary."
+        ),
         usage=SimpleNamespace(
             input_tokens=3,
             output_tokens=2,
@@ -102,6 +104,7 @@ CASES = (
 def assert_success_contract(answer: Answer) -> None:
     assert answer.request_id == REQUEST_ID
     assert answer.text.strip()
+    assert answer.summary.strip()
     assert answer.usage.provider
     assert answer.usage.model
     assert answer.usage.latency_ms >= 0

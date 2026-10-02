@@ -29,6 +29,7 @@ class FakeChatModel:
             await self.wait_for.wait()
         return Answer(
             text=f"Fake answer to: {question.text}",
+            summary="A short fake summary.",
             request_id=request_id,
             usage=Usage(
                 provider="OpenAI",
@@ -61,6 +62,7 @@ class SlowChatModel:
             await self.release.wait()
             return Answer(
                 text=f"Fake answer to: {question.text}",
+                summary="A short fake summary.",
                 request_id=request_id,
                 usage=Usage(
                     provider="OpenAI",

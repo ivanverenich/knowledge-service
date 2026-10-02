@@ -7,7 +7,7 @@ depends_on: ["M01-T11"]
 estimate: 90m
 topics: ["fastapi","async","llm"]
 deliverables: ["M01 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M01-T12 — Pass the walking-skeleton understanding gate
