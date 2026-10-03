@@ -7,7 +7,7 @@ depends_on: ["M01-T12"]
 estimate: 60m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["typed identifiers"]
-status: planned
+status: completed
 ---
 
 # M02-T01 — Model stable domain identifiers

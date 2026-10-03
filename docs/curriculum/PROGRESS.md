@@ -30,7 +30,8 @@ This file records the learner’s actual progress. Task files remain the reusabl
 | [M01-T10 — Capture model usage and cost inputs](milestones/M01-walking-skeleton/M01-T10-capture-model-usage-and-cost-inputs.md) | completed | 2026-09-30 | [Model usage and cost evidence](../evidence/M01-T10-model-usage-and-cost-inputs.md) | Added safe usage metadata, configurable price IDs, deterministic latency measurement, and Decimal-based cost estimates from injected price data. |
 | [M01-T11 — Write walking-skeleton contract tests](milestones/M01-walking-skeleton/M01-T11-write-walking-skeleton-contract-tests.md) | completed | 2026-10-01 | [Walking-skeleton contract tests evidence](../evidence/M01-T11-walking-skeleton-contract-tests.md) | Shared fake/OpenAI adapter contract covers success, typed failure, and cancellation; live provider smoke test is opt-in. |
 | [M01-T12 — Pass the walking-skeleton understanding gate](milestones/M01-walking-skeleton/M01-T12-pass-the-walking-skeleton-gate.md) | completed | 2026-10-02 | [Walking-skeleton gate evidence](../evidence/M01-T12-walking-skeleton-gate.md) | Traced the request and timeout boundaries, added a required summary end to end, and passed focused and repository checks. |
+| [M02-T01 — Model stable domain identifiers](milestones/M02-domain-and-persistence/M02-T01-model-stable-domain-identifiers.md) | completed | 2026-10-03 | [Stable domain identifiers evidence](../evidence/M02-T01-stable-domain-identifiers.md) | Added immutable typed UUIDv7 IDs, canonical round trips, distinct-kind behavior, safe parse failures, and provider-boundary guidance; all deterministic checks passed. |
 
 ## Next unblocked task
 
-[M02-T01 — Model stable domain identifiers](milestones/M02-domain-and-persistence/M02-T01-model-stable-domain-identifiers.md)
+[M02-T02 — Model Document and version invariants](milestones/M02-domain-and-persistence/M02-T02-model-document-and-version-invariants.md)
