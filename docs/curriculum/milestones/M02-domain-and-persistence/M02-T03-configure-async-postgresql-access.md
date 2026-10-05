@@ -7,7 +7,7 @@ depends_on: ["M02-T02"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["database runtime"]
-status: planned
+status: completed
 ---
 
 # M02-T03 — Configure async PostgreSQL access
