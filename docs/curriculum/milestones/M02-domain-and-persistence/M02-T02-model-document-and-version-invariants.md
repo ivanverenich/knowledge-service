@@ -7,7 +7,7 @@ depends_on: ["M02-T01"]
 estimate: 75m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["Document domain model"]
-status: planned
+status: completed
 ---
 
 # M02-T02 — Model Document and version invariants
