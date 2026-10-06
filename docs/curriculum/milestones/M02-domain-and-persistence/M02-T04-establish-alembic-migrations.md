@@ -7,7 +7,7 @@ depends_on: ["M02-T03"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["Alembic configuration","baseline migration"]
-status: planned
+status: completed
 ---
 
 # M02-T04 — Establish Alembic migrations
