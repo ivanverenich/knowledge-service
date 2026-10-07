@@ -5,7 +5,7 @@ the translation between a Document and a row, and the statements that read and
 write it.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import cast
 from uuid import UUID
@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from knowledge_service.chunks import Chunk, StaleChunkWrite, ordered_chunks
 from knowledge_service.documents import (
     AuthorizationVersion,
     ContentVersion,
@@ -22,7 +23,7 @@ from knowledge_service.documents import (
     DocumentProvenance,
     InvalidDocument,
 )
-from knowledge_service.identifiers import DocumentId, SourceId
+from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
 
 metadata = sa.MetaData()
 
@@ -56,6 +57,29 @@ documents = sa.Table(
         "availability in ('available', 'tombstoned')",
         name="ck_documents_availability",
     ),
+)
+
+chunks = sa.Table(
+    "chunks",
+    metadata,
+    sa.Column("chunk_id", sa.Uuid(), primary_key=True),
+    sa.Column(
+        "document_id",
+        sa.Uuid(),
+        sa.ForeignKey("documents.document_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("content_version", sa.Integer(), nullable=False),
+    sa.Column("ordinal", sa.Integer(), nullable=False),
+    sa.Column("text", sa.Text(), nullable=False),
+    sa.Column("heading_path", sa.Text(), nullable=True),
+    sa.Column("token_count", sa.Integer(), nullable=False),
+    sa.Column("content_fingerprint", sa.Text(), nullable=False),
+    sa.Column("source_anchor", sa.Text(), nullable=True),
+    sa.UniqueConstraint("document_id", "ordinal", name="uq_chunks_document_ordinal"),
+    sa.CheckConstraint("content_version >= 1", name="ck_chunks_content_version"),
+    sa.CheckConstraint("ordinal >= 0", name="ck_chunks_ordinal"),
+    sa.CheckConstraint("token_count >= 1", name="ck_chunks_token_count"),
 )
 
 
@@ -102,6 +126,34 @@ def as_document(record: Mapping[str, object]) -> Document:
     )
 
 
+def _chunk_row(chunk: Chunk) -> dict[str, object]:
+    return {
+        "chunk_id": chunk.chunk_id.value,
+        "document_id": chunk.document_id.value,
+        "content_version": chunk.content_version.number,
+        "ordinal": chunk.ordinal,
+        "text": chunk.text,
+        "heading_path": chunk.heading_path,
+        "token_count": chunk.token_count,
+        "content_fingerprint": chunk.content_fingerprint,
+        "source_anchor": chunk.source_anchor,
+    }
+
+
+def _chunk_from(record: Mapping[str, object]) -> Chunk:
+    return Chunk(
+        chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
+        document_id=DocumentId(cast(UUID, record["document_id"])),
+        content_version=ContentVersion(cast(int, record["content_version"])),
+        ordinal=cast(int, record["ordinal"]),
+        text=cast(str, record["text"]),
+        heading_path=cast("str | None", record["heading_path"]),
+        token_count=cast(int, record["token_count"]),
+        content_fingerprint=cast(str, record["content_fingerprint"]),
+        source_anchor=cast("str | None", record["source_anchor"]),
+    )
+
+
 async def upsert_document(
     connection: AsyncConnection, document: Document
 ) -> DocumentId:
@@ -138,3 +190,55 @@ async def load_document(
     if record is None:
         return None
     return as_document(dict(record))
+
+
+async def replace_chunks(
+    connection: AsyncConnection,
+    *,
+    document: Document,
+    chunk_run: Sequence[Chunk],
+) -> tuple[Chunk, ...]:
+    """Replace every stored Chunk for a Document with one ordered content version."""
+    ordered = ordered_chunks(
+        document_id=document.document_id,
+        content_version=document.content_version,
+        chunks=chunk_run,
+    )
+
+    stored_version = cast(
+        "int | None",
+        await connection.scalar(
+            sa.select(sa.func.max(chunks.c.content_version)).where(
+                chunks.c.document_id == document.document_id.value
+            )
+        ),
+    )
+    if stored_version is not None and stored_version > document.content_version.number:
+        raise StaleChunkWrite(
+            f"stored chunks are at content version {stored_version}; refusing to"
+            f" replace them with version {document.content_version.number}"
+        )
+
+    await connection.execute(
+        sa.delete(chunks).where(chunks.c.document_id == document.document_id.value)
+    )
+    if ordered:
+        await connection.execute(
+            sa.insert(chunks), [_chunk_row(chunk) for chunk in ordered]
+        )
+    return ordered
+
+
+async def load_chunks(
+    connection: AsyncConnection,
+    *,
+    document_id: DocumentId,
+) -> tuple[Chunk, ...]:
+    """Read the stored Chunks for a Document in ordinal order."""
+    statement = (
+        sa.select(chunks)
+        .where(chunks.c.document_id == document_id.value)
+        .order_by(chunks.c.ordinal)
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(_chunk_from(dict(record)) for record in records)
