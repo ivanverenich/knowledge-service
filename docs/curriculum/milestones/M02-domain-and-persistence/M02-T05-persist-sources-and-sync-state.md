@@ -7,7 +7,7 @@ depends_on: ["M02-T04"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["source tables","sync-run tables"]
-status: planned
+status: completed
 ---
 
 # M02-T05 — Persist Sources and synchronization state

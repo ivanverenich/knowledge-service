@@ -21,11 +21,14 @@ def test_baseline_is_the_single_root_revision() -> None:
 
     heads = scripts.get_heads()
     assert len(heads) == 1, "There should be a single head revision"
-    baseline = scripts.get_revision(heads[0])
-    assert baseline is not None, "Baseline revision should exist"
-    assert baseline.down_revision is None, (
-        "Baseline revision should have no down_revision"
-    )
+
+    roots = [
+        revision
+        for revision in scripts.walk_revisions()
+        if revision.down_revision is None
+    ]
+    assert len(roots) == 1, "There should be a single root revision"
+    assert roots[0].revision == "20c8d8dcd117", "The root revision is the baseline"
 
 
 def test_upgrade_requires_a_database_url(

@@ -13,6 +13,15 @@ from sqlalchemy.engine import make_url
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def baseline_revision(config: Config) -> str:
+    """Return the root revision identifier, which new revisions may follow."""
+    scripts = ScriptDirectory.from_config(config)
+    for revision in scripts.walk_revisions():
+        if revision.down_revision is None:
+            return revision.revision
+    raise AssertionError("the migration chain has no baseline revision")
+
+
 @pytest.mark.integration
 def test_baseline_can_upgrade_downgrade_and_upgrade_again(
     monkeypatch: pytest.MonkeyPatch,
@@ -24,45 +33,35 @@ def test_baseline_can_upgrade_downgrade_and_upgrade_again(
         )
 
     monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    config = Config(PROJECT_ROOT / "alembic.ini")
-    baseline_id = ScriptDirectory.from_config(config).get_current_head()
-    assert baseline_id is not None, "Baseline revision should exist"
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    baseline_id = baseline_revision(config)
     sync_url = make_url(database_url).set(drivername="postgresql+psycopg")
     engine = create_engine(sync_url)
     try:
+        command.downgrade(config, "base")
         with engine.connect() as connection:
-            existing_tables = set(inspect(connection).get_table_names())
-            assert existing_tables <= {"alembic_version"}, (
-                "Database should be empty before migration"
+            assert set(inspect(connection).get_table_names()) == {"alembic_version"}
+
+        command.upgrade(config, baseline_id)
+        with engine.connect() as connection:
+            assert set(inspect(connection).get_table_names()) == {"alembic_version"}
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == baseline_id
             )
-            if "alembic_version" in existing_tables:
-                current_id = connection.scalar(
-                    text("SELECT version_num FROM alembic_version")
-                )
-                assert current_id in (None, baseline_id), (
-                    "Database should be at baseline before migration"
-                )
 
-            command.upgrade(config, "head")
-            with engine.connect() as connection:
-                assert set(inspect(connection).get_table_names()) == {"alembic_version"}
-                assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == baseline_id
-                )
+        command.downgrade(config, "base")
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                is None
+            )
 
-            command.downgrade(config, "base")
-            with engine.connect() as connection:
-                assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    is None
-                )
-
-            command.upgrade(config, "head")
-            with engine.connect() as connection:
-                assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == baseline_id
-                )
+        command.upgrade(config, baseline_id)
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == baseline_id
+            )
     finally:
         engine.dispose()
