@@ -7,7 +7,7 @@ depends_on: ["M02-T05"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["document tables"]
-status: planned
+status: completed
 ---
 
 # M02-T06 — Persist Documents and versions
