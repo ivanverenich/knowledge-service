@@ -1,10 +1,13 @@
 """Asynchronous PostgreSQL engine and session lifecycle."""
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -24,6 +27,12 @@ class DatabaseRuntime:
 
     engine: AsyncEngine
     sessions: async_sessionmaker[AsyncSession]
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[AsyncConnection]:
+        """Run one unit of work in one transaction, committing on a clean exit."""
+        async with self.engine.begin() as connection:
+            yield connection
 
     async def dispose(self) -> None:
         """Close pooled connections during application shutdown."""

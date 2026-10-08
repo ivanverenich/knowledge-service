@@ -7,7 +7,7 @@ depends_on: ["M02-T10"]
 estimate: 75m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["transaction policy"]
-status: planned
+status: completed
 ---
 
 # M02-T11 — Define transaction ownership

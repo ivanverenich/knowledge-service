@@ -13,3 +13,4 @@ These records capture decisions that are costly to reverse, surprising without c
 9. [Separate Python runtimes for application and ML workloads](0009-split-python-runtime-for-application-and-ml-workloads.md)
 10. [Production telemetry redacted by default](0010-redact-production-telemetry-by-default.md)
 11. [Redis for ephemeral coordination only](0011-use-redis-for-ephemeral-coordination-only.md)
+12. [Application workflows own transaction boundaries](0012-application-workflows-own-transaction-boundaries.md)
