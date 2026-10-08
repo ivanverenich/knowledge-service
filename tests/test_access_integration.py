@@ -1,12 +1,8 @@
 """Real PostgreSQL tests for Access Grants."""
 
-import os
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -27,7 +23,6 @@ from knowledge_service.persistence import (
     upsert_document,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 USER_ID = UserId.parse("00000000-0000-0000-0000-000000000030")
@@ -69,18 +64,6 @@ ACCESS_CLASSIFICATION = text(
 )
 
 
-@pytest.fixture
-def migrated_database(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Apply migrations synchronously; Alembic's env.py runs its own event loop."""
-    database_url = os.environ.get("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable database")
-
-    monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
-    return database_url
-
-
 def make_document(external_id: str) -> Document:
     return Document.register(
         document_id=DocumentId.new(),
@@ -118,10 +101,6 @@ async def test_queries_tell_public_user_group_and_no_access_apart(
     )
     try:
         async with engine.begin() as connection:
-            await connection.execute(text("DELETE FROM access_grants"))
-            await connection.execute(text("DELETE FROM chunks"))
-            await connection.execute(text("DELETE FROM documents"))
-            await connection.execute(text("DELETE FROM sources"))
             await connection.execute(INSERT_SOURCE, {"source_id": SOURCE_ID.value})
 
         public = make_document("public-page")

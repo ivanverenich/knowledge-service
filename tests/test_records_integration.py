@@ -1,14 +1,10 @@
 """Real PostgreSQL tests for Jobs, audit events, and Evaluation Runs."""
 
 import json
-import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -35,7 +31,6 @@ from knowledge_service.persistence import (
     save_job,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OBSERVED_AT = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 USER_ID = UserId.parse("00000000-0000-0000-0000-000000000030")
 DATASET_ID = EvaluationDatasetId.parse("00000000-0000-0000-0000-000000000060")
@@ -54,18 +49,6 @@ INSERT_RAW_RUN = text(
 )
 
 
-@pytest.fixture
-def migrated_database(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Apply migrations synchronously; Alembic's env.py runs its own event loop."""
-    database_url = os.environ.get("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable database")
-
-    monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
-    return database_url
-
-
 @pytest.mark.integration
 async def test_records_survive_their_state_machines_and_refuse_raw_content(
     migrated_database: str,
@@ -74,11 +57,6 @@ async def test_records_survive_their_state_machines_and_refuse_raw_content(
         make_url(migrated_database).set(drivername="postgresql+psycopg")
     )
     try:
-        async with engine.begin() as connection:
-            await connection.execute(text("DELETE FROM evaluation_runs"))
-            await connection.execute(text("DELETE FROM audit_events"))
-            await connection.execute(text("DELETE FROM jobs"))
-
         job = Job.request(
             job_id=JobId.new(),
             kind=JobKind.SYNCHRONIZE_SOURCE,

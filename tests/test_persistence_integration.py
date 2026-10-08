@@ -1,13 +1,9 @@
 """Real PostgreSQL tests for Document persistence."""
 
-import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -22,22 +18,9 @@ from knowledge_service.documents import (
 from knowledge_service.identifiers import DocumentId, SourceId
 from knowledge_service.persistence import documents, load_document, upsert_document
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 EXTERNAL_ID = "page-123"
-
-
-@pytest.fixture
-def migrated_database(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Apply migrations synchronously; Alembic's env.py runs its own event loop."""
-    database_url = os.environ.get("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable database")
-
-    monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
-    return database_url
 
 
 def make_document(
@@ -65,8 +48,6 @@ async def test_upsert_is_idempotent_and_versions_move_independently(
     )
     try:
         async with engine.begin() as connection:
-            await connection.execute(text("DELETE FROM documents"))
-            await connection.execute(text("DELETE FROM sources"))
             await connection.execute(
                 text(
                     "INSERT INTO sources (source_id, kind, location, display_name,"

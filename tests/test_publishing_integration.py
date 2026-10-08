@@ -1,12 +1,9 @@
 """Real PostgreSQL tests for transaction ownership while publishing."""
 
-import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
+from pydantic import SecretStr
 from sqlalchemy import text
 
 from knowledge_service.access import AccessGrant, Subject
@@ -28,7 +25,6 @@ from knowledge_service.publishing import (
 )
 from knowledge_service.settings import Settings
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OBSERVED_AT = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 USER_ID = UserId.parse("00000000-0000-0000-0000-000000000030")
@@ -38,18 +34,6 @@ INSERT_SOURCE = text(
     " created_at, updated_at) VALUES (:source_id, 'local_directory',"
     " '/srv/handbook', 'Handbook', true, now(), now())"
 )
-
-
-@pytest.fixture
-def migrated_database(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Apply migrations synchronously; Alembic's env.py runs its own event loop."""
-    database_url = os.environ.get("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable database")
-
-    monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
-    return database_url
 
 
 def registered_document(external_id: str, *, content_fingerprint: str) -> Document:
@@ -91,15 +75,8 @@ def publication_for(document: Document, *, text_body: str) -> Publication:
     )
 
 
-async def start_from_an_empty_database(runtime: DatabaseRuntime) -> None:
+async def insert_source(runtime: DatabaseRuntime) -> None:
     async with runtime.transaction() as connection:
-        await connection.execute(text("DELETE FROM message_feedback"))
-        await connection.execute(text("DELETE FROM messages"))
-        await connection.execute(text("DELETE FROM conversations"))
-        await connection.execute(text("DELETE FROM access_grants"))
-        await connection.execute(text("DELETE FROM chunks"))
-        await connection.execute(text("DELETE FROM documents"))
-        await connection.execute(text("DELETE FROM sources"))
         await connection.execute(INSERT_SOURCE, {"source_id": SOURCE_ID.value})
 
 
@@ -107,9 +84,11 @@ async def start_from_an_empty_database(runtime: DatabaseRuntime) -> None:
 async def test_a_failed_publish_leaves_no_half_published_document(
     migrated_database: str,
 ) -> None:
-    runtime = create_database_runtime(Settings())
+    runtime = create_database_runtime(
+        Settings(database_url=SecretStr(migrated_database))
+    )
     try:
-        await start_from_an_empty_database(runtime)
+        await insert_source(runtime)
 
         first = registered_document("page-a", content_fingerprint="content-a")
         second = first.reconcile(
@@ -160,9 +139,11 @@ async def test_a_failed_publish_leaves_no_half_published_document(
 async def test_an_uncommitted_publication_is_invisible_until_it_commits(
     migrated_database: str,
 ) -> None:
-    runtime = create_database_runtime(Settings())
+    runtime = create_database_runtime(
+        Settings(database_url=SecretStr(migrated_database))
+    )
     try:
-        await start_from_an_empty_database(runtime)
+        await insert_source(runtime)
 
         first = registered_document("page-a", content_fingerprint="content-a")
         await publish_documents(

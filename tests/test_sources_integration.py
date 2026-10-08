@@ -1,17 +1,13 @@
 """Real PostgreSQL tests for the Source and Synchronization Run tables."""
 
-import os
 import uuid
-from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from database_fixtures import SYNC_DRIVER
 
 INSERT_SOURCE = text(
     "INSERT INTO sources (source_id, kind, location, display_name, enabled,"
@@ -27,21 +23,10 @@ INSERT_RUN = text(
 
 @pytest.mark.integration
 def test_constraints_reject_ambiguous_identity_and_invalid_run_state(
-    monkeypatch: pytest.MonkeyPatch,
+    migrated_database: str,
 ) -> None:
-    database_url = os.environ.get("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable database")
-
-    monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
-
-    engine = create_engine(make_url(database_url).set(drivername="postgresql+psycopg"))
+    engine = create_engine(make_url(migrated_database).set(drivername=SYNC_DRIVER))
     try:
-        with engine.begin() as connection:
-            connection.execute(text("DELETE FROM synchronization_runs"))
-            connection.execute(text("DELETE FROM sources"))
-
         source_id = uuid.uuid4()
         with engine.begin() as connection:
             connection.execute(

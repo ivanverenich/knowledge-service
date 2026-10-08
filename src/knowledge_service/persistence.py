@@ -69,6 +69,45 @@ from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
 
 metadata = sa.MetaData()
 
+sources = sa.Table(
+    "sources",
+    metadata,
+    sa.Column("source_id", sa.Uuid(), primary_key=True),
+    sa.Column("kind", sa.String(length=32), nullable=False),
+    sa.Column("location", sa.Text(), nullable=False),
+    sa.Column("credentials_reference", sa.Text(), nullable=True),
+    sa.Column("display_name", sa.Text(), nullable=False),
+    sa.Column("enabled", sa.Boolean(), nullable=False),
+    sa.Column("checkpoint", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.UniqueConstraint("kind", "location", name="uq_sources_kind_location"),
+)
+
+synchronization_runs = sa.Table(
+    "synchronization_runs",
+    metadata,
+    sa.Column("run_id", sa.Uuid(), primary_key=True),
+    sa.Column(
+        "source_id",
+        sa.Uuid(),
+        sa.ForeignKey("sources.source_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("detail", sa.Text(), nullable=True),
+    sa.CheckConstraint(
+        "status in ('running', 'succeeded', 'failed')",
+        name="ck_synchronization_runs_status",
+    ),
+    sa.CheckConstraint(
+        "(status = 'running') = (finished_at is null)",
+        name="ck_synchronization_runs_finished_at",
+    ),
+)
+
 documents = sa.Table(
     "documents",
     metadata,

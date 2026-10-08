@@ -5,6 +5,7 @@ from alembic import context
 from sqlalchemy.engine import Connection
 
 from knowledge_service.database import create_database_runtime
+from knowledge_service.persistence import metadata
 from knowledge_service.settings import Settings
 
 # this is the Alembic Config object, which provides
@@ -16,11 +17,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = None
+# Alembic compares the migrated schema against the tables the code declares, so
+# a revision that drifts from them is reported instead of passing unnoticed.
+target_metadata = metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

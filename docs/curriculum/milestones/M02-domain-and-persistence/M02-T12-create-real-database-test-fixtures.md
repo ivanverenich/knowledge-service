@@ -7,7 +7,7 @@ depends_on: ["M02-T11"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["PostgreSQL test fixture"]
-status: planned
+status: completed
 ---
 
 # M02-T12 — Create real-database test fixtures

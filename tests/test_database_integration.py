@@ -1,7 +1,5 @@
 """Real PostgreSQL tests for transaction and engine lifecycle."""
 
-import os
-
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import text
@@ -12,16 +10,11 @@ from knowledge_service.settings import Settings
 
 
 @pytest.mark.integration
-async def test_postgresql_commit_rollback_timeout_and_disposal() -> None:
-    database_url = os.getenv("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if database_url is None:
-        pytest.skip(
-            "set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable "
-            "PostgreSQL database"
-        )
-
+async def test_postgresql_commit_rollback_timeout_and_disposal(
+    migrated_database: str,
+) -> None:
     settings = Settings(
-        database_url=SecretStr(database_url),
+        database_url=SecretStr(migrated_database),
         database_statement_timeout_ms=100,
     )
     runtime = create_database_runtime(settings)

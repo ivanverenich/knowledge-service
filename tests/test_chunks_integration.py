@@ -1,13 +1,9 @@
 """Real PostgreSQL tests for Chunk replacement."""
 
-import os
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -17,7 +13,6 @@ from knowledge_service.documents import Document, DocumentProvenance
 from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
 from knowledge_service.persistence import load_chunks, replace_chunks, upsert_document
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 DOCUMENT_ID = DocumentId.parse("00000000-0000-0000-0000-000000000020")
@@ -43,18 +38,6 @@ async def replace_then_abandon(
     async with engine.begin() as connection:
         await replace_chunks(connection, document=document, chunk_run=chunk_run)
         raise Abandoned
-
-
-@pytest.fixture
-def migrated_database(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Apply migrations synchronously; Alembic's env.py runs its own event loop."""
-    database_url = os.environ.get("KNOWLEDGE_SERVICE_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("set KNOWLEDGE_SERVICE_TEST_DATABASE_URL to a disposable database")
-
-    monkeypatch.setenv("KNOWLEDGE_SERVICE_DATABASE_URL", database_url)
-    command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
-    return database_url
 
 
 def make_document(*, observed_at: datetime = OBSERVED_AT) -> Document:
@@ -94,9 +77,6 @@ async def test_replacing_a_content_version_removes_stale_chunks_in_order(
     )
     try:
         async with engine.begin() as connection:
-            await connection.execute(text("DELETE FROM chunks"))
-            await connection.execute(text("DELETE FROM documents"))
-            await connection.execute(text("DELETE FROM sources"))
             await connection.execute(INSERT_SOURCE, {"source_id": SOURCE_ID.value})
 
         document_v1 = make_document()
