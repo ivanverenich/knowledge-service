@@ -7,7 +7,7 @@ depends_on: ["M02-T08"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["conversation tables","feedback tables"]
-status: planned
+status: completed
 ---
 
 # M02-T09 — Persist Conversations and feedback

@@ -68,6 +68,10 @@ class AccessGrantId(StableIdentifier):
     """Internal identity of an Access Grant."""
 
 
+class MessageId(StableIdentifier):
+    """Internal identity of a Conversation Message."""
+
+
 class ConversationId(StableIdentifier):
     """Internal identity of a Conversation."""
 
