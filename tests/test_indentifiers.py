@@ -6,9 +6,11 @@ import pytest
 
 from knowledge_service.identifiers import (
     AccessGrantId,
+    AuditEventId,
     ChunkId,
     ConversationId,
     DocumentId,
+    EvaluationDatasetId,
     EvaluationRunId,
     GroupId,
     InvalidIdentifier,
@@ -30,6 +32,8 @@ ID_TYPES: tuple[type[StableIdentifier], ...] = (
     ConversationId,
     MessageId,
     SynchronizationRunId,
+    EvaluationDatasetId,
+    AuditEventId,
     EvaluationRunId,
     JobId,
 )

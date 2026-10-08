@@ -7,7 +7,7 @@ depends_on: ["M02-T09"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["job tables","audit tables","evaluation tables"]
-status: planned
+status: completed
 ---
 
 # M02-T10 — Persist jobs, audit, and Evaluation Runs

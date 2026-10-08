@@ -80,6 +80,14 @@ class SynchronizationRunId(StableIdentifier):
     """Internal identity of a Synchronization Run"""
 
 
+class EvaluationDatasetId(StableIdentifier):
+    """Internal identity of an Evaluation Dataset."""
+
+
+class AuditEventId(StableIdentifier):
+    """Internal identity of a recorded audit event."""
+
+
 class EvaluationRunId(StableIdentifier):
     """Internal identity of an Evaluation Run."""
 

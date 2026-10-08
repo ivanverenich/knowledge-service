@@ -1,4 +1,4 @@
-"""PostgreSQL persistence for Documents, Chunks, Access Grants, and Conversations.
+"""PostgreSQL persistence for the stored domain records.
 
 Domain values stay free of SQLAlchemy. This module owns the stored table shapes,
 the translation between a domain value and a row, and the statements that read
@@ -11,7 +11,7 @@ from typing import cast
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import (
@@ -20,6 +20,13 @@ from knowledge_service.access import (
     Subject,
     SubjectKind,
     granted_subjects,
+)
+from knowledge_service.audit import (
+    AuditAction,
+    AuditEvent,
+    AuditTargetKind,
+    AuditValue,
+    InvalidAuditEvent,
 )
 from knowledge_service.chunks import Chunk, StaleChunkWrite, ordered_chunks
 from knowledge_service.conversations import (
@@ -39,16 +46,26 @@ from knowledge_service.documents import (
     DocumentProvenance,
     InvalidDocument,
 )
+from knowledge_service.evaluation import (
+    EvaluationRun,
+    EvaluationStatus,
+    InvalidEvaluationRun,
+)
 from knowledge_service.identifiers import (
     AccessGrantId,
+    AuditEventId,
     ChunkId,
     ConversationId,
     DocumentId,
+    EvaluationDatasetId,
+    EvaluationRunId,
     GroupId,
+    JobId,
     MessageId,
     SourceId,
     UserId,
 )
+from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
 
 metadata = sa.MetaData()
 
@@ -192,6 +209,101 @@ message_feedback = sa.Table(
     sa.Column("rating", sa.String(length=8), nullable=False),
     sa.Column("rated_at", sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint("rating in ('up', 'down')", name="ck_message_feedback_rating"),
+)
+
+
+jobs = sa.Table(
+    "jobs",
+    metadata,
+    sa.Column("job_id", sa.Uuid(), primary_key=True),
+    sa.Column("kind", sa.String(length=32), nullable=False),
+    sa.Column("target_id", sa.Uuid(), nullable=False),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("attempt", sa.Integer(), nullable=False),
+    sa.Column("max_attempts", sa.Integer(), nullable=False),
+    sa.Column("queued_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_error_code", sa.String(length=64), nullable=True),
+    sa.CheckConstraint(
+        "kind in ('synchronize_source', 'purge_conversation')", name="ck_jobs_kind"
+    ),
+    sa.CheckConstraint(
+        "status in ('queued', 'running', 'succeeded', 'failed')",
+        name="ck_jobs_status",
+    ),
+    sa.CheckConstraint(
+        "max_attempts >= 1 and attempt >= 0 and attempt <= max_attempts",
+        name="ck_jobs_attempt",
+    ),
+    sa.CheckConstraint(
+        "(status in ('succeeded', 'failed')) = (finished_at is not null)",
+        name="ck_jobs_finished_at",
+    ),
+    sa.CheckConstraint(
+        "(status = 'queued') = (started_at is null)", name="ck_jobs_started_at"
+    ),
+    sa.CheckConstraint(
+        "(status = 'failed') = (last_error_code is not null)",
+        name="ck_jobs_last_error_code",
+    ),
+)
+
+audit_events = sa.Table(
+    "audit_events",
+    metadata,
+    sa.Column("event_id", sa.Uuid(), primary_key=True),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("actor_id", sa.Uuid(), nullable=True),
+    sa.Column("action", sa.String(length=48), nullable=False),
+    sa.Column("target_kind", sa.String(length=24), nullable=False),
+    sa.Column("target_id", sa.Uuid(), nullable=False),
+    sa.Column("metadata", JSONB, nullable=False),
+    sa.CheckConstraint(
+        "action in ('source.registered', 'document.availability_changed',"
+        " 'conversation.deleted', 'job.queued', 'job.failed',"
+        " 'evaluation_run.started')",
+        name="ck_audit_events_action",
+    ),
+    sa.CheckConstraint(
+        "target_kind in ('source', 'document', 'conversation', 'job',"
+        " 'evaluation_run')",
+        name="ck_audit_events_target_kind",
+    ),
+    sa.CheckConstraint(
+        "pg_column_size(metadata) <= 1024", name="ck_audit_events_metadata_size"
+    ),
+)
+
+evaluation_runs = sa.Table(
+    "evaluation_runs",
+    metadata,
+    sa.Column("run_id", sa.Uuid(), primary_key=True),
+    sa.Column("dataset_id", sa.Uuid(), nullable=False),
+    sa.Column("dataset_version", sa.Integer(), nullable=False),
+    sa.Column("configuration_fingerprint", sa.Text(), nullable=False),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("artifact_location", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint(
+        "status in ('pending', 'running', 'succeeded', 'failed')",
+        name="ck_evaluation_runs_status",
+    ),
+    sa.CheckConstraint("dataset_version >= 1", name="ck_evaluation_runs_dataset"),
+    sa.CheckConstraint(
+        "(status = 'succeeded') = (artifact_location is not null)",
+        name="ck_evaluation_runs_artifact_location",
+    ),
+    sa.CheckConstraint(
+        "(status in ('succeeded', 'failed')) = (finished_at is not null)",
+        name="ck_evaluation_runs_finished_at",
+    ),
+    sa.CheckConstraint(
+        "(status = 'pending') = (started_at is null)",
+        name="ck_evaluation_runs_started_at",
+    ),
 )
 
 
@@ -368,6 +480,109 @@ def _feedback_from(record: Mapping[str, object]) -> MessageFeedback:
         user_id=UserId(cast(UUID, record["user_id"])),
         rating=rating,
         rated_at=cast(datetime, record["rated_at"]),
+    )
+
+
+def _job_row(job: Job) -> dict[str, object]:
+    return {
+        "job_id": job.job_id.value,
+        "kind": job.kind.value,
+        "target_id": job.target_id,
+        "status": job.status.value,
+        "attempt": job.attempt,
+        "max_attempts": job.max_attempts,
+        "queued_at": job.queued_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "last_error_code": job.last_error_code,
+    }
+
+
+def _job_from(record: Mapping[str, object]) -> Job:
+    try:
+        kind = JobKind(cast(str, record["kind"]))
+        status = JobStatus(cast(str, record["status"]))
+    except ValueError:
+        raise InvalidJob("stored job kind or status is not a known value") from None
+
+    return Job(
+        job_id=JobId(cast(UUID, record["job_id"])),
+        kind=kind,
+        target_id=cast(UUID, record["target_id"]),
+        status=status,
+        attempt=cast(int, record["attempt"]),
+        max_attempts=cast(int, record["max_attempts"]),
+        queued_at=cast(datetime, record["queued_at"]),
+        started_at=cast("datetime | None", record["started_at"]),
+        finished_at=cast("datetime | None", record["finished_at"]),
+        last_error_code=cast("str | None", record["last_error_code"]),
+    )
+
+
+def _audit_row(event: AuditEvent) -> dict[str, object]:
+    return {
+        "event_id": event.event_id.value,
+        "occurred_at": event.occurred_at,
+        "actor_id": event.actor_id.value if event.actor_id is not None else None,
+        "action": event.action.value,
+        "target_kind": event.target_kind.value,
+        "target_id": event.target_id,
+        "metadata": dict(event.metadata),
+    }
+
+
+def _audit_from(record: Mapping[str, object]) -> AuditEvent:
+    try:
+        action = AuditAction(cast(str, record["action"]))
+        target_kind = AuditTargetKind(cast(str, record["target_kind"]))
+    except ValueError:
+        raise InvalidAuditEvent(
+            "stored audit action or target kind is not a known value"
+        ) from None
+
+    actor_id = cast("UUID | None", record["actor_id"])
+    stored = cast("dict[str, object]", record["metadata"])
+    return AuditEvent(
+        event_id=AuditEventId(cast(UUID, record["event_id"])),
+        occurred_at=cast(datetime, record["occurred_at"]),
+        actor_id=UserId(actor_id) if actor_id is not None else None,
+        action=action,
+        target_kind=target_kind,
+        target_id=cast(UUID, record["target_id"]),
+        metadata=cast("dict[str, AuditValue]", stored),
+    )
+
+
+def _evaluation_row(run: EvaluationRun) -> dict[str, object]:
+    return {
+        "run_id": run.run_id.value,
+        "dataset_id": run.dataset_id.value,
+        "dataset_version": run.dataset_version,
+        "configuration_fingerprint": run.configuration_fingerprint,
+        "status": run.status.value,
+        "artifact_location": run.artifact_location,
+        "created_at": run.created_at,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+    }
+
+
+def _evaluation_from(record: Mapping[str, object]) -> EvaluationRun:
+    try:
+        status = EvaluationStatus(cast(str, record["status"]))
+    except ValueError:
+        raise InvalidEvaluationRun("stored run status is not a known value") from None
+
+    return EvaluationRun(
+        run_id=EvaluationRunId(cast(UUID, record["run_id"])),
+        dataset_id=EvaluationDatasetId(cast(UUID, record["dataset_id"])),
+        dataset_version=cast(int, record["dataset_version"]),
+        configuration_fingerprint=cast(str, record["configuration_fingerprint"]),
+        status=status,
+        artifact_location=cast("str | None", record["artifact_location"]),
+        created_at=cast(datetime, record["created_at"]),
+        started_at=cast("datetime | None", record["started_at"]),
+        finished_at=cast("datetime | None", record["finished_at"]),
     )
 
 
@@ -611,3 +826,83 @@ async def load_conversations_due_for_deletion(
     )
     records = (await connection.execute(statement)).mappings().all()
     return tuple(_conversation_from(dict(record)) for record in records)
+
+
+async def enqueue_job(connection: AsyncConnection, job: Job) -> JobId:
+    """Store a queued Job."""
+    await connection.execute(sa.insert(jobs).values(_job_row(job)))
+    return job.job_id
+
+
+async def load_job(connection: AsyncConnection, *, job_id: JobId) -> Job | None:
+    """Read a stored Job, if it exists."""
+    statement = sa.select(jobs).where(jobs.c.job_id == job_id.value)
+    record = (await connection.execute(statement)).mappings().one_or_none()
+    if record is None:
+        return None
+    return _job_from(dict(record))
+
+
+async def save_job(connection: AsyncConnection, *, job: Job) -> Job:
+    """Store the status a Job has reached."""
+    statement = (
+        sa.update(jobs).where(jobs.c.job_id == job.job_id.value).values(_job_row(job))
+    )
+    await connection.execute(statement)
+    return job
+
+
+async def record_audit_event(
+    connection: AsyncConnection, event: AuditEvent
+) -> AuditEventId:
+    """Append one audit event. There is no function that updates or deletes one."""
+    await connection.execute(sa.insert(audit_events).values(_audit_row(event)))
+    return event.event_id
+
+
+async def load_audit_events(
+    connection: AsyncConnection, *, target_id: UUID, limit: int
+) -> tuple[AuditEvent, ...]:
+    """Read the trail recorded against one target, oldest first."""
+    statement = (
+        sa.select(audit_events)
+        .where(audit_events.c.target_id == target_id)
+        .order_by(audit_events.c.occurred_at, audit_events.c.event_id)
+        .limit(limit)
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(_audit_from(dict(record)) for record in records)
+
+
+async def create_evaluation_run(
+    connection: AsyncConnection, run: EvaluationRun
+) -> EvaluationRunId:
+    """Store a planned Evaluation Run."""
+    await connection.execute(sa.insert(evaluation_runs).values(_evaluation_row(run)))
+    return run.run_id
+
+
+async def load_evaluation_run(
+    connection: AsyncConnection, *, run_id: EvaluationRunId
+) -> EvaluationRun | None:
+    """Read a stored Evaluation Run, if it exists."""
+    statement = sa.select(evaluation_runs).where(
+        evaluation_runs.c.run_id == run_id.value
+    )
+    record = (await connection.execute(statement)).mappings().one_or_none()
+    if record is None:
+        return None
+    return _evaluation_from(dict(record))
+
+
+async def save_evaluation_run(
+    connection: AsyncConnection, *, run: EvaluationRun
+) -> EvaluationRun:
+    """Store the status a run has reached."""
+    statement = (
+        sa.update(evaluation_runs)
+        .where(evaluation_runs.c.run_id == run.run_id.value)
+        .values(_evaluation_row(run))
+    )
+    await connection.execute(statement)
+    return run
