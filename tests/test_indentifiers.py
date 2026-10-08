@@ -5,6 +5,7 @@ from itertools import combinations
 import pytest
 
 from knowledge_service.identifiers import (
+    AccessGrantId,
     ChunkId,
     ConversationId,
     DocumentId,
@@ -24,6 +25,7 @@ ID_TYPES: tuple[type[StableIdentifier], ...] = (
     ChunkId,
     UserId,
     GroupId,
+    AccessGrantId,
     ConversationId,
     SynchronizationRunId,
     EvaluationRunId,

@@ -7,7 +7,7 @@ depends_on: ["M02-T07"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["access-grant tables"]
-status: planned
+status: completed
 ---
 
 # M02-T08 — Persist normalized Access Grants

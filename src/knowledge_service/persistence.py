@@ -1,8 +1,8 @@
-"""PostgreSQL persistence for Documents.
+"""PostgreSQL persistence for Documents, Chunks, and Access Grants.
 
-Domain values stay free of SQLAlchemy. This module owns the stored table shape,
-the translation between a Document and a row, and the statements that read and
-write it.
+Domain values stay free of SQLAlchemy. This module owns the stored table shapes,
+the translation between a domain value and a row, and the statements that read
+and write them.
 """
 
 from collections.abc import Mapping, Sequence
@@ -14,6 +14,13 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from knowledge_service.access import (
+    AccessGrant,
+    InvalidGrant,
+    Subject,
+    SubjectKind,
+    granted_subjects,
+)
 from knowledge_service.chunks import Chunk, StaleChunkWrite, ordered_chunks
 from knowledge_service.documents import (
     AuthorizationVersion,
@@ -23,7 +30,14 @@ from knowledge_service.documents import (
     DocumentProvenance,
     InvalidDocument,
 )
-from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
+from knowledge_service.identifiers import (
+    AccessGrantId,
+    ChunkId,
+    DocumentId,
+    GroupId,
+    SourceId,
+    UserId,
+)
 
 metadata = sa.MetaData()
 
@@ -80,6 +94,36 @@ chunks = sa.Table(
     sa.CheckConstraint("content_version >= 1", name="ck_chunks_content_version"),
     sa.CheckConstraint("ordinal >= 0", name="ck_chunks_ordinal"),
     sa.CheckConstraint("token_count >= 1", name="ck_chunks_token_count"),
+)
+
+access_grants = sa.Table(
+    "access_grants",
+    metadata,
+    sa.Column("grant_id", sa.Uuid(), primary_key=True),
+    sa.Column(
+        "document_id",
+        sa.Uuid(),
+        sa.ForeignKey("documents.document_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("subject_kind", sa.String(length=8), nullable=False),
+    sa.Column("subject_id", sa.Uuid(), nullable=True),
+    sa.Column("granted_at", sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint(
+        "subject_kind in ('public', 'user', 'group')",
+        name="ck_access_grants_subject_kind",
+    ),
+    sa.CheckConstraint(
+        "(subject_kind = 'public') = (subject_id is null)",
+        name="ck_access_grants_subject_id",
+    ),
+    sa.UniqueConstraint(
+        "document_id",
+        "subject_kind",
+        "subject_id",
+        name="uq_access_grants_document_subject",
+        postgresql_nulls_not_distinct=True,
+    ),
 )
 
 
@@ -151,6 +195,39 @@ def _chunk_from(record: Mapping[str, object]) -> Chunk:
         token_count=cast(int, record["token_count"]),
         content_fingerprint=cast(str, record["content_fingerprint"]),
         source_anchor=cast("str | None", record["source_anchor"]),
+    )
+
+
+def _grant_row(grant: AccessGrant) -> dict[str, object]:
+    identifier = grant.subject.identifier
+    return {
+        "grant_id": grant.grant_id.value,
+        "document_id": grant.document_id.value,
+        "subject_kind": grant.subject.kind.value,
+        "subject_id": identifier.value if identifier is not None else None,
+        "granted_at": grant.granted_at,
+    }
+
+
+def _grant_from(record: Mapping[str, object]) -> AccessGrant:
+    try:
+        kind = SubjectKind(cast(str, record["subject_kind"]))
+    except ValueError:
+        raise InvalidGrant("stored subject kind is not a known value") from None
+
+    stored_id = cast("UUID | None", record["subject_id"])
+    if kind is SubjectKind.PUBLIC:
+        subject = Subject.public()
+    elif kind is SubjectKind.USER:
+        subject = Subject.user(UserId(cast(UUID, stored_id)))
+    else:
+        subject = Subject.group(GroupId(cast(UUID, stored_id)))
+
+    return AccessGrant(
+        grant_id=AccessGrantId(cast(UUID, record["grant_id"])),
+        document_id=DocumentId(cast(UUID, record["document_id"])),
+        subject=subject,
+        granted_at=cast(datetime, record["granted_at"]),
     )
 
 
@@ -242,3 +319,37 @@ async def load_chunks(
     )
     records = (await connection.execute(statement)).mappings().all()
     return tuple(_chunk_from(dict(record)) for record in records)
+
+
+async def replace_access_grants(
+    connection: AsyncConnection,
+    *,
+    document_id: DocumentId,
+    grant_run: Sequence[AccessGrant],
+) -> tuple[AccessGrant, ...]:
+    """Replace every stored Access Grant for a Document with the given set."""
+    ordered = granted_subjects(document_id=document_id, grants=grant_run)
+
+    await connection.execute(
+        sa.delete(access_grants).where(access_grants.c.document_id == document_id.value)
+    )
+    if ordered:
+        await connection.execute(
+            sa.insert(access_grants), [_grant_row(grant) for grant in ordered]
+        )
+    return ordered
+
+
+async def load_access_grants(
+    connection: AsyncConnection,
+    *,
+    document_id: DocumentId,
+) -> tuple[AccessGrant, ...]:
+    """Read the stored Access Grants for a Document."""
+    statement = (
+        sa.select(access_grants)
+        .where(access_grants.c.document_id == document_id.value)
+        .order_by(access_grants.c.subject_kind, access_grants.c.subject_id)
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(_grant_from(dict(record)) for record in records)

@@ -64,6 +64,10 @@ class GroupId(StableIdentifier):
     """Internal identity of a Group."""
 
 
+class AccessGrantId(StableIdentifier):
+    """Internal identity of an Access Grant."""
+
+
 class ConversationId(StableIdentifier):
     """Internal identity of a Conversation."""
 
