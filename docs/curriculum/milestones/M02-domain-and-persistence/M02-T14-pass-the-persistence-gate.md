@@ -7,7 +7,7 @@ depends_on: ["M02-T13"]
 estimate: 90m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["M02 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M02-T14 — Pass the persistence understanding gate

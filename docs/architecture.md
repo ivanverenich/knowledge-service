@@ -51,6 +51,51 @@ flowchart TD
 
 Domain values do not import FastAPI, Dramatiq, SQLAlchemy, OpenAI SDKs, or LangGraph. Transport adapters translate protocol data into application requests and translate results back. The OpenAI-compatible interface adapts to the same question-answer module as the native interface.
 
+## Data model
+
+Every row is named by an opaque identifier it keeps for its whole life:
+`source_id`, `document_id`, `chunk_id`, `conversation_id`, `message_id`,
+`run_id`, `job_id`, `event_id`, `grant_id`. Nothing is identified by a natural
+key or a position, so identity survives a rename, a move, or a re-ingest.
+
+A Document carries two versions that move independently. `content_version` rises
+when its text changes, and `authorization_version` rises when who may read it
+changes. Chunks record the `content_version` they were written from, and a
+publication refuses a Chunk run that disagrees with the Document or that is older
+than the one already stored. An authorization change therefore leaves the content
+version alone, so the same text is never split again; a content change is the
+only thing that produces a different Chunk run.
+
+```mermaid
+erDiagram
+    sources ||--o{ documents : "owns"
+    sources ||--o{ synchronization_runs : "records"
+    documents ||--o{ chunks : "is split into"
+    documents ||--o{ access_grants : "is reachable through"
+    conversations ||--o{ messages : "holds"
+    messages ||--o{ message_feedback : "is rated by"
+```
+
+The rules each table enforces:
+
+| Table | Rule |
+|---|---|
+| `sources` | One Source per `(kind, location)`. |
+| `synchronization_runs` | A Source has at most one run in flight; a finished run leaves the way clear for the next. |
+| `documents` | One Document per `(source_id, external_id)`; `content_version >= 1`; availability is `available` or `tombstoned`. |
+| `chunks` | One Chunk per `(document_id, ordinal)`; `token_count >= 1`; a Chunk's `content_version` is at least 1. |
+| `access_grants` | One Grant per `(document_id, subject_kind, subject_id)`; a `public` Grant carries no subject and every other kind carries one. |
+| `conversations` | `retention_deadline > created_at`; `last_message_at >= created_at`. |
+| `messages` | One Message per `(conversation_id, ordinal)`. |
+| `message_feedback` | One rating per `(message_id, user_id)`, replaced when the same User rates again. |
+| `jobs` | A status that agrees with the timestamps it carries; a bounded attempt count; a capped error code. |
+| `audit_events` | No raw content, and a metadata bag capped at 1024 bytes. |
+| `evaluation_runs` | An artifact location only once the run has succeeded. |
+
+A rule that spans rows of one table, such as one running Synchronization Run per
+Source, is enforced by a partial unique index rather than a check constraint,
+because a check constraint can only see the row it is written on.
+
 ## Runtime flows
 
 ### Synchronization

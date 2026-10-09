@@ -111,6 +111,12 @@ synchronization_runs = sa.Table(
         "source_id",
         "started_at",
     ),
+    sa.Index(
+        "uq_synchronization_runs_running_source",
+        "source_id",
+        unique=True,
+        postgresql_where=sa.text("status = 'running'"),
+    ),
 )
 
 documents = sa.Table(

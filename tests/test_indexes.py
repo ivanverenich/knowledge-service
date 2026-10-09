@@ -10,6 +10,7 @@ ACCESS_PATTERN_INDEXES = {
     "ix_audit_events_target_occurred_at",
     "ix_conversations_retention_deadline",
     "ix_synchronization_runs_source_started_at",
+    "uq_synchronization_runs_running_source",
 }
 
 
