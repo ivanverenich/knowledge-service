@@ -7,7 +7,7 @@ and write them.
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -106,6 +106,11 @@ synchronization_runs = sa.Table(
         "(status = 'running') = (finished_at is null)",
         name="ck_synchronization_runs_finished_at",
     ),
+    sa.Index(
+        "ix_synchronization_runs_source_started_at",
+        "source_id",
+        "started_at",
+    ),
 )
 
 documents = sa.Table(
@@ -191,6 +196,12 @@ access_grants = sa.Table(
         name="uq_access_grants_document_subject",
         postgresql_nulls_not_distinct=True,
     ),
+    sa.Index(
+        "ix_access_grants_subject_document",
+        "subject_kind",
+        "subject_id",
+        "document_id",
+    ),
 )
 
 conversations = sa.Table(
@@ -211,6 +222,11 @@ conversations = sa.Table(
     sa.CheckConstraint(
         "deleted_at is null or deleted_at >= created_at",
         name="ck_conversations_deleted_at",
+    ),
+    sa.Index(
+        "ix_conversations_retention_deadline",
+        "retention_deadline",
+        postgresql_where=sa.text("deleted_at is null"),
     ),
 )
 
@@ -312,6 +328,12 @@ audit_events = sa.Table(
     sa.CheckConstraint(
         "pg_column_size(metadata) <= 1024", name="ck_audit_events_metadata_size"
     ),
+    sa.Index(
+        "ix_audit_events_target_occurred_at",
+        "target_id",
+        "occurred_at",
+        "event_id",
+    ),
 )
 
 evaluation_runs = sa.Table(
@@ -344,6 +366,47 @@ evaluation_runs = sa.Table(
         name="ck_evaluation_runs_started_at",
     ),
 )
+
+
+def due_conversations_statement(now: datetime, limit: int) -> sa.Select[Any]:
+    """Select live Conversations whose retention deadline has passed."""
+    return (
+        sa.select(conversations)
+        .where(
+            conversations.c.deleted_at.is_(None),
+            conversations.c.retention_deadline <= now,
+        )
+        .order_by(conversations.c.retention_deadline)
+        .limit(limit)
+    )
+
+
+def audit_trail_statement(target_id: UUID, limit: int) -> sa.Select[Any]:
+    """Select the trail recorded against one target, oldest first."""
+    return (
+        sa.select(audit_events)
+        .where(audit_events.c.target_id == target_id)
+        .order_by(audit_events.c.occurred_at, audit_events.c.event_id)
+        .limit(limit)
+    )
+
+
+def source_runs_statement(source_id: UUID, limit: int) -> sa.Select[Any]:
+    """Select the most recent Synchronization Runs of one Source."""
+    return (
+        sa.select(synchronization_runs)
+        .where(synchronization_runs.c.source_id == source_id)
+        .order_by(synchronization_runs.c.started_at.desc())
+        .limit(limit)
+    )
+
+
+def subject_grants_statement(subject_kind: str, subject_id: UUID) -> sa.Select[Any]:
+    """Select the Documents one verified subject is allowed to reach."""
+    return sa.select(access_grants.c.document_id).where(
+        access_grants.c.subject_kind == subject_kind,
+        access_grants.c.subject_id == subject_id,
+    )
 
 
 def as_row(document: Document) -> dict[str, object]:
@@ -854,15 +917,7 @@ async def load_conversations_due_for_deletion(
     connection: AsyncConnection, *, now: datetime, limit: int
 ) -> tuple[Conversation, ...]:
     """Select live Conversations whose retention deadline has passed."""
-    statement = (
-        sa.select(conversations)
-        .where(
-            conversations.c.deleted_at.is_(None),
-            conversations.c.retention_deadline <= now,
-        )
-        .order_by(conversations.c.retention_deadline)
-        .limit(limit)
-    )
+    statement = due_conversations_statement(now=now, limit=limit)
     records = (await connection.execute(statement)).mappings().all()
     return tuple(_conversation_from(dict(record)) for record in records)
 
@@ -903,12 +958,7 @@ async def load_audit_events(
     connection: AsyncConnection, *, target_id: UUID, limit: int
 ) -> tuple[AuditEvent, ...]:
     """Read the trail recorded against one target, oldest first."""
-    statement = (
-        sa.select(audit_events)
-        .where(audit_events.c.target_id == target_id)
-        .order_by(audit_events.c.occurred_at, audit_events.c.event_id)
-        .limit(limit)
-    )
+    statement = audit_trail_statement(target_id=target_id, limit=limit)
     records = (await connection.execute(statement)).mappings().all()
     return tuple(_audit_from(dict(record)) for record in records)
 

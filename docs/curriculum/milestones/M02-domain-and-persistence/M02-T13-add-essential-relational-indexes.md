@@ -7,7 +7,7 @@ depends_on: ["M02-T12"]
 estimate: 75m
 topics: ["postgresql","domain-model","migrations"]
 deliverables: ["relational indexes","query-plan evidence"]
-status: planned
+status: completed
 ---
 
 # M02-T13 — Add essential relational indexes
