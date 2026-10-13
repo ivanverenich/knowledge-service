@@ -36,7 +36,19 @@ These files describe work; they are not the finished implementation. Do not skip
 
 ## Developer commands
 
-Run the development loop through the repository `Makefile`:
+Run the development loop through a single entry point, the repository
+`Makefile`:
+
+```text
+make do_good
+```
+
+That prints a numbered menu of every documented command and runs the one you
+choose. A bare `make` opens the same menu, so the only command you need to
+remember is `make do_good`.
+
+The individual targets stay available for scripts and CI; run them directly when
+you already know what you want:
 
 ```text
 make setup             Sync the locked development environment
@@ -47,8 +59,17 @@ make typecheck         Run Pyright
 make test-unit         Run deterministic unit tests
 make test-integration  Run non-live integration tests
 make check             Run every non-live quality gate with coverage
+make docs-check        Validate the documentation under docs/
+```
 
-Example of the command: UV_CACHE_DIR=/tmp/uv-cache-rag-project make test-unit
+Example of a direct command: UV_CACHE_DIR=/tmp/uv-cache-rag-project make test-unit
+
+The menu is built from the `## description` comment on each target, so a new
+command shows up in it automatically once you document it:
+
+```make
+my-task: ## Short description shown in the menu
+	the command to run
 ```
 
 ## Pre-commit hooks
