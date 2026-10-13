@@ -7,12 +7,25 @@ credential its adapter needs, never the credential itself.
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Protocol
 
 from knowledge_service.identifiers import SourceId, SynchronizationRunId
 
 
 class InvalidSource(ValueError):
     """A Source, checkpoint, or Synchronization Run violates an invariant."""
+
+
+class SourceError(Exception):
+    """Base error for failures a Source adapter reports."""
+
+
+class SourceUnavailable(SourceError):
+    """The Source cannot currently be reached or read."""
+
+
+class SourceUnauthorized(SourceError):
+    """The Source refused the configured credentials."""
 
 
 class SourceKind(StrEnum):
@@ -111,6 +124,114 @@ class Source:
         if observed_at < self.updated_at:
             raise InvalidSource("observed_at must not be earlier than updated_at")
         return observed_at
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAccess:
+    """Who a Source reports may read one item, before normalization."""
+
+    public: bool
+    principals: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.public and self.principals:
+            raise InvalidSource("a public source item must not list principals")
+        for principal in self.principals:
+            if not principal.strip():
+                raise InvalidSource("a source principal must not be empty")
+        if len(set(self.principals)) != len(self.principals):
+            raise InvalidSource("source principals must be unique")
+
+
+class SourceRecordState(StrEnum):
+    """Whether a Source still offers an item or reports it gone."""
+
+    PRESENT = "present"
+    DELETED = "deleted"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecord:
+    """One item a Source returns, before normalization."""
+
+    external_id: str
+    version: str | None
+    state: SourceRecordState
+    access: SourceAccess | None = None
+    media_type: str | None = None
+    content: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if not self.external_id.strip():
+            raise InvalidSource("source record external_id must not be empty")
+        if self.version is not None and not self.version.strip():
+            raise InvalidSource("source record version must not be empty when provided")
+        if self.state is SourceRecordState.DELETED:
+            if (
+                self.access is not None
+                or self.media_type is not None
+                or self.content is not None
+            ):
+                raise InvalidSource("a deleted source record carries identity only")
+            return
+        if self.access is None:
+            raise InvalidSource("a present source record must carry access")
+        if self.media_type is None or not self.media_type.strip():
+            raise InvalidSource("a present source record must carry a media type")
+        if self.content is None:
+            raise InvalidSource("a present source record must carry content")
+
+    @classmethod
+    def present(
+        cls,
+        *,
+        external_id: str,
+        version: str | None,
+        media_type: str,
+        content: bytes,
+        access: SourceAccess,
+    ) -> SourceRecord:
+        return cls(
+            external_id=external_id,
+            version=version,
+            state=SourceRecordState.PRESENT,
+            access=access,
+            media_type=media_type,
+            content=content,
+        )
+
+    @classmethod
+    def deleted(cls, *, external_id: str, version: str | None) -> SourceRecord:
+        return cls(
+            external_id=external_id,
+            version=version,
+            state=SourceRecordState.DELETED,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePage:
+    """One page of records plus the checkpoint that resumes after it."""
+
+    records: tuple[SourceRecord, ...]
+    next_checkpoint: str | None
+
+    def __post_init__(self) -> None:
+        if self.next_checkpoint is not None and not self.next_checkpoint.strip():
+            raise InvalidSource("a next checkpoint must not be empty when provided")
+
+
+class SourcePort(Protocol):
+    """A paginated origin of raw Source Records."""
+
+    async def fetch_page(
+        self,
+        *,
+        checkpoint: str | None,
+        page_size: int,
+    ) -> SourcePage:
+        """Return the page after `checkpoint`, or the first page when None."""
+        ...
 
 
 class RunStatus(StrEnum):

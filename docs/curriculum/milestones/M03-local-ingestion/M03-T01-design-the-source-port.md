@@ -7,7 +7,7 @@ depends_on: ["M02-T14"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["Source port","fake source adapter"]
-status: planned
+status: completed
 ---
 
 # M03-T01 — Design the Source port
