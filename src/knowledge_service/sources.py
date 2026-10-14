@@ -28,6 +28,14 @@ class SourceUnauthorized(SourceError):
     """The Source refused the configured credentials."""
 
 
+class UndecodableSourceContent(SourceError):
+    """A source item's bytes are not valid UTF-8 text."""
+
+    def __init__(self, external_id: str) -> None:
+        super().__init__(f"source item {external_id!r} is not valid UTF-8 text")
+        self.external_id = external_id
+
+
 class SourceKind(StrEnum):
     """The kind of origin a Source reads from."""
 
@@ -143,6 +151,22 @@ class SourceAccess:
             raise InvalidSource("source principals must be unique")
 
 
+@dataclass(frozen=True, slots=True)
+class SourceMetadata:
+    """Descriptive facts a Source reports about one item, before normalization."""
+
+    title: str
+    modified_at: datetime
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        if not self.title.strip():
+            raise InvalidSource("source metadata title must not be empty")
+        _require_utc(self.modified_at, "modified_at")
+        if self.size_bytes < 0:
+            raise InvalidSource("source metadata size must not be negative")
+
+
 class SourceRecordState(StrEnum):
     """Whether a Source still offers an item or reports it gone."""
 
@@ -160,6 +184,7 @@ class SourceRecord:
     access: SourceAccess | None = None
     media_type: str | None = None
     content: bytes | None = None
+    metadata: SourceMetadata | None = None
 
     def __post_init__(self) -> None:
         if not self.external_id.strip():
@@ -171,6 +196,7 @@ class SourceRecord:
                 self.access is not None
                 or self.media_type is not None
                 or self.content is not None
+                or self.metadata is not None
             ):
                 raise InvalidSource("a deleted source record carries identity only")
             return
@@ -190,6 +216,7 @@ class SourceRecord:
         media_type: str,
         content: bytes,
         access: SourceAccess,
+        metadata: SourceMetadata | None = None,
     ) -> SourceRecord:
         return cls(
             external_id=external_id,
@@ -198,6 +225,7 @@ class SourceRecord:
             access=access,
             media_type=media_type,
             content=content,
+            metadata=metadata,
         )
 
     @classmethod

@@ -7,7 +7,7 @@ depends_on: ["M03-T01"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["plain-text source adapter"]
-status: planned
+status: completed
 ---
 
 # M03-T02 — Ingest plain-text files
