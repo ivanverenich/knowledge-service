@@ -1,0 +1,122 @@
+[
+  {
+    "kind": "heading",
+    "text": "Onboarding guide",
+    "start": 263,
+    "end": 288,
+    "heading_level": 1,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "Read the security policy before your first deploy. Tom & Jerry use make check.",
+    "start": 295,
+    "end": 449,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": [
+      {
+        "text": "security policy",
+        "target": "https://example.com/security"
+      }
+    ]
+  },
+  {
+    "kind": "heading",
+    "text": "Steps",
+    "start": 456,
+    "end": 470,
+    "heading_level": 2,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "list_item",
+    "text": "Clone the repository.",
+    "start": 490,
+    "end": 520,
+    "heading_level": null,
+    "list_depth": 1,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "list_item",
+    "text": "Install the tools:",
+    "start": 533,
+    "end": 551,
+    "heading_level": null,
+    "list_depth": 1,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "list_item",
+    "text": "uv",
+    "start": 579,
+    "end": 590,
+    "heading_level": null,
+    "list_depth": 2,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "list_item",
+    "text": "PostgreSQL",
+    "start": 603,
+    "end": 622,
+    "heading_level": null,
+    "list_depth": 2,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "code",
+    "text": "make setup\nmake check",
+    "start": 671,
+    "end": 738,
+    "heading_level": null,
+    "list_depth": null,
+    "language": "bash",
+    "links": []
+  },
+  {
+    "kind": "table",
+    "text": "Tool | Version\nuv | 0.9\nPython | 3.14",
+    "start": 745,
+    "end": 938,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": [
+      {
+        "text": "Python",
+        "target": "https://www.python.org"
+      }
+    ]
+  },
+  {
+    "kind": "heading",
+    "text": "Посилання",
+    "start": 945,
+    "end": 963,
+    "heading_level": 3,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "Текст українською.",
+    "start": 970,
+    "end": 999,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  }
+]

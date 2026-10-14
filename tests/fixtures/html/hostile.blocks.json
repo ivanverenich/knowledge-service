@@ -1,0 +1,82 @@
+[
+  {
+    "kind": "paragraph",
+    "text": "Click handlers are dropped with the attribute.",
+    "start": 0,
+    "end": 75,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "Inline script is removed.",
+    "start": 76,
+    "end": 140,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "script link and encoded link and data link keep only their text.",
+    "start": 141,
+    "end": 324,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "Back to top is not a link target.",
+    "start": 325,
+    "end": 384,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "Unclosed paragraph",
+    "start": 706,
+    "end": 727,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "Second paragraph with bold nesting mistakes",
+    "start": 728,
+    "end": 788,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "list_item",
+    "text": "open item",
+    "start": 793,
+    "end": 806,
+    "heading_level": null,
+    "list_depth": 1,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "list_item",
+    "text": "another item",
+    "start": 806,
+    "end": 822,
+    "heading_level": null,
+    "list_depth": 1,
+    "language": null,
+    "links": []
+  }
+]

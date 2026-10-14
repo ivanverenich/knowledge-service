@@ -1,0 +1,17 @@
+<div onclick="steal()">Click handlers are dropped with the attribute.</div>
+<p>Inline <script>alert("inline")</script>script is removed.</p>
+<p><a href="javascript:alert(1)">script link</a> and
+<a href="java&#x09;script:alert(2)">encoded link</a> and
+<a href="data:text/html,<b>x</b>">data link</a> keep only their text.</p>
+<p><a href="#top">Back to top</a> is not a link target.</p>
+<iframe src="https://evil.example"><p>iframe fallback</p></iframe>
+<svg><script>alert("svg")</script><text>svg text</text></svg>
+<div hidden>Hidden text</div>
+<div aria-hidden="true">Decorative text</div>
+<div role="navigation">Menu text</div>
+<noscript>Enable JavaScript</noscript>
+<!-- a comment with <p>markup</p> -->
+<p>Unclosed paragraph
+<p>Second paragraph with <b>bold <i>nesting</b></i> mistakes
+<ul><li>open item<li>another item</ul>
+<table><tr><td></td><td></td></tr></table>

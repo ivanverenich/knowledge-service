@@ -80,7 +80,8 @@ How `parse_markdown` works and why:
 - **Safety.** Raw HTML blocks are dropped, so a `<script>` block never reaches
   the index. Inline HTML tags are dropped too, but text between them stays as
   plain text: `Hi <script>alert(1)</script> there` becomes `Hi alert(1)
-  there`. It cannot execute, but sanitizing it properly is M03-T04's job. Unsafe link targets such as `javascript:` are refused by
+  there`. It cannot execute. M03-T04 sanitizes HTML documents only; Markdown's inline
+  HTML text is still kept as plain text. Unsafe link targets such as `javascript:` are refused by
   `markdown-it-py` and stay plain text. Input over 1,000,000 characters raises
   `DocumentTooLarge`.
 - **Format-neutral.** The model lives in `structure.py`, so the HTML and PDF

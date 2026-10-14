@@ -7,7 +7,7 @@ depends_on: ["M03-T03"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["HTML parser"]
-status: planned
+status: completed
 ---
 
 # M03-T04 — Parse HTML safely
