@@ -1,0 +1,62 @@
+[
+  {
+    "kind": "paragraph",
+    "text": "#No space means this is not a heading",
+    "start": 0,
+    "end": 37,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "An [unclosed link](https://example.com and *unclosed emphasis.",
+    "start": 39,
+    "end": 101,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "table",
+    "text": "a | b\nonly one cell | \none | two",
+    "start": 150,
+    "end": 209,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "A [script link][unsafe] is kept as text.",
+    "start": 211,
+    "end": 251,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "paragraph",
+    "text": "[unsafe]: javascript:alert(1)",
+    "start": 253,
+    "end": 282,
+    "heading_level": null,
+    "list_depth": null,
+    "language": null,
+    "links": []
+  },
+  {
+    "kind": "code",
+    "text": "print(\"the fence is never closed\")",
+    "start": 284,
+    "end": 328,
+    "heading_level": null,
+    "list_depth": null,
+    "language": "python",
+    "links": []
+  }
+]

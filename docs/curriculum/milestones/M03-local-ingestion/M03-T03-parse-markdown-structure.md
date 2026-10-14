@@ -7,7 +7,7 @@ depends_on: ["M03-T02"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["Markdown parser","golden fixtures"]
-status: planned
+status: completed
 ---
 
 # M03-T03 — Parse Markdown structure
