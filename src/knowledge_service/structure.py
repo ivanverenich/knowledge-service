@@ -20,6 +20,18 @@ class DocumentTooLarge(DocumentParseError):
     """The content is longer than the parser accepts."""
 
 
+class EncryptedDocument(DocumentParseError):
+    """The content needs a password to read."""
+
+
+class CorruptDocument(DocumentParseError):
+    """The bytes are not a readable document of the expected format."""
+
+
+class NoTextLayer(DocumentParseError):
+    """The document has no extractable text, and OCR is not supported."""
+
+
 class BlockKind(StrEnum):
     """The structural role of one block."""
 
@@ -54,8 +66,11 @@ class StructuralBlock:
     list_depth: int | None = None
     language: str | None = None
     links: tuple[Link, ...] = ()
+    page: int | None = None
 
     def __post_init__(self) -> None:
+        if self.page is not None and self.page < 1:
+            raise InvalidBlock("page numbers start at 1")
         if self.start < 0 or self.end < self.start:
             raise InvalidBlock("block offsets must satisfy 0 <= start <= end")
         if self.kind is not BlockKind.CODE and not self.text.strip():
