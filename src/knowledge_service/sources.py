@@ -28,14 +28,6 @@ class SourceUnauthorized(SourceError):
     """The Source refused the configured credentials."""
 
 
-class UndecodableSourceContent(SourceError):
-    """A source item's bytes are not valid UTF-8 text."""
-
-    def __init__(self, external_id: str) -> None:
-        super().__init__(f"source item {external_id!r} is not valid UTF-8 text")
-        self.external_id = external_id
-
-
 class SourceKind(StrEnum):
     """The kind of origin a Source reads from."""
 

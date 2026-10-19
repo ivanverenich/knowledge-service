@@ -13,7 +13,6 @@ from knowledge_service.sources import (
     SourcePort,
     SourceRecord,
     SourceUnavailable,
-    UndecodableSourceContent,
 )
 
 PUBLIC = SourceAccess(public=True)
@@ -47,7 +46,7 @@ async def test_nested_files_come_back_sorted_by_relative_path(tmp_path: Path) ->
     write(tmp_path, "b.txt", b"second")
     write(tmp_path, "a/z.txt", b"nested")
     write(tmp_path, "a.txt", b"first")
-    write(tmp_path, "notes.md", b"# not plain text")
+    write(tmp_path, "notes.rtf", b"{\\rtf1 unsupported}")
 
     records = await read_all(DirectorySource(tmp_path, access=PUBLIC))
 
@@ -119,23 +118,33 @@ async def test_a_blank_file_name_falls_back_to_the_path_as_title(
     assert record.metadata.title == " .txt"
 
 
-async def test_utf8_text_is_kept_and_a_byte_order_mark_removed(tmp_path: Path) -> None:
-    write(tmp_path, "uk.txt", b"\xef\xbb\xbf" + "привіт".encode())
+async def test_each_supported_extension_gets_its_media_type(tmp_path: Path) -> None:
+    for name in ("a.txt", "b.md", "c.html", "d.pdf", "e.MD"):
+        write(tmp_path, name, b"content")
 
-    [record] = await read_all(DirectorySource(tmp_path, access=PUBLIC))
+    records = await read_all(DirectorySource(tmp_path, access=PUBLIC))
 
-    assert record.content == "привіт".encode()
+    assert [(record.external_id, record.media_type) for record in records] == [
+        ("a.txt", "text/plain"),
+        ("b.md", "text/markdown"),
+        ("c.html", "text/html"),
+        ("d.pdf", "application/pdf"),
+        ("e.MD", "text/markdown"),
+    ]
 
 
-async def test_invalid_utf8_raises_a_typed_error_naming_the_file(
-    tmp_path: Path,
-) -> None:
+async def test_file_bytes_are_delivered_unchanged(tmp_path: Path) -> None:
+    # Decoding belongs to normalization, so a byte-order mark and bytes that
+    # are not UTF-8 both reach the record as they are on disk.
+    write(tmp_path, "bom.txt", b"\xef\xbb\xbf" + "привіт".encode())
     write(tmp_path, "bad.txt", b"\xff\xfe broken")
 
-    with pytest.raises(UndecodableSourceContent) as caught:
-        await read_all(DirectorySource(tmp_path, access=PUBLIC))
+    records = await read_all(DirectorySource(tmp_path, access=PUBLIC))
 
-    assert caught.value.external_id == "bad.txt"
+    assert [record.content for record in records] == [
+        b"\xff\xfe broken",
+        b"\xef\xbb\xbf" + "привіт".encode(),
+    ]
 
 
 async def test_symbolic_links_are_never_followed(tmp_path: Path) -> None:

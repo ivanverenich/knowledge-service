@@ -7,7 +7,7 @@ depends_on: ["M03-T05"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["normalization module"]
-status: planned
+status: completed
 ---
 
 # M03-T06 — Normalize Source Records into Documents

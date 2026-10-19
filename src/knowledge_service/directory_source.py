@@ -1,4 +1,8 @@
-"""A Source adapter that reads plain-text files from one local directory.
+"""A Source adapter that reads document files from one local directory.
+
+The adapter delivers each file's bytes unchanged, with a media type chosen by
+its extension. Decoding and parsing belong to normalization, so a file that
+cannot be read as text is quarantined there instead of failing the whole read.
 
 A file's identity is its path relative to the root, written with forward
 slashes. Records come back sorted by that path, and the checkpoint is the last
@@ -18,14 +22,18 @@ from knowledge_service.sources import (
     SourcePage,
     SourceRecord,
     SourceUnavailable,
-    UndecodableSourceContent,
 )
 
-_MEDIA_TYPES = {".txt": "text/plain"}
+_MEDIA_TYPES = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".html": "text/html",
+    ".pdf": "application/pdf",
+}
 
 
 class DirectorySource:
-    """SourcePort over the plain-text files under one local directory."""
+    """SourcePort over the document files under one local directory."""
 
     def __init__(self, root: Path, *, access: SourceAccess) -> None:
         self._root = root
@@ -72,12 +80,11 @@ class DirectorySource:
             return None
         except OSError as error:
             raise SourceUnavailable("source file could not be read") from error
-        content = _decode(raw, external_id)
         return SourceRecord.present(
             external_id=external_id,
-            version=hashlib.sha256(content).hexdigest(),
+            version=hashlib.sha256(raw).hexdigest(),
             media_type=_MEDIA_TYPES[path.suffix.lower()],
-            content=content,
+            content=raw,
             access=self._access,
             metadata=SourceMetadata(
                 title=path.stem.strip() or external_id,
@@ -88,7 +95,7 @@ class DirectorySource:
 
 
 def _list_files(root: Path) -> list[str]:
-    """Return every plain-text file under `root` as a sorted relative path.
+    """Return every supported file under `root` as a sorted relative path.
 
     A folder that cannot be read raises instead of being skipped: a missing
     file would otherwise look deleted.
@@ -105,14 +112,3 @@ def _list_files(root: Path) -> list[str]:
 
 def _raise(error: OSError) -> None:
     raise error
-
-
-def _decode(raw: bytes, external_id: str) -> bytes:
-    """Return the text as UTF-8 bytes without a byte-order mark."""
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
-        raise UndecodableSourceContent(external_id) from error
-    if "\x00" in text:
-        raise UndecodableSourceContent(external_id)
-    return text.encode("utf-8")
