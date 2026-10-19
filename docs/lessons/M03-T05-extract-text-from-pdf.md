@@ -697,6 +697,476 @@ Fill in `## Design`, `## Verification`, and `## Reflection`. Answer these questi
 
 **Check:** every command passes, and the evidence explains the design in your words.
 
+### Step 6 — Coding step: keep memory bounded while measuring pages
+
+The review after Step 5 broke the "extraction is bounded" invariant. The per-page size check runs too late, so a small file can still use a lot of memory.
+
+| Attack | What happens in the Step 3 code | Measured |
+|---|---|---|
+| A page paints 20 forms that each inflate to 50 MB | `_form_bytes` decodes every form, and only then compares the total with the limit | 976 KB file, 1,076 MB peak |
+| A page lists 20 content streams in a `/Contents` array | `get_contents()` decodes and joins them all before the check | 975 KB file, 231 MB peak |
+| A page uses 4 fonts whose `/ToUnicode` maps each inflate to 50 MB | Fonts are not counted at all; `extract_text` decodes their maps | 196 KB file, 275 MB peak, and the page is accepted |
+| 130 pages, each just under the 1 MB limit | `pypdf` keeps every decoded object in a cache, `reader.resolved_objects`, until parsing ends | 0.55 MB file, 120 MB peak |
+
+A **decompression bomb** is a small compressed stream that inflates to a huge one. Spaces compress about 1000 to 1, so 50 MB of spaces is about 50 KB in the file.
+
+**Decision: decode one stream at a time and stop as soon as the running total passes the limit.** The walk covers every stream that `extract_text` decodes: content streams, forms (recursively), each font's `/ToUnicode` map, and, for a Type1 font without one, its embedded `/FontFile` or `/FontFile3`. Peak memory is then about the limit plus one stream, and `pypdf` already caps one decoded stream at 75 MB.
+
+**Decision: after each page, drop the streams from `reader.resolved_objects`, but keep object streams.** That dictionary is `pypdf`'s cache of every object it has read. Dropping a page's streams frees their decoded bytes, and a later page that needs one reads it from the file again. An **object stream** (`/ObjStm`) is a compressed stream that packs many small dictionaries; most PDF 1.5+ producers store pages and fonts that way. A first version cleared the whole cache. The re-review measured the cost: `pypdf` then decoded the object stream again for every page, and a normal 253 KB, 50-page file went from 0.6 seconds to over 10. Keeping object streams cached avoids that, and dropping only the other streams keeps memory flat.
+
+**Rejected: lowering `pypdf`'s own decompression limits.** `pypdf.Configuration` can lower its 75 MB per-stream cap, but that cap also applies to legitimate large streams such as embedded fonts. It would also do nothing about many streams that are each just under the cap.
+
+**Action:** edit `src/knowledge_service/pdf_parser.py`.
+
+1. Add these sentences to the end of the module docstring's last paragraph, after "is what keeps a single page from running long.":
+
+```python
+is what keeps a single page from running long. That limit is checked one
+stream at a time, so a page decodes at most one stream past it before it is
+refused, and the PDF library caps a single stream at 75 MB. The fonts a page
+uses count toward the same limit, because extracting text decodes their
+character maps too.
+```
+
+2. Change two imports:
+
+```python
+from collections.abc import Generator, Iterator
+```
+
+```python
+from pypdf.generic import ArrayObject, DictionaryObject, PdfObject, StreamObject
+```
+
+3. Make `_open_pages` return the reader together with its pages, because `parse_pdf` now needs the reader to drop its cached streams. Change its signature and its last line:
+
+```python
+def _open_pages(content: bytes, max_pages: int) -> tuple[PdfReader, list[PageObject]]:
+```
+
+```python
+        return reader, list(reader.pages)
+```
+
+Keep `list(reader.pages)` inside `_open_pages`, within `_pdf_errors`. For an encrypted file, `len(reader.pages)` only reads the page count the file declares. The actual page tree loads while the pages are listed, and a damaged tree must still raise `CorruptDocument`.
+
+4. In `parse_pdf`, unpack both values and drop the cached streams after each page. Replace the `for number, page in enumerate(_open_pages(...))` line and the `for paragraph in _paragraphs(_page_text(...))` line, so the loop starts like this:
+
+```python
+    reader, pages = _open_pages(content, max_pages)
+    for number, page in enumerate(pages, start=1):
+        if time.monotonic() >= deadline:
+            raise DocumentTooLarge(
+                f"pdf extraction took longer than {max_seconds} seconds"
+            )
+        page_text = _page_text(page, max_page_content_bytes)
+        _drop_decoded_streams(reader)
+        for paragraph in _paragraphs(page_text):
+```
+
+The rest of the loop body is unchanged. The text is extracted before the streams are dropped, and `page_text` is a plain `str` that does not depend on the cache.
+
+Add the helper just above `_paragraphs`:
+
+```python
+def _drop_decoded_streams(reader: PdfReader) -> None:
+    """Forget the streams pypdf cached while reading a page.
+
+    pypdf keeps every object it reads, so decoded page streams would otherwise
+    pile up for the whole file. Object streams stay cached: each packs many
+    small dictionaries, and decoding one again on every page would make long
+    files slow. A dropped stream is read from the file again if needed.
+    """
+    cache = reader.resolved_objects
+    for key in [
+        key
+        for key, item in cache.items()
+        if isinstance(item, StreamObject) and item.get("/Type") != "/ObjStm"
+    ]:
+        del cache[key]
+```
+
+The list is built first and the keys deleted afterwards, because Python does not allow deleting from a dictionary while iterating over it.
+
+5. Replace `_page_text` and `_form_bytes` (everything from `def _page_text` up to, but not including, `def _paragraphs`) with:
+
+```python
+def _page_text(page: PageObject, max_content_bytes: int) -> str:
+    with _pdf_errors():
+        size = 0
+        for stream in _decoded_streams(page):
+            # Each stream is decoded on its own and the walk stops at the
+            # first one over the limit, so memory stays near the limit.
+            size += len(stream.get_data())
+            if size > max_content_bytes:
+                raise DocumentTooLarge(
+                    f"a pdf page needs more than {max_content_bytes} bytes of "
+                    "drawing commands and fonts"
+                )
+        text = page.extract_text(extraction_mode="layout")
+        if not text.strip():
+            # Layout mode skips text drawn through form objects; plain mode
+            # reads it, so a templated page is not mistaken for a scan.
+            text = page.extract_text()
+        return text
+
+
+def _decoded_streams(page: PageObject) -> Iterator[StreamObject]:
+    """Yield every stream that extracting the page's text decodes.
+
+    That is the page's content streams, then the fonts and forms it uses.
+    """
+    contents = _resolved(page, "/Contents")
+    parts = contents if isinstance(contents, ArrayObject) else [contents]
+    for part in parts:
+        stream = part.get_object() if part is not None else None
+        if isinstance(stream, StreamObject):
+            yield stream
+    yield from _resource_streams(page, set())
+
+
+def _resource_streams(
+    owner: DictionaryObject, seen: set[int]
+) -> Iterator[StreamObject]:
+    """Yield the font maps and forms a page or form uses, recursively.
+
+    Forms are reusable drawings stored outside the page's own commands, and
+    fonts carry the maps that turn character codes into text, so both count
+    toward the page's limit. `seen` skips a stream already yielded, which
+    also stops a form that paints itself from being walked forever.
+    """
+    resources = _resolved(owner, "/Resources")
+    if not isinstance(resources, DictionaryObject):
+        return
+    for stream in (*_font_streams(resources), *_forms(resources)):
+        if id(stream) in seen:
+            continue
+        seen.add(id(stream))
+        yield stream
+        if stream.get("/Subtype") == "/Form":
+            yield from _resource_streams(stream, seen)
+
+
+def _font_streams(resources: DictionaryObject) -> Iterator[StreamObject]:
+    """Yield each font's /ToUnicode map and embedded Type1 font file."""
+    fonts = _resolved(resources, "/Font")
+    if not isinstance(fonts, DictionaryObject):
+        return
+    for name in fonts:
+        font = fonts[name]
+        if not isinstance(font, DictionaryObject):
+            continue
+        candidates = [_resolved(font, "/ToUnicode")]
+        descriptor = _resolved(font, "/FontDescriptor")
+        if isinstance(descriptor, DictionaryObject):
+            candidates += [
+                _resolved(descriptor, "/FontFile"),
+                _resolved(descriptor, "/FontFile3"),
+            ]
+        for stream in candidates:
+            if isinstance(stream, StreamObject):
+                yield stream
+
+
+def _forms(resources: DictionaryObject) -> Iterator[StreamObject]:
+    """Yield the forms listed in a resource dictionary."""
+    xobjects = _resolved(resources, "/XObject")
+    if not isinstance(xobjects, DictionaryObject):
+        return
+    for name in xobjects:
+        form = xobjects[name]
+        if isinstance(form, StreamObject) and form.get("/Subtype") == "/Form":
+            yield form
+
+
+def _resolved(owner: DictionaryObject, key: str) -> PdfObject | None:
+    """Return `owner[key]`, following a reference to another object, or None."""
+    # Indexing resolves references to other objects in the file; .get() does not.
+    return owner[key] if key in owner else None  # noqa: SIM401
+```
+
+What each new piece does:
+
+| Function | Role |
+|---|---|
+| `_page_text` | Adds up stream sizes as the walk produces them and raises `DocumentTooLarge` at the first stream that takes the total over the limit. The message still contains "drawing commands", so the existing tests keep matching. |
+| `_decoded_streams` | Yields the page's content streams, one at a time, then the font and form streams. `/Contents` may be one stream or an array of them; `part.get_object()` follows an array item's reference to the actual stream. |
+| `_resource_streams` | Walks a page's or form's `/Resources`, then recurses into each form. `seen` now holds every stream already yielded, so a font map shared by two forms is counted once, and a form that paints itself is not walked forever. |
+| `_font_streams` | Yields the font streams that `pypdf`'s text extraction decodes. |
+| `_forms` | Yields the Form XObjects in a resource dictionary and skips images. |
+| `_resolved` | The `owner[key] if key in owner else None` lookup from Step 3, in one place. Its `noqa: SIM401` and its comment no longer need repeating at every call. |
+
+Two Python details:
+
+- **Why generators.** A function with `yield` produces values one at a time, only when the `for` loop asks for the next one. When `_page_text` raises, the walk stops right there, and the streams after it are never decoded. That lazy order is what keeps memory bounded. A function that built a list of every stream first would decode them all before the check.
+- **`yield from`** passes on every value from another generator, so the recursion into nested forms reads like an ordinary loop.
+
+**Check:** `UV_CACHE_DIR=/tmp/uv-cache-rag-project make typecheck lint` passes, and the 15 tests from Step 4 still pass.
+
+### Step 7 — Coding step: regression tests for the memory bounds
+
+**Decision: measure memory with `tracemalloc` and build the bombs in code.** `tracemalloc` is a standard-library module that records the peak memory Python allocated between `start()` and `stop()`. Decompressed bytes count, so a test can assert on the parser's own peak. The fixture streams hold only spaces, so a 5 MB stream is about 5 KB in the file, and the tests run in under half a second.
+
+The four memory tests fail against the Step 3 code and pass after Step 6. The object-stream test guards the cache fix itself:
+
+| Test | Step 3 code | After Step 6 |
+|---|---|---|
+| `…far_past_the_limit[contents]` | fails: peak over 50 MB | passes |
+| `…far_past_the_limit[forms]` | fails: peak over 50 MB | passes |
+| `…far_past_the_limit[fonts]` | fails: page accepted, no `DocumentTooLarge` | passes |
+| `test_memory_does_not_grow_with_the_page_count` | fails: peak 5.1 MB | passes: peak 0.36 MB |
+| `test_pages_packed_in_an_object_stream_are_read_quickly` | passes; it guards the cache fix | passes in about 0.1 s; clearing the whole cache takes about 2.7 s and fails it |
+
+**Action:** edit `tests/pdf_builder.py`.
+
+1. Add two imports:
+
+```python
+import secrets
+import struct
+import zlib
+from io import BytesIO
+from typing import Literal
+```
+
+2. Move the file-writing part of `build_pdf` into a shared helper. In `build_pdf`, cut everything from `out = BytesIO()` to `return out.getvalue()`, and put `return _assemble(objects)` in its place. Then add the new builder and the helper above `_stream`. The helper's body is exactly the lines you cut:
+
+```python
+def compressed_streams_pdf(
+    place: Literal["contents", "forms", "fonts"], *, count: int, size: int
+) -> bytes:
+    """Return a one-page PDF with `count` streams that each inflate to `size` bytes.
+
+    The streams hold only spaces, so each compresses to a few kilobytes.
+    `place` makes them the page's content streams, forms the page paints, or
+    the /ToUnicode maps of fonts the page uses.
+    """
+    blob = zlib.compress(b" " * size, 9)
+    ids = [5 + index for index in range(count)]
+    contents = "/Contents 4 0 R"
+    resources = ""
+    commands = b""
+    prefix = b""
+    fonts: list[bytes] = []
+    if place == "contents":
+        contents = "/Contents [" + " ".join(f"{i} 0 R" for i in ids) + "]"
+    elif place == "forms":
+        resources = "/XObject << " + " ".join(f"/R{i} {i} 0 R" for i in ids) + " >>"
+        commands = b" ".join(b"/R%d Do" % i for i in ids)
+        prefix = b"/Type /XObject /Subtype /Form /BBox [0 0 1 1] "
+    else:
+        font_ids = [i + count for i in ids]
+        resources = "/Font << " + " ".join(f"/R{i} {i} 0 R" for i in font_ids) + " >>"
+        commands = (
+            b"BT " + b" ".join(b"/R%d 12 Tf (a) Tj" % i for i in font_ids) + b" ET"
+        )
+        font = (
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode {} 0 R >>"
+        )
+        fonts = [font.format(i).encode() for i in ids]
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        + f"/Resources << {resources} >> {contents} >>".encode(),
+        _stream(b"", commands),
+        *(_stream(prefix + b"/Filter /FlateDecode ", blob) for _ in ids),
+        *fonts,
+    ]
+    return _assemble(objects)
+
+
+def _assemble(objects: list[bytes]) -> bytes:
+    """Number the objects from 1 and write them with a cross-reference table."""
+    out = BytesIO()
+    out.write(b"%PDF-1.7\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(f"{number} 0 obj\n".encode() + body + b"\nendobj\n")
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets:
+        out.write(f"{offset:010d} 00000 n \n".encode())
+    out.write(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref}\n%%EOF\n".encode()
+    )
+    return out.getvalue()
+```
+
+Add one more builder below `_assemble`, for the object-stream test. It packs the page tree, the pages, a font, and `filler` extra dictionaries into one `/ObjStm`. Objects inside an object stream cannot be found through a plain `xref` table, so the file ends with a **cross-reference stream** (`/Type /XRef`) instead: one 7-byte row per object, packed with `struct.pack(">BIH", ...)`. Type 1 rows give a byte offset in the file, and type 2 rows give the object stream and the position inside it.
+
+```python
+def object_stream_pdf(pages: int, filler: int) -> bytes:
+    """Return a PDF whose dictionaries are packed into one object stream.
+
+    Most PDF 1.5+ producers write files this way. Each page draws one line of
+    text, and `filler` extra dictionaries make the object stream large.
+    """
+    page_ids = [3 + index for index in range(pages)]
+    content_ids = [3 + pages + index for index in range(pages)]
+    font_id = 3 + 2 * pages
+    packed: dict[int, bytes] = {
+        2: f"<< /Type /Pages /Kids [{' '.join(f'{i} 0 R' for i in page_ids)}] "
+        f"/Count {pages} >>".encode(),
+        font_id: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    }
+    for page_id, content_id in zip(page_ids, content_ids, strict=True):
+        packed[page_id] = (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            + f"/Resources << /Font << /F1 {font_id} 0 R >> >> "
+            f"/Contents {content_id} 0 R >>".encode()
+        )
+    for number in range(font_id + 1, font_id + 1 + filler):
+        packed[number] = b"<< /Filler [1 2 3 4] >>"
+    stream_id = font_id + 1 + filler
+    xref_id = stream_id + 1
+    header = b""
+    body = b""
+    for number, dictionary in packed.items():
+        header += b"%d %d " % (number, len(body))
+        body += dictionary + b"\n"
+    out = BytesIO()
+    out.write(b"%PDF-1.7\n")
+    offsets = {1: out.tell()}
+    out.write(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+    for index, content_id in enumerate(content_ids):
+        offsets[content_id] = out.tell()
+        commands = text_page((72, 720, f"Page {index + 1}."))
+        out.write(f"{content_id} 0 obj\n".encode() + _stream(b"", commands))
+        out.write(b"\nendobj\n")
+    offsets[stream_id] = out.tell()
+    data = zlib.compress(header + b"\n" + body)
+    out.write(
+        f"{stream_id} 0 obj\n".encode()
+        + _stream(
+            f"/Type /ObjStm /N {len(packed)} /First {len(header) + 1} "
+            "/Filter /FlateDecode ".encode(),
+            data,
+        )
+        + b"\nendobj\n"
+    )
+    offsets[xref_id] = out.tell()
+    positions = {number: index for index, number in enumerate(packed)}
+    rows = struct.pack(">BIH", 0, 0, 65535)
+    for number in range(1, xref_id + 1):
+        if number in positions:
+            rows += struct.pack(">BIH", 2, stream_id, positions[number])
+        else:
+            rows += struct.pack(">BIH", 1, offsets[number], 0)
+    out.write(
+        f"{xref_id} 0 obj\n".encode()
+        + _stream(
+            f"/Type /XRef /Size {xref_id + 1} /W [1 4 2] /Root 1 0 R ".encode(),
+            rows,
+        )
+        + f"\nendobj\nstartxref\n{offsets[xref_id]}\n%%EOF\n".encode()
+    )
+    return out.getvalue()
+```
+
+In `compressed_streams_pdf`, objects 1 to 4 are the catalog, the page tree, the page, and the page's own drawing commands. The `count` bomb streams follow from object 5, and in the `fonts` case the font dictionaries come after them. The font dictionary template is a plain string, not an f-string: its `{}` is filled later by `font.format(i)`.
+
+Then edit `tests/test_pdf_parser.py`.
+
+3. Add the imports:
+
+```python
+import tracemalloc
+from typing import Literal
+
+import pytest
+```
+
+```python
+from pdf_builder import (
+    IMAGE_ONLY,
+    build_pdf,
+    compressed_streams_pdf,
+    encrypt,
+    object_stream_pdf,
+    text_page,
+)
+```
+
+4. Add these tests before `test_a_block_page_number_starts_at_one`:
+
+```python
+@pytest.mark.parametrize("place", ["contents", "forms", "fonts"])
+def test_a_page_is_refused_before_it_decompresses_far_past_the_limit(
+    place: Literal["contents", "forms", "fonts"],
+) -> None:
+    # Ten streams of 5 MB each: decoding them all would need over 50 MB.
+    pdf = compressed_streams_pdf(place, count=10, size=5_000_000)
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentTooLarge, match="drawing commands"):
+            parse_pdf(pdf, max_page_content_bytes=1_000_000)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 20_000_000
+
+
+def test_memory_does_not_grow_with_the_page_count() -> None:
+    # Each page carries 250 KB of padding: under the per-page limit, but
+    # holding all 20 pages at once would need over 5 MB.
+    pages = [text_page((72, 720, f"Page {n}.")) + b" " * 250_000 for n in range(20)]
+    pdf = build_pdf(*pages)
+
+    tracemalloc.start()
+    try:
+        parsed = parse_pdf(pdf)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(parsed.blocks) == 20
+    assert peak < 2_500_000
+
+
+def test_pages_packed_in_an_object_stream_are_read_quickly() -> None:
+    # Dropping the whole pypdf cache after each page made it decode the
+    # object stream again for every page: about 2.7 seconds for this file.
+    pdf = object_stream_pdf(pages=20, filler=5000)
+
+    parsed = parse_pdf(pdf, max_seconds=1.0)
+
+    assert [block.text for block in parsed.blocks[:2]] == ["Page 1.", "Page 2."]
+    assert len(parsed.blocks) == 20
+```
+
+The `try`/`finally` makes sure tracing stops even when an assertion fails, so one failing test cannot slow down every test after it. The limits leave room on both sides: the page test peaks at 0.36 MB against a 2.5 MB limit, and the Step 3 code needs 5.1 MB.
+
+**Check:**
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache-rag-project uv run pytest tests/test_pdf_parser.py -v
+```
+
+All 20 tests pass.
+
+Optional but useful: write Step 7 before Step 6. The four memory tests then fail against the Step 3 parser with the numbers in the table above. Seeing that proves they test the fix and not something else.
+
+### Step 8 — No coding in this step: rerun the gates and update the evidence
+
+**Action:** run every command from Step 5 again. Then update `docs/evidence/M03-T05-pdf-extraction.md`:
+
+- **Design:** add a paragraph on the review finding and the fix: the four attacks, why the check must happen one stream at a time, why fonts count, and why streams other than object streams are dropped after each page.
+- **Verification:** replace the numbers with your new run. Expect 20 PDF tests, and five more tests in the deterministic suite and in `make check` than before.
+- **Reflection:** rewrite it in your own words; the task requires that. Also answer one more question:
+
+4. Before Step 6, the parser checked the page's size and then extracted its text, which is the right order. Yet a 1 MB file could still use over 1 GB of memory. What did the check actually measure, when did the expensive work happen, and why does checking one stream at a time fix it?
+
+One limit is known and accepted: inside a single page, layout extraction of nearly 1 MB of tiny text commands can take about 9 seconds and about 100 MB of working memory. That fits "10 seconds plus at most one page", so it needs no code, but say so in Design.
+
+A second limit is known and recorded for follow-up, because fixing it means changing how the file is opened. `list(reader.pages)` in `_open_pages` makes `pypdf` load every page dictionary before the page loop starts. If each dictionary sits in its own object stream padded with spaces, each one is decoded and stays cached. A 198 KB file with 10 such pages used 231 MB and 15 seconds, and neither the per-page limit nor the deadline runs during that phase. A follow-up should bound it before PDFs reach `DirectorySource`, for example by lowering `pypdf`'s per-stream decode limit with `pypdf.apply_configuration` and keeping only a few object streams cached. Record it in Design.
+
+**Check:** every command passes, and the evidence has the new design paragraph, fresh numbers, and your own reflection.
+
 ## Completion checklist
 
 - [ ] `pypdf[crypto]` is a dependency in `pyproject.toml` and `uv.lock`.
@@ -706,7 +1176,8 @@ Fill in `## Design`, `## Verification`, and `## Reflection`. Answer these questi
 - [ ] Password-protected PDFs raise `EncryptedDocument`, owner-only PDFs are read, and corrupt input raises `CorruptDocument`.
 - [ ] Limits on bytes, pages, characters, per-page drawing commands (including forms), and time all raise `DocumentTooLarge`.
 - [ ] Control and invisible characters never reach block text.
-- [ ] All 15 PDF tests and the full deterministic suite pass, along with format, lint, types, `make check`, `make docs-check`, and `uv lock --check`.
-- [ ] The evidence file holds your invariant, prediction, design, verification, and reflection.
+- [ ] A page is refused as soon as its decoded content streams, forms, and font maps pass the per-page limit, so it never decodes far more than that limit. Decoded streams are dropped from the `pypdf` cache after each page, while object streams stay cached, so memory does not grow with the page count and long files stay fast.
+- [ ] All 20 PDF tests and the full deterministic suite pass, along with format, lint, types, `make check`, `make docs-check`, and `uv lock --check`.
+- [ ] The evidence file holds your invariant, prediction, design (including the memory fix and the open-phase limit recorded for follow-up), fresh verification numbers, and a reflection in your own words that also answers question 4.
 
 When you're done, share your code or any error you hit, and I'll review it.

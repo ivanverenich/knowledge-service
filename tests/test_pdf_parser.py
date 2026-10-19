@@ -1,5 +1,8 @@
 """Tests for PDF text extraction: pages, tables, scans, encryption, corruption."""
 
+import tracemalloc
+from typing import Literal
+
 import pytest
 
 from knowledge_service.pdf_parser import parse_pdf
@@ -12,7 +15,14 @@ from knowledge_service.structure import (
     NoTextLayer,
     StructuralBlock,
 )
-from pdf_builder import IMAGE_ONLY, build_pdf, encrypt, text_page
+from pdf_builder import (
+    IMAGE_ONLY,
+    build_pdf,
+    compressed_streams_pdf,
+    encrypt,
+    object_stream_pdf,
+    text_page,
+)
 
 TWO_PAGES = build_pdf(
     text_page(
@@ -133,6 +143,52 @@ def test_size_limits_raise_typed_errors() -> None:
         parse_pdf(form_only, max_page_content_bytes=40)
     with pytest.raises(DocumentTooLarge, match="seconds"):
         parse_pdf(TWO_PAGES, max_seconds=0)
+
+
+@pytest.mark.parametrize("place", ["contents", "forms", "fonts"])
+def test_a_page_is_refused_before_it_decompresses_far_past_the_limit(
+    place: Literal["contents", "forms", "fonts"],
+) -> None:
+    # Ten streams of 5 MB each: decoding them all would need over 50 MB.
+    pdf = compressed_streams_pdf(place, count=10, size=5_000_000)
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentTooLarge, match="drawing commands"):
+            parse_pdf(pdf, max_page_content_bytes=1_000_000)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 20_000_000
+
+
+def test_memory_does_not_grow_with_the_page_count() -> None:
+    # Each page carries 250 KB of padding: under the per-page limit, but
+    # holding all 20 pages at once would need over 5 MB.
+    pages = [text_page((72, 720, f"Page {n}.")) + b" " * 250_000 for n in range(20)]
+    pdf = build_pdf(*pages)
+
+    tracemalloc.start()
+    try:
+        parsed = parse_pdf(pdf)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(parsed.blocks) == 20
+    assert peak < 2_500_000
+
+
+def test_pages_packed_in_an_object_stream_are_read_quickly() -> None:
+    # Dropping the whole pypdf cache after each page made it decode the
+    # object stream again for every page: about 2.7 seconds for this file.
+    pdf = object_stream_pdf(pages=20, filler=5000)
+
+    parsed = parse_pdf(pdf, max_seconds=1.0)
+
+    assert [block.text for block in parsed.blocks[:2]] == ["Page 1.", "Page 2."]
+    assert len(parsed.blocks) == 20
 
 
 def test_a_block_page_number_starts_at_one() -> None:

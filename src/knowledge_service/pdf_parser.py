@@ -11,18 +11,22 @@ service does not run OCR.
 Extraction is bounded: by file size, page count, the size of each page's
 drawing commands, total characters, and a time budget checked between pages.
 Python cannot interrupt the PDF library inside a page, so the per-page limit
-is what keeps a single page from running long.
+is what keeps a single page from running long. That limit is checked one
+stream at a time, so a page decodes at most one stream past it before it is
+refused, and the PDF library caps a single stream at 75 MB. The fonts a page
+uses count toward the same limit, because extracting text decodes their
+character maps too.
 """
 
 import re
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from io import BytesIO
 
 from pypdf import PageObject, PasswordType, PdfReader
 from pypdf.errors import LimitReachedError
-from pypdf.generic import DictionaryObject, StreamObject
+from pypdf.generic import ArrayObject, DictionaryObject, PdfObject, StreamObject
 
 from knowledge_service.structure import (
     BlockKind,
@@ -82,12 +86,15 @@ def parse_pdf(
     blocks: list[StructuralBlock] = []
     paragraphs: list[str] = []
     offset = 0
-    for number, page in enumerate(_open_pages(content, max_pages), start=1):
+    reader, pages = _open_pages(content, max_pages)
+    for number, page in enumerate(pages, start=1):
         if time.monotonic() >= deadline:
             raise DocumentTooLarge(
                 f"pdf extraction took longer than {max_seconds} seconds"
             )
-        for paragraph in _paragraphs(_page_text(page, max_page_content_bytes)):
+        page_text = _page_text(page, max_page_content_bytes)
+        _drop_decoded_streams(reader)
+        for paragraph in _paragraphs(page_text):
             if paragraphs:
                 offset += len(_SEPARATOR)
             end = offset + len(paragraph)
@@ -128,7 +135,7 @@ def _pdf_errors() -> Generator[None]:
         raise CorruptDocument("pdf could not be read") from error
 
 
-def _open_pages(content: bytes, max_pages: int) -> list[PageObject]:
+def _open_pages(content: bytes, max_pages: int) -> tuple[PdfReader, list[PageObject]]:
     with _pdf_errors():
         reader = PdfReader(BytesIO(content))
         if reader.is_encrypted and reader.decrypt("") == PasswordType.NOT_DECRYPTED:
@@ -137,19 +144,21 @@ def _open_pages(content: bytes, max_pages: int) -> list[PageObject]:
             raise DocumentTooLarge(
                 f"pdf has {len(reader.pages)} pages; the limit is {max_pages}"
             )
-        return list(reader.pages)
+        return reader, list(reader.pages)
 
 
 def _page_text(page: PageObject, max_content_bytes: int) -> str:
     with _pdf_errors():
-        contents = page.get_contents()
-        size = 0 if contents is None else len(contents.get_data())
-        size += _form_bytes(page, set())
-        if size > max_content_bytes:
-            raise DocumentTooLarge(
-                f"a pdf page has {size} bytes of drawing commands; "
-                f"the limit is {max_content_bytes}"
-            )
+        size = 0
+        for stream in _decoded_streams(page):
+            # Each stream is decoded on its own and the walk stops at the
+            # first one over the limit, so memory stays near the limit.
+            size += len(stream.get_data())
+            if size > max_content_bytes:
+                raise DocumentTooLarge(
+                    f"a pdf page needs more than {max_content_bytes} bytes of "
+                    "drawing commands and fonts"
+                )
         text = page.extract_text(extraction_mode="layout")
         if not text.strip():
             # Layout mode skips text drawn through form objects; plain mode
@@ -158,32 +167,95 @@ def _page_text(page: PageObject, max_content_bytes: int) -> str:
         return text
 
 
-def _form_bytes(owner: DictionaryObject, seen: set[int]) -> int:
-    """Return the size of every form a page or form can paint, recursively.
+def _decoded_streams(page: PageObject) -> Iterator[StreamObject]:
+    """Yield every stream that extracting the page's text decodes.
 
-    Forms are reusable drawings stored outside the page's own commands, so
-    they count toward the page's limit too. `seen` stops a form that paints
-    itself from being counted forever.
+    That is the page's content streams, then the fonts and forms it uses.
     """
-    # Indexing resolves references to other objects in the file; .get() does not.
-    resources = owner["/Resources"] if "/Resources" in owner else None  # noqa: SIM401
-    if not isinstance(resources, DictionaryObject) or "/XObject" not in resources:
-        return 0
-    xobjects = resources["/XObject"]
+    contents = _resolved(page, "/Contents")
+    parts = contents if isinstance(contents, ArrayObject) else [contents]
+    for part in parts:
+        stream = part.get_object() if part is not None else None
+        if isinstance(stream, StreamObject):
+            yield stream
+    yield from _resource_streams(page, set())
+
+
+def _resource_streams(
+    owner: DictionaryObject, seen: set[int]
+) -> Iterator[StreamObject]:
+    """Yield the font maps and forms a page or form uses, recursively.
+
+    Forms are reusable drawings stored outside the page's own commands, and
+    fonts carry the maps that turn character codes into text, so both count
+    toward the page's limit. `seen` skips a stream already yielded, which
+    also stops a form that paints itself from being walked forever.
+    """
+    resources = _resolved(owner, "/Resources")
+    if not isinstance(resources, DictionaryObject):
+        return
+    for stream in (*_font_streams(resources), *_forms(resources)):
+        if id(stream) in seen:
+            continue
+        seen.add(id(stream))
+        yield stream
+        if stream.get("/Subtype") == "/Form":
+            yield from _resource_streams(stream, seen)
+
+
+def _font_streams(resources: DictionaryObject) -> Iterator[StreamObject]:
+    """Yield each font's /ToUnicode map and embedded Type1 font file."""
+    fonts = _resolved(resources, "/Font")
+    if not isinstance(fonts, DictionaryObject):
+        return
+    for name in fonts:
+        font = fonts[name]
+        if not isinstance(font, DictionaryObject):
+            continue
+        candidates = [_resolved(font, "/ToUnicode")]
+        descriptor = _resolved(font, "/FontDescriptor")
+        if isinstance(descriptor, DictionaryObject):
+            candidates += [
+                _resolved(descriptor, "/FontFile"),
+                _resolved(descriptor, "/FontFile3"),
+            ]
+        for stream in candidates:
+            if isinstance(stream, StreamObject):
+                yield stream
+
+
+def _forms(resources: DictionaryObject) -> Iterator[StreamObject]:
+    """Yield the forms listed in a resource dictionary."""
+    xobjects = _resolved(resources, "/XObject")
     if not isinstance(xobjects, DictionaryObject):
-        return 0
-    total = 0
+        return
     for name in xobjects:
         form = xobjects[name]
-        if (
-            not isinstance(form, StreamObject)
-            or form.get("/Subtype") != "/Form"
-            or id(form) in seen
-        ):
-            continue
-        seen.add(id(form))
-        total += len(form.get_data()) + _form_bytes(form, seen)
-    return total
+        if isinstance(form, StreamObject) and form.get("/Subtype") == "/Form":
+            yield form
+
+
+def _resolved(owner: DictionaryObject, key: str) -> PdfObject | None:
+    """Return `owner[key]`, following a reference to another object, or None."""
+    # Indexing resolves references to other objects in the file; .get() does not.
+    return owner[key] if key in owner else None  # noqa: SIM401
+
+
+def _drop_decoded_streams(reader: PdfReader) -> None:
+    """Forget the streams pypdf cached while reading a page.
+
+    pypdf keeps every object it reads, so decoded page streams would otherwise
+    pile up for the whole file. Object streams stay cached: each packs many
+    small dictionaries, and decoding one again on every page would make long
+    files slow. A dropped stream is read from the file again if needed.
+    """
+    cache = reader.resolved_objects
+    for key in [
+        key
+        for key, item in cache.items()
+        if isinstance(item, StreamObject) and item.get("/Type") != "/ObjStm"
+    ]:
+        del cache[key]
 
 
 def _paragraphs(page_text: str) -> list[str]:
