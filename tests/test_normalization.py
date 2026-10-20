@@ -8,6 +8,7 @@ import pytest
 
 from knowledge_service.directory_source import DirectorySource
 from knowledge_service.identifiers import SourceId
+from knowledge_service.language import Language
 from knowledge_service.normalization import (
     MAX_TITLE_CHARACTERS,
     NormalizedDocument,
@@ -218,6 +219,52 @@ def test_a_look_alike_media_type_is_not_lowercased_into_a_real_one() -> None:
     outcome = quarantined(normalize(kelvin, source_id=SOURCE_ID))
 
     assert outcome.reason is QuarantineReason.UNSUPPORTED_MEDIA_TYPE
+
+
+UKRAINIAN_PAGE = (
+    "<html><head><title>Відпустка</title></head><body>"
+    '<div class="content"><h1>Як оформити відпустку</h1>'
+    "<p>Заяву на відпустку подають керівнику команди щонайменше за два тижні "
+    "до її початку; після погодження її реєструє відділ кадрів.</p>"
+    "</div></body></html>"
+).encode()
+
+
+def test_the_language_is_recorded_from_the_text_not_the_markup() -> None:
+    # The tags and attributes are English words, but only block text counts.
+    normalized = document(
+        normalize(record(UKRAINIAN_PAGE, "text/html"), source_id=SOURCE_ID)
+    )
+
+    assert normalized.language.language is Language.UKRAINIAN
+
+
+def test_the_language_never_changes_who_may_read_a_document() -> None:
+    restricted = SourceAccess(public=False, principals=("group:finance",))
+    english = SourceRecord.present(
+        external_id="a.txt",
+        version="v1",
+        media_type="text/plain",
+        content=b"The finance team approves every payment above the limit.",
+        access=restricted,
+    )
+    ukrainian = SourceRecord.present(
+        external_id="b.txt",
+        version="v1",
+        media_type="text/plain",
+        content="Фінансова команда погоджує кожен платіж понад ліміт.".encode(),
+        access=restricted,
+    )
+
+    documents = [
+        document(normalize(item, source_id=SOURCE_ID)) for item in (english, ukrainian)
+    ]
+
+    assert [item.language.language for item in documents] == [
+        Language.ENGLISH,
+        Language.UKRAINIAN,
+    ]
+    assert all(item.access == restricted for item in documents)
 
 
 def test_a_deleted_record_cannot_be_normalized() -> None:

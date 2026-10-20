@@ -7,7 +7,7 @@ depends_on: ["M03-T06"]
 estimate: 75m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["language metadata policy"]
-status: planned
+status: completed
 ---
 
 # M03-T07 — Detect and record language

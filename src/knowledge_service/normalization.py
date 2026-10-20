@@ -1,10 +1,11 @@
 """Turn one Source Record into a normalized Document or a typed quarantine.
 
 Normalization picks a parser from the record's media type, decodes text as
-UTF-8, parses the content into structural blocks, and canonicalizes the
-descriptive metadata. Content it cannot turn into blocks never raises: the
-record comes back as `Quarantined` with a reason, so one bad item cannot stop
-a Synchronization Run. The same record always produces the same result.
+UTF-8, parses the content into structural blocks, canonicalizes the
+descriptive metadata, and records the text's language. Content it cannot turn
+into blocks never raises: the record comes back as `Quarantined` with a
+reason, so one bad item cannot stop a Synchronization Run. The same record
+always produces the same result.
 """
 
 import unicodedata
@@ -17,6 +18,7 @@ from importlib.metadata import version
 from knowledge_service.documents import DocumentProvenance
 from knowledge_service.html_parser import parse_html
 from knowledge_service.identifiers import SourceId
+from knowledge_service.language import LanguageProfile, detect_language
 from knowledge_service.markdown_parser import parse_markdown
 from knowledge_service.pdf_parser import parse_pdf
 from knowledge_service.sources import (
@@ -72,6 +74,7 @@ class NormalizedDocument:
     size_bytes: int
     access: SourceAccess
     parser_version: str
+    language: LanguageProfile
     parsed: ParsedDocument
 
 
@@ -173,6 +176,7 @@ def normalize(record: SourceRecord, *, source_id: SourceId) -> NormalizationOutc
         size_bytes=len(content),
         access=access,
         parser_version=parser.version,
+        language=detect_language(parsed),
         parsed=parsed,
     )
 
