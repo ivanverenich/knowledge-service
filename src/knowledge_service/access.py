@@ -31,6 +31,8 @@ class Subject:
     identifier: UserId | GroupId | None = None
 
     def __post_init__(self) -> None:
+        if type(self.kind) is not SubjectKind:
+            raise InvalidGrant("a subject kind must be a SubjectKind")
         if self.kind is SubjectKind.PUBLIC:
             if self.identifier is not None:
                 raise InvalidGrant("a public grant must not name a subject")

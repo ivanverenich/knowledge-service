@@ -7,7 +7,7 @@ depends_on: ["M03-T07"]
 estimate: 75m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["fingerprint functions"]
-status: planned
+status: completed
 ---
 
 # M03-T08 — Fingerprint content and authorization

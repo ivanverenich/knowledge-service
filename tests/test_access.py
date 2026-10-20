@@ -80,6 +80,11 @@ def test_a_user_grant_must_name_a_user_id() -> None:
         Subject(kind=SubjectKind.USER, identifier=GROUP_ID)
 
 
+def test_a_subject_kind_that_is_not_a_subject_kind_is_rejected() -> None:
+    with pytest.raises(InvalidGrant, match="SubjectKind"):
+        Subject("group", USER_ID)  # pyright: ignore[reportArgumentType]
+
+
 def test_a_naive_grant_time_raises_typed_failure() -> None:
     with pytest.raises(InvalidGrant, match="UTC-aware"):
         make_grant(Subject.public(), granted_at=datetime(2026, 10, 7, 9, 0))
