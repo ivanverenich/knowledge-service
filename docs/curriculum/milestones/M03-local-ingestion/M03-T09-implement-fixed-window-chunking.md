@@ -7,7 +7,7 @@ depends_on: ["M03-T08"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["fixed-window chunker"]
-status: planned
+status: completed
 ---
 
 # M03-T09 — Implement fixed-window chunking
