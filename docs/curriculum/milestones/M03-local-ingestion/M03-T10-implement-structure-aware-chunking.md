@@ -7,7 +7,7 @@ depends_on: ["M03-T09"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["structure-aware chunker"]
-status: planned
+status: completed
 ---
 
 # M03-T10 — Implement structure-aware chunking

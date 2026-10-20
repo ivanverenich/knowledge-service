@@ -1,0 +1,72 @@
+[
+  {
+    "ordinal": 0,
+    "text": "Team handbook\n\nWelcome to the team. This handbook explains how we work.",
+    "start": 0,
+    "end": 71,
+    "token_count": 14,
+    "first_block": 0,
+    "last_block": 1,
+    "heading_path": "Team handbook"
+  },
+  {
+    "ordinal": 1,
+    "text": "Vacation\n\nRequest vacation at least two weeks ahead. Your team lead approves it in the HR system.",
+    "start": 73,
+    "end": 170,
+    "token_count": 19,
+    "first_block": 2,
+    "last_block": 3,
+    "heading_path": "Team handbook > Vacation"
+  },
+  {
+    "ordinal": 2,
+    "text": "Security\n\nPasswords\n\nNever share passwords. Store every password in the company password manager.",
+    "start": 172,
+    "end": 269,
+    "token_count": 15,
+    "first_block": 4,
+    "last_block": 6,
+    "heading_path": "Team handbook > Security"
+  },
+  {
+    "ordinal": 3,
+    "text": "Laptops\n\nLock your laptop whenever you leave it. Report a lost laptop to the security team within one hour, even outside working",
+    "start": 271,
+    "end": 399,
+    "token_count": 24,
+    "first_block": 7,
+    "last_block": 8,
+    "heading_path": "Team handbook > Security > Laptops"
+  },
+  {
+    "ordinal": 4,
+    "text": ", even outside working hours, so they can wipe it remotely before anyone reads the data on it, and then file an",
+    "start": 377,
+    "end": 488,
+    "token_count": 24,
+    "first_block": 8,
+    "last_block": 8,
+    "heading_path": "Team handbook > Security > Laptops"
+  },
+  {
+    "ordinal": 5,
+    "text": "and then file an incident report that names the time, the place, and what was stored on the laptop.",
+    "start": 472,
+    "end": 571,
+    "token_count": 22,
+    "first_block": 8,
+    "last_block": 8,
+    "heading_path": "Team handbook > Security > Laptops"
+  },
+  {
+    "ordinal": 6,
+    "text": "Contacts\n\nAsk questions in the help channel.",
+    "start": 573,
+    "end": 617,
+    "token_count": 8,
+    "first_block": 9,
+    "last_block": 10,
+    "heading_path": "Team handbook > Contacts"
+  }
+]
