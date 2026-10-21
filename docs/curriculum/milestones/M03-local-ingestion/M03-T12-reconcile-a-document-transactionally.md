@@ -7,7 +7,7 @@ depends_on: ["M03-T11"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["document reconciler"]
-status: planned
+status: completed
 ---
 
 # M03-T12 — Reconcile a Document transactionally

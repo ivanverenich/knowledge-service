@@ -715,17 +715,39 @@ async def upsert_document(
     return DocumentId(stored_id)
 
 
+async def insert_document(connection: AsyncConnection, document: Document) -> bool:
+    """Store a new Document, or return False if its source item is already stored.
+
+    Unlike `upsert_document`, this never overwrites a row, so a run that lost
+    a race to create the Document can decide again against the stored one.
+    """
+    statement = (
+        insert(documents)
+        .values(as_row(document))
+        .on_conflict_do_nothing(constraint="uq_documents_source_external")
+        .returning(documents.c.document_id)
+    )
+    return (await connection.execute(statement)).scalar_one_or_none() is not None
+
+
 async def load_document(
     connection: AsyncConnection,
     *,
     source_id: SourceId,
     external_id: str,
+    for_update: bool = False,
 ) -> Document | None:
-    """Read the stored Document for one source item, if it exists."""
+    """Read the stored Document for one source item, if it exists.
+
+    With `for_update`, the row stays locked until the transaction ends, so a
+    concurrent writer waits instead of deciding from a stale copy.
+    """
     statement = sa.select(documents).where(
         documents.c.source_id == source_id.value,
         documents.c.external_id == external_id,
     )
+    if for_update:
+        statement = statement.with_for_update()
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None
