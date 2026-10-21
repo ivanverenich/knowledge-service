@@ -368,7 +368,10 @@ def _safe_target(href: str | None) -> str | None:
     target = href.strip()
     if not target or target.startswith("#"):
         return None
-    scheme = urlsplit(target).scheme.lower()
+    try:
+        scheme = urlsplit(target).scheme.lower()
+    except ValueError:  # for example, an unclosed IPv6 address
+        return None
     return target if scheme in _SAFE_SCHEMES or not scheme else None
 
 

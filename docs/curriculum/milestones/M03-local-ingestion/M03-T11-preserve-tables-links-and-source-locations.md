@@ -7,7 +7,7 @@ depends_on: ["M03-T10"]
 estimate: 75m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["chunk provenance mapping"]
-status: planned
+status: completed
 ---
 
 # M03-T11 — Preserve tables, links, and source locations

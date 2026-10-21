@@ -160,3 +160,13 @@ def test_unclosed_paragraphs_and_items_close_where_html_says() -> None:
         (BlockKind.LIST_ITEM, "a"),
         (BlockKind.LIST_ITEM, "b"),
     ]
+
+
+def test_a_link_target_that_cannot_be_parsed_is_dropped_not_raised() -> None:
+    # urlsplit raises ValueError for an unclosed IPv6 address.
+    parsed = parse_html('<p>See <a href="http://[broken">this</a>.</p>')
+
+    [block] = parsed.blocks
+
+    assert block.text == "See this."
+    assert block.links == ()
