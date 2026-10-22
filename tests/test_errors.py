@@ -6,6 +6,7 @@ from knowledge_service.embeddings import (
     EmbeddingInputRejected,
     EmbeddingMalformedResponse,
     EmbeddingRateLimited,
+    EmbeddingRequestRefused,
     EmbeddingUnavailable,
     RejectionReason,
 )
@@ -38,6 +39,7 @@ from knowledge_service.model import (
         (EmbeddingUnavailable(), FailureKind.DEPENDENCY),
         (EmbeddingMalformedResponse("bad vectors"), FailureKind.DEPENDENCY),
         (EmbeddingRateLimited(), FailureKind.CAPACITY),
+        (EmbeddingRequestRefused("bad key"), FailureKind.INTERNAL),
         (
             EmbeddingInputRejected(RejectionReason.EMPTY_TEXT, index=0),
             FailureKind.VALIDATION,

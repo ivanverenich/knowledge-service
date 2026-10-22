@@ -145,6 +145,7 @@ class FakeEmbeddingModel:
         limits: EmbeddingLimits | None = None,
         error: EmbeddingError | None = None,
         wait_for: asyncio.Event | None = None,
+        returned_dimensions: int | None = None,
     ) -> None:
         self._identity = EmbeddingModelIdentity(
             provider="fake", model="fake-embedding", dimensions=dimensions
@@ -154,6 +155,8 @@ class FakeEmbeddingModel:
         )
         self._error = error
         self._wait_for = wait_for
+        # Pretend the provider answered with vectors of another length.
+        self._returned_dimensions = returned_dimensions or dimensions
         self.batches: list[tuple[str, ...]] = []
 
     @property
@@ -174,6 +177,8 @@ class FakeEmbeddingModel:
         request_id: UUID,
         timeout_seconds: float,
     ) -> EmbeddingBatch:
+        if math.isnan(timeout_seconds):
+            raise ValueError("timeout_seconds must be a number")
         tokens = check_inputs(texts, self._limits, self.count_tokens)
         if not texts:
             return checked_batch(
@@ -199,7 +204,7 @@ class FakeEmbeddingModel:
         )
 
     def _vector(self, text: str) -> list[float]:
-        digest = hashlib.shake_256(text.encode()).digest(self._identity.dimensions)
+        digest = hashlib.shake_256(text.encode()).digest(self._returned_dimensions)
         raw = [byte / 127.5 - 1.0 for byte in digest]
         norm = math.sqrt(sum(value * value for value in raw))
         return [value / norm for value in raw]

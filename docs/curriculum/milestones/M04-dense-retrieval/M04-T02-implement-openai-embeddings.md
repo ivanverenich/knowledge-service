@@ -7,7 +7,7 @@ depends_on: ["M04-T01"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["OpenAI embedding adapter"]
-status: planned
+status: completed
 ---
 
 # M04-T02 — Implement OpenAI embeddings

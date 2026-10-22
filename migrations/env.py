@@ -15,7 +15,8 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep the application's loggers: by default fileConfig disables them all.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Alembic compares the migrated schema against the tables the code declares, so
 # a revision that drifts from them is reported instead of passing unnoticed.

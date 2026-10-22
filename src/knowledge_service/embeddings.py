@@ -76,6 +76,14 @@ class EmbeddingMalformedResponse(EmbeddingError):
     """The model answered, but not with one valid vector per input."""
 
 
+class EmbeddingRequestRefused(EmbeddingError):
+    """The provider refused the request itself; sending it again cannot help.
+
+    For example a wrong API key, an unknown model, or dimensions the model
+    does not support: a configuration problem, not a passing failure.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingModelIdentity:
     """Which model produced a vector; vectors of different identities never mix."""
