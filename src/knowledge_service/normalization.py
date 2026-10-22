@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import StrEnum
 from importlib.metadata import version
 
-from knowledge_service.documents import DocumentProvenance
+from knowledge_service.documents import MAX_TITLE_CHARACTERS, DocumentProvenance
 from knowledge_service.html_parser import parse_html
 from knowledge_service.identifiers import SourceId
 from knowledge_service.language import LanguageProfile, detect_language
@@ -37,7 +37,6 @@ from knowledge_service.structure import (
 )
 from knowledge_service.text_parser import parse_text
 
-MAX_TITLE_CHARACTERS = 200
 MAX_DETAIL_CHARACTERS = 200
 
 _UNTITLED = "Untitled"

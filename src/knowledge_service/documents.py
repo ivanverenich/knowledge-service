@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from knowledge_service.identifiers import DocumentId, SourceId
 
+MAX_TITLE_CHARACTERS = 200
+
 
 class InvalidDocument(ValueError):
     """A Document value or state transition violates a domain invariant."""
@@ -70,6 +72,7 @@ class Document:
 
     document_id: DocumentId
     provenance: DocumentProvenance
+    title: str
     content_version: ContentVersion
     content_fingerprint: str
     authorization_version: AuthorizationVersion
@@ -79,6 +82,12 @@ class Document:
     updated_at: datetime
 
     def __post_init__(self) -> None:
+        if not self.title.strip():
+            raise InvalidDocument("title must not be empty")
+        if len(self.title) > MAX_TITLE_CHARACTERS:
+            raise InvalidDocument(
+                f"title must be at most {MAX_TITLE_CHARACTERS} characters"
+            )
         if not self.content_fingerprint.strip():
             raise InvalidDocument("content fingerprint must not be empty")
         if not self.authorization_fingerprint.strip():
@@ -94,6 +103,7 @@ class Document:
         *,
         document_id: DocumentId,
         provenance: DocumentProvenance,
+        title: str,
         content_fingerprint: str,
         authorization_fingerprint: str,
         observed_at: datetime,
@@ -102,6 +112,7 @@ class Document:
         return cls(
             document_id=document_id,
             provenance=provenance,
+            title=title,
             content_version=ContentVersion(1),
             content_fingerprint=content_fingerprint,
             authorization_version=AuthorizationVersion(1),
@@ -114,13 +125,19 @@ class Document:
     def reconcile(
         self,
         *,
+        title: str,
         content_fingerprint: str,
         authorization_fingerprint: str,
         source_version: str | None,
         observed_at: datetime,
     ) -> Document:
-        """Apply one observed snapshot and advance only changed dimensions."""
+        """Apply one observed snapshot and advance only changed dimensions.
+
+        A new title or source version updates the row without raising either
+        version, because neither changes the text or who may read it.
+        """
         provenance = replace(self.provenance, source_version=source_version)
+        title_changed = title != self.title
         content_changed = content_fingerprint != self.content_fingerprint
         authorization_changed = (
             authorization_fingerprint != self.authorization_fingerprint
@@ -130,6 +147,7 @@ class Document:
 
         if not any(
             (
+                title_changed,
                 content_changed,
                 authorization_changed,
                 availability_changed,
@@ -145,6 +163,7 @@ class Document:
         return replace(
             self,
             provenance=provenance,
+            title=title,
             content_version=(
                 self.content_version.next() if content_changed else self.content_version
             ),

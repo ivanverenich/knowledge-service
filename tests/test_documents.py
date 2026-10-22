@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from knowledge_service.documents import (
+    MAX_TITLE_CHARACTERS,
     AuthorizationVersion,
     ContentVersion,
     Document,
@@ -19,6 +20,7 @@ OBSERVED_AT = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 
 def make_document() -> Document:
     return Document.register(
+        title="Handbook",
         document_id=DocumentId.parse("00000000-0000-0000-0000-000000000001"),
         provenance=DocumentProvenance(
             source_id=SourceId.parse("00000000-0000-0000-0000-000000000002"),
@@ -35,6 +37,7 @@ def test_unchangedsnapshot_preverses_versions_and_timestamp() -> None:
     document = make_document()
 
     result = document.reconcile(
+        title="Handbook",
         content_fingerprint="content-a",
         authorization_fingerprint="acl-a",
         source_version="17",
@@ -51,6 +54,7 @@ def test_acl_only_changed_advances_authorization_version() -> None:
     document = make_document()
 
     result = document.reconcile(
+        title="Handbook",
         content_fingerprint="content-a",
         authorization_fingerprint="acl-b",
         source_version="18",
@@ -67,6 +71,7 @@ def test_content_only_changed_advances_content_version() -> None:
     document = make_document()
 
     result = document.reconcile(
+        title="Handbook",
         content_fingerprint="content-b",
         authorization_fingerprint="acl-a",
         source_version="18",
@@ -103,3 +108,39 @@ def test_versions_must_be_positive_integers(
 ) -> None:
     with pytest.raises(InvalidDocument):
         version_type(0)
+
+
+def test_a_title_only_change_keeps_identity_and_both_versions() -> None:
+    document = make_document()
+    later = OBSERVED_AT + timedelta(minutes=1)
+
+    result = document.reconcile(
+        title="Team handbook",
+        content_fingerprint="content-a",
+        authorization_fingerprint="acl-a",
+        source_version="17",
+        observed_at=later,
+    )
+
+    assert result.title == "Team handbook"
+    assert result.document_id == document.document_id
+    assert result.provenance == document.provenance
+    assert result.content_version == document.content_version
+    assert result.authorization_version == document.authorization_version
+    assert result.updated_at == later
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["", "   ", "x" * (MAX_TITLE_CHARACTERS + 1)],
+    ids=["empty", "blank", "too-long"],
+)
+def test_a_blank_or_overlong_title_is_refused(title: str) -> None:
+    with pytest.raises(InvalidDocument, match="title"):
+        make_document().reconcile(
+            title=title,
+            content_fingerprint="content-a",
+            authorization_fingerprint="acl-a",
+            source_version="17",
+            observed_at=OBSERVED_AT + timedelta(minutes=1),
+        )

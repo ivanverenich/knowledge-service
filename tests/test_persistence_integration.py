@@ -27,6 +27,7 @@ def make_document(
     *, document_id: DocumentId, observed_at: datetime = OBSERVED_AT
 ) -> Document:
     return Document.register(
+        title="Handbook",
         document_id=document_id,
         provenance=DocumentProvenance(
             source_id=SOURCE_ID,
@@ -95,6 +96,7 @@ async def test_upsert_is_idempotent_and_versions_move_independently(
             assert stored.created_at == registered.created_at
 
         content_changed = registered.reconcile(
+            title="Handbook",
             content_fingerprint="content-b",
             authorization_fingerprint="acl-a",
             source_version="18",
@@ -110,6 +112,7 @@ async def test_upsert_is_idempotent_and_versions_move_independently(
         assert stored.authorization_version == AuthorizationVersion(1)
 
         authorization_changed = content_changed.reconcile(
+            title="Handbook",
             content_fingerprint="content-b",
             authorization_fingerprint="acl-b",
             source_version="19",

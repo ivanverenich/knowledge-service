@@ -7,7 +7,7 @@ depends_on: ["M03-T13"]
 estimate: 90m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["M03 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M03-T14 — Pass the local-ingestion understanding gate

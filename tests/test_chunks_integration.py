@@ -42,6 +42,7 @@ async def replace_then_abandon(
 
 def make_document(*, observed_at: datetime = OBSERVED_AT) -> Document:
     return Document.register(
+        title="Handbook",
         document_id=DOCUMENT_ID,
         provenance=DocumentProvenance(
             source_id=SOURCE_ID,
@@ -93,6 +94,7 @@ async def test_replacing_a_content_version_removes_stale_chunks_in_order(
             )
 
         document_v2 = document_v1.reconcile(
+            title="Handbook",
             content_fingerprint="content-b",
             authorization_fingerprint="acl-a",
             source_version="18",

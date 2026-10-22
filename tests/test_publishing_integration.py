@@ -38,6 +38,7 @@ INSERT_SOURCE = text(
 
 def registered_document(external_id: str, *, content_fingerprint: str) -> Document:
     return Document.register(
+        title="Handbook",
         document_id=DocumentId.new(),
         provenance=DocumentProvenance(
             source_id=SOURCE_ID, external_id=external_id, source_version="1"
@@ -92,6 +93,7 @@ async def test_a_failed_publish_leaves_no_half_published_document(
 
         first = registered_document("page-a", content_fingerprint="content-a")
         second = first.reconcile(
+            title="Handbook",
             content_fingerprint="content-b",
             authorization_fingerprint="acl-a",
             source_version="2",
@@ -151,6 +153,7 @@ async def test_an_uncommitted_publication_is_invisible_until_it_commits(
         )
 
         upgraded = first.reconcile(
+            title="Handbook",
             content_fingerprint="content-b",
             authorization_fingerprint="acl-a",
             source_version="2",

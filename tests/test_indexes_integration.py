@@ -48,11 +48,12 @@ SEED: tuple[tuple[str, dict[str, object]], ...] = (
         {"prefix": SOURCE_PREFIX, "sources": SOURCE_COUNT, "rows": TABLE_ROWS},
     ),
     (
-        "INSERT INTO documents (document_id, source_id, external_id, content_version,"
-        " content_fingerprint, authorization_version, authorization_fingerprint,"
-        " availability, created_at, updated_at) SELECT gen_random_uuid(),"
+        "INSERT INTO documents (document_id, source_id, external_id, title,"
+        " content_version, content_fingerprint, authorization_version,"
+        " authorization_fingerprint, availability, created_at, updated_at)"
+        " SELECT gen_random_uuid(),"
         " (:prefix || lpad((mod(i, :sources) + 1)::text, 12, '0'))::uuid,"
-        " 'doc-' || i, 1,"
+        " 'doc-' || i, 'Doc ' || i, 1,"
         " repeat('a', 64), 1, repeat('b', 64), 'available', now(), now()"
         " FROM generate_series(1, :rows) AS i",
         {"prefix": SOURCE_PREFIX, "sources": SOURCE_COUNT, "rows": TABLE_ROWS},

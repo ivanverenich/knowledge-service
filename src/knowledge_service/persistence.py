@@ -131,6 +131,7 @@ documents = sa.Table(
     ),
     sa.Column("external_id", sa.Text(), nullable=False),
     sa.Column("source_version", sa.Text(), nullable=True),
+    sa.Column("title", sa.Text(), nullable=False),
     sa.Column("content_version", sa.Integer(), nullable=False),
     sa.Column("content_fingerprint", sa.Text(), nullable=False),
     sa.Column("authorization_version", sa.Integer(), nullable=False),
@@ -423,6 +424,7 @@ def as_row(document: Document) -> dict[str, object]:
         "source_id": document.provenance.source_id.value,
         "external_id": document.provenance.external_id,
         "source_version": document.provenance.source_version,
+        "title": document.title,
         "content_version": document.content_version.number,
         "content_fingerprint": document.content_fingerprint,
         "authorization_version": document.authorization_version.number,
@@ -447,6 +449,7 @@ def as_document(record: Mapping[str, object]) -> Document:
             external_id=cast(str, record["external_id"]),
             source_version=cast("str | None", record["source_version"]),
         ),
+        title=cast(str, record["title"]),
         content_version=ContentVersion(cast(int, record["content_version"])),
         content_fingerprint=cast(str, record["content_fingerprint"]),
         authorization_version=AuthorizationVersion(
@@ -704,6 +707,7 @@ async def upsert_document(
         constraint="uq_documents_source_external",
         set_={
             "source_version": statement.excluded.source_version,
+            "title": statement.excluded.title,
             "content_version": statement.excluded.content_version,
             "content_fingerprint": statement.excluded.content_fingerprint,
             "authorization_version": statement.excluded.authorization_version,

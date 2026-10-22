@@ -66,6 +66,7 @@ ACCESS_CLASSIFICATION = text(
 
 def make_document(external_id: str) -> Document:
     return Document.register(
+        title="Handbook",
         document_id=DocumentId.new(),
         provenance=DocumentProvenance(
             source_id=SOURCE_ID,

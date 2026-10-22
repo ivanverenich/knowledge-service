@@ -35,6 +35,7 @@ def normalized_handbook() -> NormalizedDocument:
 def test_chunks_carry_the_document_version_fingerprint_and_anchors() -> None:
     normalized = normalized_handbook()
     document = Document.register(
+        title="Handbook",
         document_id=DocumentId.new(),
         provenance=normalized.provenance,
         content_fingerprint=content_fingerprint(normalized.parsed),

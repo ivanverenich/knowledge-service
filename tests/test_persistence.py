@@ -18,6 +18,7 @@ OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 
 def make_document() -> Document:
     return Document.register(
+        title="Handbook",
         document_id=DocumentId.parse("00000000-0000-0000-0000-000000000020"),
         provenance=DocumentProvenance(
             source_id=SourceId.parse("00000000-0000-0000-0000-000000000010"),
@@ -38,6 +39,7 @@ def test_row_translation_round_trips_a_document() -> None:
 
 def test_a_content_only_change_moves_only_the_content_version() -> None:
     document = make_document().reconcile(
+        title="Handbook",
         content_fingerprint="content-b",
         authorization_fingerprint="acl-a",
         source_version="18",

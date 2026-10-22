@@ -58,6 +58,7 @@ class Change(StrEnum):
     CONTENT_AND_ACCESS = "content_and_access"
     RESTORED = "restored"
     SOURCE_VERSION = "source_version"
+    TITLE = "title"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,7 @@ async def reconcile_document(
             created = Document.register(
                 document_id=DocumentId.new(),
                 provenance=provenance,
+                title=normalized.title,
                 content_fingerprint=content,
                 authorization_fingerprint=access,
                 observed_at=observed_at,
@@ -120,6 +122,7 @@ async def reconcile_document(
                 raise InvalidDocument("the document vanished while reconciling")
 
         document = stored.reconcile(
+            title=normalized.title,
             content_fingerprint=content,
             authorization_fingerprint=access,
             source_version=provenance.source_version,
@@ -130,6 +133,7 @@ async def reconcile_document(
         content_changed = document.content_version != stored.content_version
         access_changed = document.authorization_version != stored.authorization_version
         restored = stored.availability is DocumentAvailability.TOMBSTONED
+        source_version_changed = document.provenance != stored.provenance
         await upsert_document(connection, document)
         if restored:
             await record_audit_event(connection, availability_event(document))
@@ -141,7 +145,10 @@ async def reconcile_document(
     return Reconciliation(
         document=document,
         change=_change(
-            content=content_changed, access=access_changed, restored=restored
+            content=content_changed,
+            access=access_changed,
+            restored=restored,
+            source_version=source_version_changed,
         ),
     )
 
@@ -212,7 +219,9 @@ async def _write_grants(
     )
 
 
-def _change(*, content: bool, access: bool, restored: bool) -> Change:
+def _change(
+    *, content: bool, access: bool, restored: bool, source_version: bool
+) -> Change:
     if content and access:
         return Change.CONTENT_AND_ACCESS
     if content:
@@ -221,4 +230,6 @@ def _change(*, content: bool, access: bool, restored: bool) -> Change:
         return Change.ACCESS
     if restored:
         return Change.RESTORED
-    return Change.SOURCE_VERSION
+    if source_version:
+        return Change.SOURCE_VERSION
+    return Change.TITLE

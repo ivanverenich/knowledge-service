@@ -118,6 +118,49 @@ sequenceDiagram
     Worker->>DB: save checkpoint and run outcome
 ```
 
+#### Synchronization as built in M03
+
+The diagram above is the target. Today one call, `synchronize_source`, runs a
+complete pass in-process, with no scheduler, queue, embeddings, or
+Synchronization Run record yet.
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Sync as synchronize_source
+    participant Source as SourcePort (DirectorySource)
+    participant Norm as normalize
+    participant Rec as reconcile_document
+    participant Del as deletions
+    participant DB as PostgreSQL
+    Caller->>Sync: source, source_id, observed_at
+    loop until next_checkpoint is None (a repeated checkpoint raises)
+        Sync->>Source: fetch_page(checkpoint, page_size)
+        Source-->>Sync: records (bytes, version, access, metadata) + next checkpoint
+        loop each record
+            alt reported deleted
+                Sync->>Sync: remove its external ID from seen
+            else present
+                Sync->>Sync: add its external ID to seen
+                Sync->>Norm: SourceRecord
+                Norm-->>Sync: NormalizedDocument or Quarantined
+                alt NormalizedDocument
+                    Sync->>Rec: NormalizedDocument + readers
+                    Rec->>DB: one transaction: lock row, compare fingerprints, write what changed
+                else Quarantined
+                    Sync->>Sync: keep it in seen, so its last good version stays
+                end
+            end
+        end
+    end
+    Sync->>Del: tombstone_missing(seen)
+    Del->>DB: one transaction: tombstone, audit event, queue purge Job
+    Sync->>Del: requeue_unfinished_purges
+    Del->>DB: queue a new purge for each exhausted one
+    Sync-->>Caller: SynchronizationSummary
+    Note over Del,DB: later, per Job: purge_document_chunks deletes Chunks of a still-tombstoned Document
+```
+
 ### Answering
 
 ```mermaid

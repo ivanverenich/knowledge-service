@@ -25,6 +25,7 @@ USER_ID = UserId.parse("00000000-0000-0000-0000-000000000030")
 
 def registered_document() -> Document:
     return Document.register(
+        title="Handbook",
         document_id=DOCUMENT_ID,
         provenance=DocumentProvenance(
             source_id=SOURCE_ID, external_id="page-1", source_version="1"

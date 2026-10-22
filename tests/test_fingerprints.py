@@ -202,6 +202,7 @@ def test_fingerprints_tell_content_and_access_changes_apart() -> None:
         document_id=DOCUMENT_ID, grants=[grant(ALICE)]
     )
     document = Document.register(
+        title="Handbook",
         document_id=DOCUMENT_ID,
         provenance=provenance,
         content_fingerprint=content_fingerprint(GUIDE),
@@ -217,6 +218,7 @@ def test_fingerprints_tell_content_and_access_changes_apart() -> None:
 
     def observe(content: str, access: str) -> Document:
         return document.reconcile(
+            title="Handbook",
             content_fingerprint=content,
             authorization_fingerprint=access,
             source_version=None,
