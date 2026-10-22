@@ -2,6 +2,13 @@ import asyncio
 
 import pytest
 
+from knowledge_service.embeddings import (
+    EmbeddingInputRejected,
+    EmbeddingMalformedResponse,
+    EmbeddingRateLimited,
+    EmbeddingUnavailable,
+    RejectionReason,
+)
 from knowledge_service.errors import (
     AnswerDeadlineExceeded,
     AuthorizationDenied,
@@ -28,6 +35,13 @@ from knowledge_service.model import (
         (ChatModelTimeout(), FailureKind.DEPENDENCY),
         (AnswerDeadlineExceeded(), FailureKind.DEPENDENCY),
         (ChatModelRateLimited(), FailureKind.CAPACITY),
+        (EmbeddingUnavailable(), FailureKind.DEPENDENCY),
+        (EmbeddingMalformedResponse("bad vectors"), FailureKind.DEPENDENCY),
+        (EmbeddingRateLimited(), FailureKind.CAPACITY),
+        (
+            EmbeddingInputRejected(RejectionReason.EMPTY_TEXT, index=0),
+            FailureKind.VALIDATION,
+        ),
         (asyncio.CancelledError(), FailureKind.CANCELLATION),
         (RuntimeError("unexpected"), FailureKind.INTERNAL),
     ],

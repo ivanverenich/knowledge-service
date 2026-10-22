@@ -7,7 +7,7 @@ depends_on: ["M03-T14"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["EmbeddingModel port","fake embedding adapter"]
-status: planned
+status: completed
 ---
 
 # M04-T01 — Design the EmbeddingModel port

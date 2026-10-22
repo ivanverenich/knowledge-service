@@ -1,8 +1,20 @@
 import asyncio
+import hashlib
+import math
 from collections.abc import Sequence
 from uuid import UUID
 
 from knowledge_service.contracts import Answer, Question, Usage
+from knowledge_service.embeddings import (
+    EmbeddingBatch,
+    EmbeddingError,
+    EmbeddingLimits,
+    EmbeddingModelIdentity,
+    EmbeddingTimeout,
+    EmbeddingUsage,
+    check_inputs,
+    checked_batch,
+)
 from knowledge_service.model import ChatModelUnavailable
 from knowledge_service.sources import (
     SourceError,
@@ -115,3 +127,79 @@ class FakeSource:
         following = index + 1
         next_checkpoint = None if following >= len(self._pages) else str(following)
         return SourcePage(records=self._pages[index], next_checkpoint=next_checkpoint)
+
+
+class FakeEmbeddingModel:
+    """Deterministic EmbeddingModel: the same text always gets the same vector.
+
+    A token is a whitespace-separated word. Each vector is derived from a
+    SHAKE-256 hash of its text and scaled to length 1, so it is stable across
+    calls, batches, and processes. `batches` records every batch that reached
+    the "provider", so tests can check what was sent.
+    """
+
+    def __init__(
+        self,
+        *,
+        dimensions: int = 8,
+        limits: EmbeddingLimits | None = None,
+        error: EmbeddingError | None = None,
+        wait_for: asyncio.Event | None = None,
+    ) -> None:
+        self._identity = EmbeddingModelIdentity(
+            provider="fake", model="fake-embedding", dimensions=dimensions
+        )
+        self._limits = limits or EmbeddingLimits(
+            max_inputs=16, max_input_tokens=64, max_batch_tokens=256
+        )
+        self._error = error
+        self._wait_for = wait_for
+        self.batches: list[tuple[str, ...]] = []
+
+    @property
+    def identity(self) -> EmbeddingModelIdentity:
+        return self._identity
+
+    @property
+    def limits(self) -> EmbeddingLimits:
+        return self._limits
+
+    def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
+    async def embed(
+        self,
+        texts: Sequence[str],
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> EmbeddingBatch:
+        tokens = check_inputs(texts, self._limits, self.count_tokens)
+        if not texts:
+            return checked_batch(
+                self._identity,
+                [],
+                EmbeddingUsage(input_tokens=0, latency_ms=0),
+                expected=0,
+            )
+        self.batches.append(tuple(texts))
+        if self._wait_for is not None:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    await self._wait_for.wait()
+            except TimeoutError:
+                raise EmbeddingTimeout() from None
+        if self._error is not None:
+            raise self._error
+        return checked_batch(
+            self._identity,
+            [self._vector(text) for text in texts],
+            EmbeddingUsage(input_tokens=tokens, latency_ms=0),
+            expected=len(texts),
+        )
+
+    def _vector(self, text: str) -> list[float]:
+        digest = hashlib.shake_256(text.encode()).digest(self._identity.dimensions)
+        raw = [byte / 127.5 - 1.0 for byte in digest]
+        norm = math.sqrt(sum(value * value for value in raw))
+        return [value / norm for value in raw]

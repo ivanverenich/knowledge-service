@@ -2,6 +2,11 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
+from knowledge_service.embeddings import (
+    EmbeddingError,
+    EmbeddingInputRejected,
+    EmbeddingRateLimited,
+)
 from knowledge_service.model import ChatModelError, ChatModelRateLimited
 
 
@@ -97,9 +102,11 @@ def classify_failure(error: BaseException) -> FailureKind:
         return FailureKind.CANCELLATION
     if isinstance(error, AuthorizationDenied):
         return FailureKind.AUTHORIZATION
-    if isinstance(error, ChatModelRateLimited):
+    if isinstance(error, EmbeddingInputRejected):
+        return FailureKind.VALIDATION
+    if isinstance(error, (ChatModelRateLimited, EmbeddingRateLimited)):
         return FailureKind.CAPACITY
-    if isinstance(error, (AnswerDeadlineExceeded, ChatModelError)):
+    if isinstance(error, (AnswerDeadlineExceeded, ChatModelError, EmbeddingError)):
         return FailureKind.DEPENDENCY
     return FailureKind.INTERNAL
 
