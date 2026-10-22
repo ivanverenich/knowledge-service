@@ -25,6 +25,7 @@ from knowledge_service.access import AccessGrant, Subject
 from knowledge_service.chunking import chunk_by_structure
 from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime
+from knowledge_service.deletions import availability_event
 from knowledge_service.documents import (
     Document,
     DocumentAvailability,
@@ -39,6 +40,7 @@ from knowledge_service.normalization import NormalizedDocument
 from knowledge_service.persistence import (
     insert_document,
     load_document,
+    record_audit_event,
     replace_access_grants,
     replace_chunks,
     upsert_document,
@@ -129,6 +131,8 @@ async def reconcile_document(
         access_changed = document.authorization_version != stored.authorization_version
         restored = stored.availability is DocumentAvailability.TOMBSTONED
         await upsert_document(connection, document)
+        if restored:
+            await record_audit_event(connection, availability_event(document))
         # A restored Document gets its Chunks back even if its text is unchanged.
         if content_changed or restored:
             await _write_chunks(connection, normalized, document)

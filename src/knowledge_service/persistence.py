@@ -287,7 +287,8 @@ jobs = sa.Table(
     sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_error_code", sa.String(length=64), nullable=True),
     sa.CheckConstraint(
-        "kind in ('synchronize_source', 'purge_conversation')", name="ck_jobs_kind"
+        "kind in ('synchronize_source', 'purge_conversation', 'purge_document_chunks')",
+        name="ck_jobs_kind",
     ),
     sa.CheckConstraint(
         "status in ('queued', 'running', 'succeeded', 'failed')",
@@ -754,6 +755,75 @@ async def load_document(
     return as_document(dict(record))
 
 
+async def load_document_by_id(
+    connection: AsyncConnection,
+    *,
+    document_id: DocumentId,
+    for_update: bool = False,
+) -> Document | None:
+    """Read a stored Document by its ID, optionally locking its row."""
+    statement = sa.select(documents).where(documents.c.document_id == document_id.value)
+    if for_update:
+        statement = statement.with_for_update()
+    record = (await connection.execute(statement)).mappings().one_or_none()
+    if record is None:
+        return None
+    return as_document(dict(record))
+
+
+async def load_available_documents(
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+) -> tuple[Document, ...]:
+    """Read every available Document of one Source."""
+    statement = (
+        sa.select(documents)
+        .where(
+            documents.c.source_id == source_id.value,
+            documents.c.availability == DocumentAvailability.AVAILABLE.value,
+        )
+        .order_by(documents.c.external_id)
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(as_document(dict(record)) for record in records)
+
+
+async def load_unpurged_documents(
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+) -> tuple[Document, ...]:
+    """Read tombstoned Documents that still hold Chunks and no purge can delete.
+
+    A purge Job counts while it is queued, running, or failed with attempts
+    left; a Document whose last purge used every attempt is returned.
+    """
+    open_purge = sa.exists().where(
+        jobs.c.kind == JobKind.PURGE_DOCUMENT_CHUNKS.value,
+        jobs.c.target_id == documents.c.document_id,
+        sa.or_(
+            jobs.c.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
+            sa.and_(
+                jobs.c.status == JobStatus.FAILED.value,
+                jobs.c.attempt < jobs.c.max_attempts,
+            ),
+        ),
+    )
+    statement = (
+        sa.select(documents)
+        .where(
+            documents.c.source_id == source_id.value,
+            documents.c.availability == DocumentAvailability.TOMBSTONED.value,
+            sa.exists().where(chunks.c.document_id == documents.c.document_id),
+            ~open_purge,
+        )
+        .order_by(documents.c.external_id)
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(as_document(dict(record)) for record in records)
+
+
 async def replace_chunks(
     connection: AsyncConnection,
     *,
@@ -804,6 +874,45 @@ async def load_chunks(
     )
     records = (await connection.execute(statement)).mappings().all()
     return tuple(_chunk_from(dict(record)) for record in records)
+
+
+def searchable_chunks_statement(source_id: UUID) -> sa.Select[Any]:
+    """Select the Chunks retrieval may read: only those of available Documents."""
+    return (
+        sa.select(chunks)
+        .join(documents, documents.c.document_id == chunks.c.document_id)
+        .where(
+            documents.c.source_id == source_id,
+            documents.c.availability == DocumentAvailability.AVAILABLE.value,
+        )
+        .order_by(documents.c.external_id, chunks.c.ordinal)
+    )
+
+
+async def load_searchable_chunks(
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+) -> tuple[Chunk, ...]:
+    """Read the Chunks of one Source that retrieval may return."""
+    records = (
+        (await connection.execute(searchable_chunks_statement(source_id.value)))
+        .mappings()
+        .all()
+    )
+    return tuple(_chunk_from(dict(record)) for record in records)
+
+
+async def delete_chunks(
+    connection: AsyncConnection,
+    *,
+    document_id: DocumentId,
+) -> int:
+    """Delete every stored Chunk of a Document; return how many were deleted."""
+    result = await connection.execute(
+        sa.delete(chunks).where(chunks.c.document_id == document_id.value)
+    )
+    return result.rowcount
 
 
 async def replace_access_grants(
@@ -956,9 +1065,16 @@ async def enqueue_job(connection: AsyncConnection, job: Job) -> JobId:
     return job.job_id
 
 
-async def load_job(connection: AsyncConnection, *, job_id: JobId) -> Job | None:
-    """Read a stored Job, if it exists."""
+async def load_job(
+    connection: AsyncConnection,
+    *,
+    job_id: JobId,
+    for_update: bool = False,
+) -> Job | None:
+    """Read a stored Job, if it exists, optionally locking its row."""
     statement = sa.select(jobs).where(jobs.c.job_id == job_id.value)
+    if for_update:
+        statement = statement.with_for_update()
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None

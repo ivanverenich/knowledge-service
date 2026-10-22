@@ -32,6 +32,7 @@ class JobKind(StrEnum):
 
     SYNCHRONIZE_SOURCE = "synchronize_source"
     PURGE_CONVERSATION = "purge_conversation"
+    PURGE_DOCUMENT_CHUNKS = "purge_document_chunks"
 
 
 class JobStatus(StrEnum):

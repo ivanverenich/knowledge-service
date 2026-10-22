@@ -7,7 +7,7 @@ depends_on: ["M03-T12"]
 estimate: 75m
 topics: ["ingestion","parsing","chunking"]
 deliverables: ["tombstone workflow"]
-status: planned
+status: completed
 ---
 
 # M03-T13 — Reconcile deletions with tombstones
