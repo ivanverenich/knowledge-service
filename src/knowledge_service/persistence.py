@@ -47,6 +47,7 @@ from knowledge_service.documents import (
     DocumentProvenance,
     InvalidDocument,
 )
+from knowledge_service.embeddings import EmbeddingModelIdentity
 from knowledge_service.evaluation import (
     EvaluationRun,
     EvaluationStatus,
@@ -58,6 +59,7 @@ from knowledge_service.identifiers import (
     ChunkId,
     ConversationId,
     DocumentId,
+    EmbeddingSpaceId,
     EvaluationDatasetId,
     EvaluationRunId,
     GroupId,
@@ -983,6 +985,76 @@ async def delete_chunks(
         sa.delete(chunks).where(chunks.c.document_id == document_id.value)
     )
     return result.rowcount
+
+
+async def load_embedding_space_id(
+    connection: AsyncConnection,
+    identity: EmbeddingModelIdentity,
+) -> EmbeddingSpaceId | None:
+    """Return the Embedding Space that holds this model identity's vectors.
+
+    The space's row stays share-locked until the transaction ends, so it
+    cannot be deleted or changed while vectors are written into it.
+    """
+    space_id = await connection.scalar(
+        sa.select(embedding_spaces.c.space_id)
+        .where(
+            embedding_spaces.c.provider == identity.provider,
+            embedding_spaces.c.model == identity.model,
+            embedding_spaces.c.dimensions == identity.dimensions,
+        )
+        .with_for_update(read=True)
+    )
+    return None if space_id is None else EmbeddingSpaceId(cast(UUID, space_id))
+
+
+async def load_embedded_chunk_ids(
+    connection: AsyncConnection,
+    *,
+    document_id: DocumentId,
+    space_id: EmbeddingSpaceId,
+) -> frozenset[ChunkId]:
+    """Return the Chunks of a Document that already have a vector in the space."""
+    statement = (
+        sa.select(chunk_embeddings.c.chunk_id)
+        .join(chunks, chunks.c.chunk_id == chunk_embeddings.c.chunk_id)
+        .where(
+            chunks.c.document_id == document_id.value,
+            chunk_embeddings.c.space_id == space_id.value,
+        )
+    )
+    chunk_ids = await connection.scalars(statement)
+    return frozenset(ChunkId(cast(UUID, chunk_id)) for chunk_id in chunk_ids)
+
+
+async def insert_chunk_embeddings(
+    connection: AsyncConnection,
+    *,
+    space_id: EmbeddingSpaceId,
+    dimensions: int,
+    vectors: Mapping[ChunkId, Sequence[float]],
+    created_at: datetime,
+) -> None:
+    """Store one vector per Chunk in the space, in one statement.
+
+    The database refuses a vector whose length is not the space's dimensions,
+    and pgvector's type needs a list, so each vector is converted here.
+    """
+    if not vectors:
+        return
+    await connection.execute(
+        sa.insert(chunk_embeddings),
+        [
+            {
+                "chunk_id": chunk_id.value,
+                "space_id": space_id.value,
+                "dimensions": dimensions,
+                "embedding": list(vector),
+                "created_at": created_at,
+            }
+            for chunk_id, vector in vectors.items()
+        ],
+    )
 
 
 async def replace_access_grants(

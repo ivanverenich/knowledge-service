@@ -7,7 +7,7 @@ depends_on: ["M04-T04"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["embedding publication workflow"]
-status: planned
+status: completed
 ---
 
 # M04-T05 — Publish embeddings atomically

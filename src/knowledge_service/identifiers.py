@@ -56,6 +56,10 @@ class ChunkId(StableIdentifier):
     """Internal identity of a Chunk."""
 
 
+class EmbeddingSpaceId(StableIdentifier):
+    """Internal identity of an Embedding Space."""
+
+
 class UserId(StableIdentifier):
     """Internal identity of a User."""
 

@@ -166,6 +166,40 @@ sequenceDiagram
     Note over Del,DB: later, per Job: purge_document_chunks deletes Chunks of a still-tombstoned Document
 ```
 
+#### Embedding publication as built in M04
+
+`publish_document_embeddings` runs after a Document is reconciled. It embeds
+the Chunks that lack a vector in the model's Embedding Space with no
+database connection held, then writes all their vectors only if the
+Document is still as it was read.
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Pub as publish_document_embeddings
+    participant DB as PostgreSQL
+    participant Model as EmbeddingModel
+    Caller->>Pub: model, document_id
+    Pub->>DB: short transaction: lock space and Document, read Chunks without a vector
+    Pub->>Model: embed_in_batches (no connection held)
+    Model-->>Pub: one outcome per batch
+    alt a batch did not succeed
+        Pub-->>Caller: IncompleteEmbedding, nothing written
+    else every batch succeeded
+        Pub->>DB: short transaction: lock again, compare with the first read
+        alt unchanged
+            Pub->>DB: insert every vector in one statement
+            Pub-->>Caller: PUBLISHED
+        else changed
+            Pub-->>Caller: STALE, nothing written
+        end
+    end
+```
+
+Between a content change and the next publication, the Document's new Chunks
+have no vectors, so dense search does not find it yet; it never finds some
+of its Chunks and not others.
+
 ### Answering
 
 ```mermaid
