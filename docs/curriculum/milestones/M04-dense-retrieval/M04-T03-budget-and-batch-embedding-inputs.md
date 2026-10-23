@@ -7,7 +7,7 @@ depends_on: ["M04-T02"]
 estimate: 75m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["embedding batcher"]
-status: planned
+status: completed
 ---
 
 # M04-T03 — Budget and batch embedding inputs
