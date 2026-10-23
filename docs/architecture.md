@@ -55,8 +55,9 @@ Domain values do not import FastAPI, Dramatiq, SQLAlchemy, OpenAI SDKs, or LangG
 
 Every row is named by an opaque identifier it keeps for its whole life:
 `source_id`, `document_id`, `chunk_id`, `conversation_id`, `message_id`,
-`run_id`, `job_id`, `event_id`, `grant_id`. Nothing is identified by a natural
-key or a position, so identity survives a rename, a move, or a re-ingest.
+`run_id`, `job_id`, `event_id`, `grant_id`, `space_id`. Nothing is identified
+by a natural key or a position, so identity survives a rename, a move, or a
+re-ingest.
 
 A Document carries two versions that move independently. `content_version` rises
 when its text changes, and `authorization_version` rises when who may read it
@@ -72,6 +73,8 @@ erDiagram
     sources ||--o{ synchronization_runs : "records"
     documents ||--o{ chunks : "is split into"
     documents ||--o{ access_grants : "is reachable through"
+    chunks ||--o{ chunk_embeddings : "is embedded as"
+    embedding_spaces ||--o{ chunk_embeddings : "holds"
     conversations ||--o{ messages : "holds"
     messages ||--o{ message_feedback : "is rated by"
 ```
@@ -84,6 +87,8 @@ The rules each table enforces:
 | `synchronization_runs` | A Source has at most one run in flight; a finished run leaves the way clear for the next. |
 | `documents` | One Document per `(source_id, external_id)`; `content_version >= 1`; availability is `available` or `tombstoned`. |
 | `chunks` | One Chunk per `(document_id, ordinal)`; `token_count >= 1`; a Chunk's `content_version` is at least 1. |
+| `embedding_spaces` | One space per `(provider, model, dimensions)`; dimensions from 1 to 16000; at most one space is current. |
+| `chunk_embeddings` | One vector per `(chunk_id, space_id)`; the vector's length must equal its space's dimensions; removed with its Chunk or its space. |
 | `access_grants` | One Grant per `(document_id, subject_kind, subject_id)`; a `public` Grant carries no subject and every other kind carries one. |
 | `conversations` | `retention_deadline > created_at`; `last_message_at >= created_at`. |
 | `messages` | One Message per `(conversation_id, ordinal)`. |

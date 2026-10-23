@@ -77,8 +77,21 @@ typecheck: ## Run pyright static type checks
 test-unit: ## Run fast deterministic unit tests (no network)
 	uv run pytest -m "not integration and not live"
 
+# Integration tests skip themselves without KNOWLEDGE_SERVICE_TEST_DATABASE_URL.
+# When it is unset, the URL is built from the local Docker container, so the
+# password is read at run time and never stored in a file.
+TEST_DB_CONTAINER ?= knowledge-service-postgres
+
 test-integration: ## Run integration tests (needs services)
-	uv run pytest -m "integration and not live"
+	@url="$$KNOWLEDGE_SERVICE_TEST_DATABASE_URL"; \
+	if [ -z "$$url" ]; then \
+		url="$$(uv run python scripts/test_database_url.py "$(TEST_DB_CONTAINER)")"; \
+	fi; \
+	if [ -z "$$url" ]; then \
+		echo "No test database: set KNOWLEDGE_SERVICE_TEST_DATABASE_URL or start the $(TEST_DB_CONTAINER) container."; \
+		exit 1; \
+	fi; \
+	KNOWLEDGE_SERVICE_TEST_DATABASE_URL="$$url" uv run pytest -m "integration and not live"
 
 # ---------------------------------------------------------------------------
 # Combined checks and git hooks

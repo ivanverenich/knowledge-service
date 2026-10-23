@@ -7,7 +7,7 @@ depends_on: ["M04-T03"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["pgvector migration","embedding table"]
-status: planned
+status: completed
 ---
 
 # M04-T04 — Enable pgvector and vector schema

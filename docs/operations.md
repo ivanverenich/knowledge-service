@@ -22,7 +22,7 @@ Use OpenTelemetry for traces and metrics and structured JSON logs with shared re
 
 ## Recovery and failure ownership
 
-Every external call has one owner for timeout, retry, and idempotency. Queue delivery is at least once. Database transitions make availability and checkpoint changes durable. Backups are incomplete until a restore drill proves recovery. Schema changes use expand/migrate/contract sequencing.
+Migrations need a database role that may create the `vector` extension: pgvector is not a trusted extension, so locally that is the superuser and on a managed service its administrative role. Every external call has one owner for timeout, retry, and idempotency. Queue delivery is at least once. Database transitions make availability and checkpoint changes durable. Backups are incomplete until a restore drill proves recovery. Schema changes use expand/migrate/contract sequencing.
 
 ## Deployment path
 

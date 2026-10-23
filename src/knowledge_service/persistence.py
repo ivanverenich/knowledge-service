@@ -11,6 +11,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -173,6 +174,71 @@ chunks = sa.Table(
     sa.CheckConstraint("content_version >= 1", name="ck_chunks_content_version"),
     sa.CheckConstraint("ordinal >= 0", name="ck_chunks_ordinal"),
     sa.CheckConstraint("token_count >= 1", name="ck_chunks_token_count"),
+)
+
+# One row per embedding model identity. Vectors are comparable only within
+# one space, and at most one space is the one retrieval reads.
+embedding_spaces = sa.Table(
+    "embedding_spaces",
+    metadata,
+    sa.Column("space_id", sa.Uuid(), primary_key=True),
+    sa.Column("provider", sa.Text(), nullable=False),
+    sa.Column("model", sa.Text(), nullable=False),
+    sa.Column("dimensions", sa.Integer(), nullable=False),
+    sa.Column("is_current", sa.Boolean(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.UniqueConstraint(
+        "provider", "model", "dimensions", name="uq_embedding_spaces_identity"
+    ),
+    # The target of chunk_embeddings' composite foreign key.
+    sa.UniqueConstraint(
+        "space_id", "dimensions", name="uq_embedding_spaces_space_dimensions"
+    ),
+    sa.CheckConstraint(
+        "dimensions between 1 and 16000", name="ck_embedding_spaces_dimensions"
+    ),
+    sa.CheckConstraint(
+        "provider <> '' and provider = btrim(provider)"
+        " and model <> '' and model = btrim(model)",
+        name="ck_embedding_spaces_identity",
+    ),
+    # A unique index is checked row by row and cannot be deferred: to switch
+    # the current space, clear the old one first, then set the new one.
+    sa.Index(
+        "uq_embedding_spaces_current",
+        "is_current",
+        unique=True,
+        postgresql_where=sa.text("is_current"),
+    ),
+)
+
+# One vector per Chunk per space. The row repeats its space's dimensions, so
+# the database itself refuses a vector of another length.
+chunk_embeddings = sa.Table(
+    "chunk_embeddings",
+    metadata,
+    sa.Column(
+        "chunk_id",
+        sa.Uuid(),
+        sa.ForeignKey("chunks.chunk_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("space_id", sa.Uuid(), primary_key=True),
+    sa.Column("dimensions", sa.Integer(), nullable=False),
+    sa.Column("embedding", Vector(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["space_id", "dimensions"],
+        ["embedding_spaces.space_id", "embedding_spaces.dimensions"],
+        ondelete="CASCADE",
+        name="fk_chunk_embeddings_space_dimensions",
+    ),
+    sa.CheckConstraint(
+        "vector_dims(embedding) = dimensions",
+        name="ck_chunk_embeddings_dimensions",
+    ),
+    # Serves deleting a space and reading one space's vectors (M04-T06).
+    sa.Index("ix_chunk_embeddings_space_id", "space_id"),
 )
 
 access_grants = sa.Table(

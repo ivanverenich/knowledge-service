@@ -7,9 +7,11 @@ from knowledge_service.persistence import metadata
 
 ACCESS_PATTERN_INDEXES = {
     "ix_access_grants_subject_document",
+    "ix_chunk_embeddings_space_id",
     "ix_audit_events_target_occurred_at",
     "ix_conversations_retention_deadline",
     "ix_synchronization_runs_source_started_at",
+    "uq_embedding_spaces_current",
     "uq_synchronization_runs_running_source",
 }
 
@@ -30,11 +32,15 @@ def leading_index_columns(table: sa.Table) -> set[str]:
 
 
 def assert_every_foreign_key_leads_an_index(table: sa.Table) -> None:
-    """Raise when a foreign key has no index to serve it."""
+    """Raise when a foreign key has no index to serve it.
+
+    A composite key needs an index that starts with its first column.
+    """
     leading = leading_index_columns(table)
-    for column in table.columns:
-        if column.foreign_keys and column.name not in leading:
-            raise ForeignKeyNotIndexed(f"{table.name}.{column.name}")
+    for constraint in table.foreign_key_constraints:
+        first = next(iter(constraint.columns)).name
+        if first not in leading:
+            raise ForeignKeyNotIndexed(f"{table.name}.{first}")
 
 
 def test_only_the_named_access_patterns_have_an_index() -> None:

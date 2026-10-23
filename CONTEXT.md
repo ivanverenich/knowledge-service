@@ -54,6 +54,10 @@ _Avoid_: Content version
 A provenance-preserving section of a Document that may be retrieved as evidence.
 _Avoid_: Passage, segment
 
+**Embedding Space**:
+One embedding model identity, its provider, model, and vector dimensions, within which Chunk vectors can be compared; at most one space is current for retrieval.
+_Avoid_: Index, vector store
+
 **Synchronization Run**:
 An auditable attempt to reconcile one Source with the searchable knowledge state.
 _Avoid_: Import, crawl, ingestion job
