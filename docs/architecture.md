@@ -200,6 +200,30 @@ Between a content change and the next publication, the Document's new Chunks
 have no vectors, so dense search does not find it yet; it never finds some
 of its Chunks and not others.
 
+#### Vector search as built in M04
+
+`search_similar_chunks` returns the Chunks nearest to a query vector that
+one reader may see. Eligibility is part of the same SQL statement as the
+ranking, so a Chunk the reader may not see is never ranked and never leaves
+the database.
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Search as search_similar_chunks
+    participant DB as PostgreSQL
+    Caller->>Search: query vector, model identity, Authorization Context, limit
+    Search->>Search: refuse a bad query or limit, scale the query to length 1
+    Search->>DB: find the current Embedding Space for the model identity
+    alt not current
+        Search-->>Caller: NoCurrentEmbeddingSpace
+    else current
+        Search->>DB: one SELECT: space AND available AND a matching Access Grant, ORDER BY distance, Chunk ID, LIMIT
+        DB-->>Search: eligible Chunks with provenance and distance
+        Search-->>Caller: VectorCandidates, nearest first
+    end
+```
+
 ### Answering
 
 ```mermaid

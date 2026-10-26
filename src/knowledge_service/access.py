@@ -15,6 +15,10 @@ class InvalidGrant(ValueError):
     """An Access Grant value or set violates a domain invariant."""
 
 
+class InvalidAuthorizationContext(ValueError):
+    """An Authorization Context does not name one User and only Groups."""
+
+
 class SubjectKind(StrEnum):
     """The kind of reader a grant names."""
 
@@ -58,6 +62,28 @@ class Subject:
     def group(cls, group_id: GroupId) -> Subject:
         """Members of one group may read the Document."""
         return cls(kind=SubjectKind.GROUP, identifier=group_id)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationContext:
+    """The verified User and their Groups for one request or workflow.
+
+    It may read a Document granted to everyone, to this User, or to one of
+    these Groups.
+    """
+
+    user_id: UserId
+    group_ids: frozenset[GroupId] = frozenset()
+
+    def __post_init__(self) -> None:
+        # A plain UUID, or a UserId passed as a group, would match a grant
+        # meant for another subject kind, so the exact types are required.
+        if type(self.user_id) is not UserId:
+            raise InvalidAuthorizationContext("the user must be a UserId")
+        if type(self.group_ids) is not frozenset:
+            raise InvalidAuthorizationContext("the groups must be a frozenset")
+        if any(type(group_id) is not GroupId for group_id in self.group_ids):
+            raise InvalidAuthorizationContext("every group must be a GroupId")
 
 
 def _require_utc(value: datetime, field_name: str) -> None:

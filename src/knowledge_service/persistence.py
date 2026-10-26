@@ -12,11 +12,12 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import (
     AccessGrant,
+    AuthorizationContext,
     InvalidGrant,
     Subject,
     SubjectKind,
@@ -975,6 +976,41 @@ async def load_searchable_chunks(
     return tuple(_chunk_from(dict(record)) for record in records)
 
 
+def eligible_chunks_predicate(context: AuthorizationContext) -> sa.ColumnElement[bool]:
+    """The condition a Chunk must meet before retrieval may rank it.
+
+    Its Document is available, and at least one of its Access Grants names
+    everyone, the context's User, or one of the context's Groups. The
+    statement using it must join `chunks` to `documents`. Every value is a
+    bound parameter, never text spliced into the SQL.
+    """
+    group_ids = sorted(group_id.value for group_id in context.group_ids)
+    granted = sa.exists().where(
+        access_grants.c.document_id == documents.c.document_id,
+        sa.or_(
+            access_grants.c.subject_kind == SubjectKind.PUBLIC.value,
+            sa.and_(
+                access_grants.c.subject_kind == SubjectKind.USER.value,
+                access_grants.c.subject_id == context.user_id.value,
+            ),
+            sa.and_(
+                access_grants.c.subject_kind == SubjectKind.GROUP.value,
+                # One array parameter, however many Groups the User has.
+                access_grants.c.subject_id
+                == sa.any_(
+                    sa.bindparam(
+                        "group_ids", group_ids, type_=ARRAY(sa.Uuid()), unique=True
+                    )
+                ),
+            ),
+        ),
+    )
+    return sa.and_(
+        documents.c.availability == DocumentAvailability.AVAILABLE.value,
+        granted,
+    )
+
+
 async def delete_chunks(
     connection: AsyncConnection,
     *,
@@ -1004,6 +1040,22 @@ async def load_embedding_space_id(
             embedding_spaces.c.dimensions == identity.dimensions,
         )
         .with_for_update(read=True)
+    )
+    return None if space_id is None else EmbeddingSpaceId(cast(UUID, space_id))
+
+
+async def load_current_embedding_space_id(
+    connection: AsyncConnection,
+    identity: EmbeddingModelIdentity,
+) -> EmbeddingSpaceId | None:
+    """Return the current Embedding Space if it holds this model identity."""
+    space_id = await connection.scalar(
+        sa.select(embedding_spaces.c.space_id).where(
+            embedding_spaces.c.provider == identity.provider,
+            embedding_spaces.c.model == identity.model,
+            embedding_spaces.c.dimensions == identity.dimensions,
+            embedding_spaces.c.is_current,
+        )
     )
     return None if space_id is None else EmbeddingSpaceId(cast(UUID, space_id))
 
