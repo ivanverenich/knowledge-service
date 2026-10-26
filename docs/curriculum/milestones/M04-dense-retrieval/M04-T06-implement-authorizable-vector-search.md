@@ -7,7 +7,7 @@ depends_on: ["M04-T05"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["vector-search query"]
-status: planned
+status: completed
 ---
 
 # M04-T06 — Implement authorizable vector search

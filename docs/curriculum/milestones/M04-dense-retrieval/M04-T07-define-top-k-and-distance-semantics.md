@@ -7,7 +7,7 @@ depends_on: ["M04-T06"]
 estimate: 60m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["retrieval result contract"]
-status: planned
+status: completed
 ---
 
 # M04-T07 — Define top-k and distance semantics

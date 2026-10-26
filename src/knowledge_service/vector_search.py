@@ -4,11 +4,32 @@ Eligibility is part of the same SQL statement as the ranking: the database
 drops every Chunk whose Document is unavailable or not granted to the reader
 before it orders the rest by distance. An ineligible Chunk is therefore never
 ranked, never counted toward the limit, and never leaves the database.
+
+What a caller can rely on in a `VectorSearchResult`:
+
+- **Limit.** `limit` is top-k: an int from 1 to `MAX_CANDIDATES`. Anything
+  else raises `InvalidCandidateLimit` before the database is used.
+- **Distance.** Cosine distance, between 0 and 2; lower is nearer. 0 is the
+  same direction as the query, 1 is unrelated, 2 is the opposite one.
+- **Order.** Nearest first, then by Chunk ID when distances are equal, so
+  the same data and query always give the same order. `rank` counts from 1.
+- **Fewer than k.** When fewer eligible Chunks exist, all of them are
+  returned and `truncated` is False. `truncated` is True only when more
+  eligible Chunks exist beyond the limit.
+- **Empty.** No eligible Chunk is a normal, empty result, not an error.
+  A Chunk whose stored vector has no direction (all zeros) has no distance,
+  so it is never a Candidate.
+
+Every stored vector and every query has length 1, so distances are right
+in pgvector's 32-bit floats. Ties are exact: two vectors in the same
+direction can still differ in the last digits of their distances, and are
+then ordered by those digits, not by Chunk ID.
 """
 
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID
 
@@ -17,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.documents import ContentVersion
-from knowledge_service.embeddings import EmbeddingModelIdentity, Vector
+from knowledge_service.embeddings import EmbeddingModelIdentity, Vector, unit_length
 from knowledge_service.identifiers import (
     ChunkId,
     DocumentId,
@@ -32,7 +53,7 @@ from knowledge_service.persistence import (
     load_current_embedding_space_id,
 )
 
-# Bounds the rows one search reads. M04-T07 settles the limit semantics.
+# The largest top-k one search may ask for, so its rows stay bounded.
 MAX_CANDIDATES = 100
 
 
@@ -44,19 +65,31 @@ class InvalidVectorQuery(VectorSearchError):
     """The query vector or the limit cannot be searched; nothing was read."""
 
 
+class InvalidCandidateLimit(InvalidVectorQuery):
+    """The limit is not an int from 1 to `MAX_CANDIDATES`; nothing was read."""
+
+
 class NoCurrentEmbeddingSpace(VectorSearchError):
     """The current Embedding Space does not hold the query's model identity."""
+
+
+class DistanceMetric(StrEnum):
+    """How `distance` is measured; lower is always nearer."""
+
+    COSINE = "cosine"
 
 
 @dataclass(frozen=True, slots=True)
 class VectorCandidate:
     """One eligible Chunk, where it came from, and its distance to the query.
 
-    `distance` is the cosine distance: 0 for the same direction, up to 2 for
-    the opposite one. The fields holding Document text are kept out of repr,
-    so logging a Candidate never shows them.
+    `rank` is its 1-based position in the result. `distance` is the cosine
+    distance, from 0 for the same direction to 2 for the opposite one. The
+    fields holding Document text are kept out of repr, so logging a
+    Candidate never shows them.
     """
 
+    rank: int
     chunk_id: ChunkId
     document_id: DocumentId
     source_id: SourceId
@@ -70,6 +103,20 @@ class VectorCandidate:
     text: str = field(repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class VectorSearchResult:
+    """The Candidates of one search and how to read them.
+
+    See the module docstring for the guarantees on order, distance, and
+    fewer-than-k results.
+    """
+
+    metric: DistanceMetric
+    limit: int
+    candidates: tuple[VectorCandidate, ...]
+    truncated: bool
+
+
 async def search_similar_chunks(
     connection: AsyncConnection,
     *,
@@ -77,15 +124,16 @@ async def search_similar_chunks(
     query: Vector,
     context: AuthorizationContext,
     limit: int,
-) -> tuple[VectorCandidate, ...]:
+) -> VectorSearchResult:
     """Return up to `limit` eligible Chunks, nearest first.
 
     `identity` names the model that embedded the query; only vectors of the
     current Embedding Space are compared, and it must hold that identity.
-    Raises `InvalidVectorQuery` for a bad vector or limit and
-    `NoCurrentEmbeddingSpace` when the spaces differ.
+    Raises `InvalidCandidateLimit` for a bad limit, `InvalidVectorQuery` for
+    a bad vector, and `NoCurrentEmbeddingSpace` when the spaces differ.
     """
-    unit_query = _unit_query(query, dimensions=identity.dimensions, limit=limit)
+    _check_limit(limit)
+    unit_query = _unit_query(query, dimensions=identity.dimensions)
     space_id = await load_current_embedding_space_id(connection, identity)
     if space_id is None:
         raise NoCurrentEmbeddingSpace("the current embedding space is another model")
@@ -93,10 +141,19 @@ async def search_similar_chunks(
         space_id=space_id,
         query=unit_query,
         eligibility=eligible_chunks_predicate(context),
-        limit=limit,
+        # One row more than asked shows whether more eligible Chunks exist.
+        limit=limit + 1,
     )
     records = (await connection.execute(statement)).mappings().all()
-    return tuple(_candidate_from(dict(record)) for record in records)
+    return VectorSearchResult(
+        metric=DistanceMetric.COSINE,
+        limit=limit,
+        candidates=tuple(
+            _candidate_from(dict(record), rank=index)
+            for index, record in enumerate(records[:limit], start=1)
+        ),
+        truncated=len(records) > limit,
+    )
 
 
 def vector_search_statement(
@@ -110,7 +167,9 @@ def vector_search_statement(
 
     The predicate sits in the same WHERE as the space, so PostgreSQL applies
     it before ORDER BY and LIMIT. Ties in distance are broken by Chunk ID so
-    that equal inputs always return the same order.
+    that equal inputs always return the same order. A stored vector with no
+    direction gives a NaN distance, which is not a distance, so its row is
+    left out; PostgreSQL treats NaN as equal to NaN.
     """
     distance = chunk_embeddings.c.embedding.cosine_distance(list(query))
     return (
@@ -130,28 +189,30 @@ def vector_search_statement(
         .select_from(chunk_embeddings)
         .join(chunks, chunks.c.chunk_id == chunk_embeddings.c.chunk_id)
         .join(documents, documents.c.document_id == chunks.c.document_id)
-        .where(chunk_embeddings.c.space_id == space_id.value, eligibility)
+        .where(
+            chunk_embeddings.c.space_id == space_id.value,
+            eligibility,
+            distance != float("nan"),
+        )
         .order_by(distance, chunks.c.chunk_id)
         .limit(limit)
     )
+
+
+def _check_limit(limit: int) -> None:
+    # bool is an int, so `True` would otherwise pass as a limit of 1.
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise InvalidCandidateLimit(
+            f"limit must be an int between 1 and {MAX_CANDIDATES}"
+        )
 
 
 def _unit_query(
     query: Vector,
     *,
     dimensions: int,
-    limit: int,
 ) -> Vector:
-    """Check the query and the limit, and return the query scaled to length 1.
-
-    pgvector computes in 32-bit floats, where a value that is finite here can
-    overflow or round to zero and make distances NaN or wrong. Cosine distance
-    ignores length, so scaling to length 1 keeps the ranking and keeps every
-    value in range.
-    """
-    # bool is an int, so `True` would otherwise pass as a limit of 1.
-    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
-        raise InvalidVectorQuery(f"limit must be between 1 and {MAX_CANDIDATES}")
+    """Check the query and return it scaled to length 1, like stored vectors."""
     if type(query) is not tuple:
         raise InvalidVectorQuery("query must be a tuple of numbers")
     if len(query) != dimensions:
@@ -159,14 +220,10 @@ def _unit_query(
             f"query has {len(query)} dimensions, expected {dimensions}"
         )
     values = [_finite(value) for value in query]
-    largest = max(abs(value) for value in values)
     # Cosine distance to a zero vector is undefined, so every row would tie.
-    if largest == 0.0:
+    if not any(values):
         raise InvalidVectorQuery("query must not be all zeros")
-    # Dividing by the largest value first keeps the length from overflowing.
-    scaled = [value / largest for value in values]
-    length = math.hypot(*scaled)
-    return tuple(value / length for value in scaled)
+    return unit_length(values)
 
 
 def _finite(value: object) -> float:
@@ -182,8 +239,9 @@ def _finite(value: object) -> float:
     return number
 
 
-def _candidate_from(record: Mapping[str, object]) -> VectorCandidate:
+def _candidate_from(record: Mapping[str, object], *, rank: int) -> VectorCandidate:
     return VectorCandidate(
+        rank=rank,
         chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
         document_id=DocumentId(cast(UUID, record["document_id"])),
         source_id=SourceId(cast(UUID, record["source_id"])),

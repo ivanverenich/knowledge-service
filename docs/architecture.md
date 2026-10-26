@@ -205,7 +205,8 @@ of its Chunks and not others.
 `search_similar_chunks` returns the Chunks nearest to a query vector that
 one reader may see. Eligibility is part of the same SQL statement as the
 ranking, so a Chunk the reader may not see is never ranked and never leaves
-the database.
+the database. Stored vectors and the query both have length 1, and cosine
+distance runs from 0 (same direction) to 2 (opposite).
 
 ```mermaid
 sequenceDiagram
@@ -218,9 +219,9 @@ sequenceDiagram
     alt not current
         Search-->>Caller: NoCurrentEmbeddingSpace
     else current
-        Search->>DB: one SELECT: space AND available AND a matching Access Grant, ORDER BY distance, Chunk ID, LIMIT
+        Search->>DB: one SELECT: space AND available AND a matching Access Grant AND a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
         DB-->>Search: eligible Chunks with provenance and distance
-        Search-->>Caller: VectorCandidates, nearest first
+        Search-->>Caller: VectorSearchResult: up to k ranked Candidates, nearest first, and whether more exist
     end
 ```
 

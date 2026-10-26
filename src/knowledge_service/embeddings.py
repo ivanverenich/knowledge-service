@@ -174,6 +174,26 @@ class EmbeddingModel(Protocol):
         ...
 
 
+def unit_length(vector: Sequence[float]) -> Vector:
+    """Return the vector scaled to length 1, keeping its direction.
+
+    pgvector computes distances in 32-bit floats, where squaring a value that
+    is finite here can overflow or round to zero and make the distance NaN or
+    wrong. Cosine distance ignores length, so storing and querying only
+    vectors of length 1 keeps every distance right and every value between
+    -1 and 1. Raises `InvalidEmbedding` for a vector with no direction.
+    """
+    if not all(math.isfinite(value) for value in vector):
+        raise InvalidEmbedding("a vector must hold finite values")
+    largest = max((abs(value) for value in vector), default=0.0)
+    if largest == 0.0:
+        raise InvalidEmbedding("a vector must not be all zeros")
+    # Dividing by the largest value first keeps the length from overflowing.
+    scaled = [value / largest for value in vector]
+    length = math.hypot(*scaled)
+    return tuple(value / length for value in scaled)
+
+
 def check_inputs(
     texts: Sequence[str],
     limits: EmbeddingLimits,

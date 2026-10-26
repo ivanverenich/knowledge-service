@@ -21,8 +21,11 @@ from knowledge_service.identifiers import (
 from knowledge_service.persistence import eligible_chunks_predicate
 from knowledge_service.vector_search import (
     MAX_CANDIDATES,
+    DistanceMetric,
+    InvalidCandidateLimit,
     InvalidVectorQuery,
     VectorCandidate,
+    VectorSearchResult,
     search_similar_chunks,
     vector_search_statement,
 )
@@ -118,6 +121,7 @@ def test_the_reader_and_the_query_are_bound_parameters() -> None:
 
 def test_a_candidate_repr_shows_no_document_text() -> None:
     candidate = VectorCandidate(
+        rank=1,
         chunk_id=ChunkId(UUID(int=1)),
         document_id=DocumentId(UUID(int=2)),
         source_id=SourceId(UUID(int=3)),
@@ -131,4 +135,44 @@ def test_a_candidate_repr_shows_no_document_text() -> None:
         text=MARKER,
     )
 
+    result = VectorSearchResult(
+        metric=DistanceMetric.COSINE,
+        limit=1,
+        candidates=(candidate,),
+        truncated=False,
+    )
+
     assert MARKER not in repr(candidate)
+    assert MARKER not in repr(result)
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [0, -1, MAX_CANDIDATES + 1, 10**30, True, False, 1.0, 5.5, None, "5"],
+)
+async def test_an_invalid_k_is_refused_before_the_database(limit: object) -> None:
+    unused = cast(AsyncConnection, object())
+
+    with pytest.raises(InvalidCandidateLimit):
+        await search_similar_chunks(
+            unused,
+            identity=IDENTITY,
+            query=(1.0, 0.0, 0.0),
+            context=AuthorizationContext(user_id=USER),
+            limit=cast(int, limit),
+        )
+
+
+async def test_a_bad_limit_is_reported_before_a_bad_query() -> None:
+    unused = cast(AsyncConnection, object())
+
+    # InvalidCandidateLimit is an InvalidVectorQuery, so T06 callers still
+    # catch it; a caller that sets k can tell it apart.
+    with pytest.raises(InvalidCandidateLimit):
+        await search_similar_chunks(
+            unused,
+            identity=IDENTITY,
+            query=(0.0, 0.0, 0.0),
+            context=AuthorizationContext(user_id=USER),
+            limit=0,
+        )

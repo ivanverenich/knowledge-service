@@ -25,6 +25,7 @@ from knowledge_service.embeddings import (
     Vector,
     check_inputs,
     checked_batch,
+    unit_length,
 )
 
 REQUEST_ID = UUID("00000000-0000-0000-0000-000000000021")
@@ -340,3 +341,37 @@ async def test_a_model_slower_than_the_deadline_times_out_as_a_typed_error() -> 
 def test_a_batch_cannot_hold_a_vector_of_other_dimensions() -> None:
     with pytest.raises(InvalidEmbedding):
         EmbeddingBatch(identity=IDENTITY, vectors=((1.0,),), usage=USAGE)
+
+
+finite_floats = st.floats(allow_nan=False, allow_infinity=False)
+
+
+@given(st.lists(finite_floats, min_size=1, max_size=64).filter(any))
+def test_unit_length_keeps_the_direction_at_length_one(values: list[float]) -> None:
+    unit = unit_length(values)
+
+    assert math.hypot(*unit) == pytest.approx(1.0, abs=1e-9)
+    assert all(abs(value) <= 1.0 for value in unit)
+    # Same direction: every sign is kept, and the largest value stays largest.
+    assert [math.copysign(1, u) for u, v in zip(unit, values, strict=True) if v] == [
+        math.copysign(1, v) for v in values if v
+    ]
+    largest = max(range(len(values)), key=lambda i: abs(values[i]))
+    assert abs(unit[largest]) == max(abs(value) for value in unit)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [],
+        [0.0, 0.0],
+        [-0.0],
+        [math.nan, 1.0],
+        [1.0, math.nan],
+        [math.inf, 1.0],
+        [1.0, -math.inf],
+    ],
+)
+def test_unit_length_refuses_a_vector_with_no_direction(values: list[float]) -> None:
+    with pytest.raises(InvalidEmbedding):
+        unit_length(values)

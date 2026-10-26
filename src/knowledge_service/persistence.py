@@ -48,7 +48,7 @@ from knowledge_service.documents import (
     DocumentProvenance,
     InvalidDocument,
 )
-from knowledge_service.embeddings import EmbeddingModelIdentity
+from knowledge_service.embeddings import EmbeddingModelIdentity, unit_length
 from knowledge_service.evaluation import (
     EvaluationRun,
     EvaluationStatus,
@@ -1089,8 +1089,11 @@ async def insert_chunk_embeddings(
 ) -> None:
     """Store one vector per Chunk in the space, in one statement.
 
-    The database refuses a vector whose length is not the space's dimensions,
-    and pgvector's type needs a list, so each vector is converted here.
+    Each vector is stored scaled to length 1 (see `unit_length`), so search
+    distances stay right in pgvector's 32-bit floats; a vector with no
+    direction raises `InvalidEmbedding` and nothing is stored. The database
+    refuses a vector whose length is not the space's dimensions, and
+    pgvector's type needs a list, so each vector is converted here.
     """
     if not vectors:
         return
@@ -1101,7 +1104,7 @@ async def insert_chunk_embeddings(
                 "chunk_id": chunk_id.value,
                 "space_id": space_id.value,
                 "dimensions": dimensions,
-                "embedding": list(vector),
+                "embedding": list(unit_length(vector)),
                 "created_at": created_at,
             }
             for chunk_id, vector in vectors.items()

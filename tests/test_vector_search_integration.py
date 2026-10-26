@@ -23,6 +23,7 @@ from knowledge_service.identifiers import (
 )
 from knowledge_service.normalization import NormalizedDocument, normalize
 from knowledge_service.persistence import (
+    chunk_embeddings,
     embedding_spaces,
     insert_chunk_embeddings,
     load_chunks,
@@ -33,8 +34,10 @@ from knowledge_service.reconciliation import reconcile_document
 from knowledge_service.settings import Settings
 from knowledge_service.sources import SourceAccess, SourceRecord
 from knowledge_service.vector_search import (
+    DistanceMetric,
     NoCurrentEmbeddingSpace,
     VectorCandidate,
+    VectorSearchResult,
     search_similar_chunks,
 )
 
@@ -113,7 +116,10 @@ async def a_document(
     vector: Sequence[float],
     space: EmbeddingModelIdentity = IDENTITY,
 ) -> DocumentId:
-    """Store a one-Chunk Document and give its Chunk the given vector."""
+    """Store a one-Chunk Document and give its Chunk the given vector.
+
+    The vector is stored at length 1, as every published vector is.
+    """
     reconciled = await reconcile_document(
         runtime, plain_text(external_id), readers=readers, observed_at=OBSERVED_AT
     )
@@ -132,6 +138,20 @@ async def a_document(
     return document_id
 
 
+async def search_result(
+    runtime: DatabaseRuntime,
+    *,
+    context: AuthorizationContext = CONTEXT,
+    limit: int = 10,
+    identity: EmbeddingModelIdentity = IDENTITY,
+    query: tuple[float, ...] = QUERY,
+) -> VectorSearchResult:
+    async with runtime.transaction() as connection:
+        return await search_similar_chunks(
+            connection, identity=identity, query=query, context=context, limit=limit
+        )
+
+
 async def search(
     runtime: DatabaseRuntime,
     *,
@@ -140,10 +160,10 @@ async def search(
     identity: EmbeddingModelIdentity = IDENTITY,
     query: tuple[float, ...] = QUERY,
 ) -> tuple[VectorCandidate, ...]:
-    async with runtime.transaction() as connection:
-        return await search_similar_chunks(
-            connection, identity=identity, query=query, context=context, limit=limit
-        )
+    result = await search_result(
+        runtime, context=context, limit=limit, identity=identity, query=query
+    )
+    return result.candidates
 
 
 def documents_of(candidates: Sequence[VectorCandidate]) -> list[DocumentId]:
@@ -384,3 +404,200 @@ async def test_distance_depends_on_direction_not_length(
         [c.distance for c in expected], abs=1e-6
     )
     assert all(math.isfinite(c.distance) for c in found)
+
+
+# Five public Documents around QUERY = (1, 0, 0): two exact matches that tie,
+# then one at 45 degrees, one at a right angle, and one opposite.
+CORPUS = {
+    "tie-a.txt": [1.0, 0.0, 0.0],
+    "tie-b.txt": [2.0, 0.0, 0.0],
+    "diagonal.txt": [1.0, 1.0, 0.0],
+    "right-angle.txt": [0.0, 1.0, 0.0],
+    "opposite.txt": [-1.0, 0.0, 0.0],
+}
+DISTANCES = {
+    "tie-a.txt": 0.0,
+    "tie-b.txt": 0.0,
+    "diagonal.txt": 1 - 1 / math.sqrt(2),
+    "right-angle.txt": 1.0,
+    "opposite.txt": 2.0,
+}
+
+
+async def a_corpus(runtime: DatabaseRuntime, names: Sequence[str]) -> list[str]:
+    """Store the named Documents in this order; return them in result order.
+
+    The result order is by distance, then by Chunk ID.
+    """
+    chunk_ids: dict[str, ChunkId] = {}
+    for name in names:
+        document_id = await a_document(
+            runtime, name, readers=[Subject.public()], vector=CORPUS[name]
+        )
+        async with runtime.transaction() as connection:
+            (chunk,) = await load_chunks(connection, document_id=document_id)
+        chunk_ids[name] = chunk.chunk_id
+    return sorted(names, key=lambda name: (DISTANCES[name], chunk_ids[name].value))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("limit", "returned", "truncated"),
+    [
+        (1, 1, True),
+        (2, 2, True),
+        (3, 3, True),
+        (4, 4, True),
+        (5, 5, False),
+        (6, 5, False),
+        (100, 5, False),
+    ],
+)
+async def test_top_k_returns_the_nearest_k_in_order(
+    runtime: DatabaseRuntime, limit: int, returned: int, truncated: bool
+) -> None:
+    expected = await a_corpus(runtime, list(CORPUS))
+
+    result = await search_result(runtime, limit=limit)
+
+    assert result.metric is DistanceMetric.COSINE
+    assert result.limit == limit
+    assert result.truncated is truncated
+    assert [c.external_id for c in result.candidates] == expected[:returned]
+    assert [c.rank for c in result.candidates] == list(range(1, returned + 1))
+    assert [c.distance for c in result.candidates] == pytest.approx(
+        [DISTANCES[name] for name in expected[:returned]], abs=1e-6
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "names",
+    [
+        list(CORPUS),
+        list(reversed(CORPUS)),
+        ["diagonal.txt", "tie-b.txt", "opposite.txt", "tie-a.txt", "right-angle.txt"],
+    ],
+)
+async def test_the_order_depends_only_on_distance_and_chunk_id(
+    runtime: DatabaseRuntime, names: list[str]
+) -> None:
+    expected = await a_corpus(runtime, names)
+
+    first = await search_result(runtime)
+    second = await search_result(runtime)
+
+    assert [c.external_id for c in first.candidates] == expected
+    assert first == second
+
+
+@pytest.mark.integration
+async def test_distances_stay_between_zero_and_two(runtime: DatabaseRuntime) -> None:
+    await a_corpus(runtime, list(CORPUS))
+
+    result = await search_result(runtime)
+
+    assert result.candidates[0].distance == 0.0
+    assert result.candidates[-1].distance == 2.0
+    assert all(0.0 <= c.distance <= 2.0 for c in result.candidates)
+
+
+@pytest.mark.integration
+async def test_no_eligible_chunk_is_an_empty_result(runtime: DatabaseRuntime) -> None:
+    await a_document(
+        runtime,
+        "private.txt",
+        readers=[Subject.user(OTHER_USER)],
+        vector=[1.0, 0.0, 0.0],
+    )
+
+    result = await search_result(runtime, limit=1)
+
+    assert result.candidates == ()
+    assert result.truncated is False
+
+
+@pytest.mark.integration
+async def test_truncated_counts_only_chunks_the_reader_may_see(
+    runtime: DatabaseRuntime,
+) -> None:
+    # Hidden Chunks beyond the limit must not show through `truncated`.
+    for name in ("hidden-1.txt", "hidden-2.txt", "hidden-3.txt"):
+        await a_document(
+            runtime, name, readers=[Subject.user(OTHER_USER)], vector=[1.0, 0.0, 0.0]
+        )
+    visible = await a_document(
+        runtime, "visible.txt", readers=[Subject.public()], vector=[0.0, 1.0, 0.0]
+    )
+
+    result = await search_result(runtime, limit=1)
+
+    assert documents_of(result.candidates) == [visible]
+    assert result.truncated is False
+
+
+@pytest.mark.integration
+async def test_a_chunk_whose_vector_has_no_direction_is_never_a_candidate(
+    runtime: DatabaseRuntime,
+) -> None:
+    # The application refuses to store such a vector, so write the row
+    # directly, as a bug or a manual fix could.
+    zero = await a_document(
+        runtime, "zero.txt", readers=[Subject.public()], vector=[1.0, 0.0, 0.0]
+    )
+    async with runtime.transaction() as connection:
+        (chunk,) = await load_chunks(connection, document_id=zero)
+        await connection.execute(
+            sa.update(chunk_embeddings)
+            .where(chunk_embeddings.c.chunk_id == chunk.chunk_id.value)
+            .values(embedding=[0.0, 0.0, 0.0])
+        )
+    kept = await a_document(
+        runtime, "kept.txt", readers=[Subject.public()], vector=[0.0, 1.0, 0.0]
+    )
+
+    result = await search_result(runtime, limit=1)
+
+    assert documents_of(result.candidates) == [kept]
+    assert result.truncated is False
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        # Once wrong in pgvector's 32-bit floats: squaring overflowed or
+        # rounded to zero before vectors were stored at length 1.
+        ([3e38, 3e38, 0.0], 1 - 1 / math.sqrt(2)),
+        ([2e19, 2e19, 0.0], 1 - 1 / math.sqrt(2)),
+        ([1e-30, 1e-30, 0.0], 1 - 1 / math.sqrt(2)),
+        ([1e-40, 1e-40, 0.0], 1 - 1 / math.sqrt(2)),
+        ([1e-30, 1e-25, 0.0], 1.0 - 1e-5 / math.sqrt(1 + 1e-10)),
+    ],
+)
+async def test_a_stored_vector_of_any_size_gets_its_true_distance(
+    runtime: DatabaseRuntime, stored: list[float], expected: float
+) -> None:
+    await a_document(runtime, "sized.txt", readers=[Subject.public()], vector=stored)
+
+    result = await search_result(runtime)
+
+    (candidate,) = result.candidates
+    assert candidate.distance == pytest.approx(expected, abs=1e-6)
+
+
+@pytest.mark.integration
+async def test_a_tiny_sideways_vector_does_not_outrank_a_near_one(
+    runtime: DatabaseRuntime,
+) -> None:
+    near = await a_document(
+        runtime, "near.txt", readers=[Subject.public()], vector=[1.0, 0.01, 0.0]
+    )
+    await a_document(
+        runtime, "tiny.txt", readers=[Subject.public()], vector=[1e-30, 1e-25, 0.0]
+    )
+
+    result = await search_result(runtime, limit=1)
+
+    assert documents_of(result.candidates) == [near]
+    assert result.truncated is True
