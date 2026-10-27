@@ -34,6 +34,9 @@ from dataclasses import dataclass, replace
 
 from knowledge_service.structure import BlockKind, ParsedDocument
 
+# Raise when the cutting rules change, so vectors made under the old rules
+# belong to another index configuration.
+CHUNKER_VERSION = "structure/1"
 WINDOW_TOKENS = 256
 OVERLAP_TOKENS = 32
 MIN_TOKENS = 64

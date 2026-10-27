@@ -93,6 +93,8 @@ class EmbeddingModelIdentity:
     dimensions: int
 
     def __post_init__(self) -> None:
+        if type(self.provider) is not str or type(self.model) is not str:
+            raise InvalidEmbedding("provider and model must be strings")
         if not self.provider.strip() or not self.model.strip():
             raise InvalidEmbedding("provider and model must not be empty")
         if type(self.dimensions) is not int or self.dimensions < 1:
@@ -131,6 +133,16 @@ class EmbeddingUsage:
 
 
 type Vector = tuple[float, ...]
+
+
+class DistanceMetric(StrEnum):
+    """How `distance` is measured; lower is always nearer."""
+
+    COSINE = "cosine"
+
+
+# Names the scaling `unit_length` applies to every stored vector and query.
+VECTOR_SCALING = "unit_length/1"
 
 
 @dataclass(frozen=True, slots=True)

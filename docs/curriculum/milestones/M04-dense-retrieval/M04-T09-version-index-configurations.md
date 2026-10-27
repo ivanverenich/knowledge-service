@@ -7,7 +7,7 @@ depends_on: ["M04-T08"]
 estimate: 75m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["index-configuration model"]
-status: planned
+status: completed
 ---
 
 # M04-T09 — Version index configurations

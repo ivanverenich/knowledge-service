@@ -32,7 +32,6 @@ then ordered by those digits, not by Chunk ID.
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID
 
@@ -41,7 +40,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.documents import ContentVersion
-from knowledge_service.embeddings import EmbeddingModelIdentity, Vector, unit_length
+from knowledge_service.embeddings import (
+    DistanceMetric,
+    EmbeddingModelIdentity,
+    Vector,
+    unit_length,
+)
 from knowledge_service.identifiers import (
     ChunkId,
     DocumentId,
@@ -76,12 +80,6 @@ class InvalidCandidateLimit(InvalidVectorQuery):
 
 class NoCurrentEmbeddingSpace(VectorSearchError):
     """The current Embedding Space does not hold the query's model identity."""
-
-
-class DistanceMetric(StrEnum):
-    """How `distance` is measured; lower is always nearer."""
-
-    COSINE = "cosine"
 
 
 @dataclass(frozen=True, slots=True)

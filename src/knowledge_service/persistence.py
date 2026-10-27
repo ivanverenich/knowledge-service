@@ -65,10 +65,16 @@ from knowledge_service.identifiers import (
     EvaluationDatasetId,
     EvaluationRunId,
     GroupId,
+    IndexConfigurationId,
     JobId,
     MessageId,
     SourceId,
     UserId,
+)
+from knowledge_service.index_configuration import (
+    IndexConfiguration,
+    IndexConfigurationConflict,
+    settings_fingerprint,
 )
 from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
 from knowledge_service.language import Language
@@ -270,6 +276,22 @@ chunk_embeddings = sa.Table(
     ),
     # Serves deleting a space and reading one space's vectors (M04-T06).
     sa.Index("ix_chunk_embeddings_space_id", "space_id"),
+)
+
+# One row per distinct set of settings that shapes stored vectors. Rows are
+# only ever inserted: a changed setting is a new row, never an update.
+index_configurations = sa.Table(
+    "index_configurations",
+    metadata,
+    sa.Column("configuration_id", sa.Uuid(), primary_key=True),
+    sa.Column("fingerprint", sa.Text(), nullable=False),
+    sa.Column("settings", JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.UniqueConstraint("fingerprint", name="uq_index_configurations_fingerprint"),
+    sa.CheckConstraint(
+        "fingerprint ~ '^[0-9a-f]{64}$'",
+        name="ck_index_configurations_fingerprint",
+    ),
 )
 
 access_grants = sa.Table(
@@ -1199,6 +1221,58 @@ async def load_current_embedding_space_id(
         )
     )
     return None if space_id is None else EmbeddingSpaceId(cast(UUID, space_id))
+
+
+async def ensure_index_configuration(
+    connection: AsyncConnection,
+    configuration: IndexConfiguration,
+    *,
+    created_at: datetime,
+) -> IndexConfigurationId:
+    """Return the identity of this configuration, storing it if it is new.
+
+    Equal settings always return the identity stored first; any changed
+    setting gives a new fingerprint and so a new row. Two callers storing the
+    same new configuration at once get one row: the second insert does
+    nothing and reads the first one's row. Raises
+    `IndexConfigurationConflict` if a stored row has the fingerprint but not
+    the settings, which would mean the row was edited. The configuration is
+    checked again first, so one altered after it was made is refused.
+    """
+    configuration = configuration.checked()
+    fingerprint = configuration.fingerprint
+    settings = configuration.settings()
+    inserted = await connection.scalar(
+        insert(index_configurations)
+        .values(
+            configuration_id=IndexConfigurationId.new().value,
+            fingerprint=fingerprint,
+            settings=settings,
+            created_at=created_at,
+        )
+        .on_conflict_do_nothing(index_elements=[index_configurations.c.fingerprint])
+        .returning(index_configurations.c.configuration_id)
+    )
+    if inserted is not None:
+        return IndexConfigurationId(cast(UUID, inserted))
+    stored = (
+        await connection.execute(
+            sa.select(
+                index_configurations.c.configuration_id,
+                index_configurations.c.settings,
+            ).where(index_configurations.c.fingerprint == fingerprint)
+        )
+    ).one()
+    # Hashing the stored JSON also catches 8.0 for 8 or true for 1, which
+    # compare equal in Python but are other settings.
+    if (
+        stored.settings != settings
+        or settings_fingerprint(stored.settings) != fingerprint
+    ):
+        raise IndexConfigurationConflict(
+            "a stored configuration has this fingerprint but other settings"
+        )
+    return IndexConfigurationId(cast(UUID, stored.configuration_id))
 
 
 async def load_embedded_chunk_ids(

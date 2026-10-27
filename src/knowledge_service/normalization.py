@@ -38,6 +38,9 @@ from knowledge_service.structure import (
 from knowledge_service.text_parser import parse_text
 
 MAX_DETAIL_CHARACTERS = 200
+# Raise when normalization changes what a Document's text or blocks become,
+# so vectors made from the old text belong to another index configuration.
+NORMALIZATION_VERSION = "normalization/1"
 
 _UNTITLED = "Untitled"
 
@@ -128,6 +131,16 @@ _PARSERS = {
     "text/html": _Parser("html/1", _decoded(parse_html)),
     "application/pdf": _Parser(f"pdf/1 pypdf/{version('pypdf')}", parse_pdf),
 }
+
+
+def parser_versions() -> dict[str, str]:
+    """Return the parser version recorded for each supported media type."""
+    return {media_type: parser.version for media_type, parser in _PARSERS.items()}
+
+
+def media_type_aliases() -> dict[str, str]:
+    """Return the media types read as another, such as XHTML as HTML."""
+    return dict(_MEDIA_TYPE_ALIASES)
 
 
 def normalize(record: SourceRecord, *, source_id: SourceId) -> NormalizationOutcome:

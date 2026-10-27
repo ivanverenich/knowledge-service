@@ -39,7 +39,7 @@ def content_fingerprint(parsed: ParsedDocument) -> str:
         }
         for block in parsed.blocks
     ]
-    return _hash(_CONTENT_LABEL, {"text": parsed.text, "blocks": blocks})
+    return canonical_hash(_CONTENT_LABEL, {"text": parsed.text, "blocks": blocks})
 
 
 def authorization_fingerprint(
@@ -62,15 +62,10 @@ def authorization_fingerprint(
         for grant in granted_subjects(document_id=document_id, grants=tuple(grants))
     ]
     subjects.sort(key=lambda subject: (subject[0], subject[1] or ""))
-    return _hash(_AUTHORIZATION_LABEL, subjects)
+    return canonical_hash(_AUTHORIZATION_LABEL, subjects)
 
 
-def _number(value: int | None) -> int | None:
-    """Write a number as a plain int, so `True` and `1` hash the same."""
-    return None if value is None else int(value)
-
-
-def _hash(label: str, value: object) -> str:
+def canonical_hash(label: str, value: object) -> str:
     """Hash a label and a JSON value written in one canonical way."""
     canonical = json.dumps(
         [label, value], ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -78,3 +73,8 @@ def _hash(label: str, value: object) -> str:
     # Parsed text can hold a lone surrogate; "surrogatepass" still encodes it
     # to the same bytes every time instead of raising.
     return hashlib.sha256(canonical.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _number(value: int | None) -> int | None:
+    """Write a number as a plain int, so `True` and `1` hash the same."""
+    return None if value is None else int(value)

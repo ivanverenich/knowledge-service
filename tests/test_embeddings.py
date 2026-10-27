@@ -3,6 +3,7 @@
 import asyncio
 import math
 from collections.abc import Callable, Sequence
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -256,6 +257,9 @@ def test_a_valid_response_keeps_its_order() -> None:
     [
         lambda: EmbeddingModelIdentity(provider="", model="m", dimensions=4),
         lambda: EmbeddingModelIdentity(provider="p", model="m", dimensions=0),
+        lambda: EmbeddingModelIdentity(
+            provider=cast(str, 123), model="m", dimensions=4
+        ),
         lambda: EmbeddingLimits(max_inputs=0, max_input_tokens=1, max_batch_tokens=1),
         lambda: EmbeddingLimits(max_inputs=1, max_input_tokens=5, max_batch_tokens=4),
         lambda: EmbeddingUsage(input_tokens=-1, latency_ms=0),
@@ -264,6 +268,7 @@ def test_a_valid_response_keeps_its_order() -> None:
     ids=[
         "no-provider",
         "no-dimensions",
+        "provider-not-text",
         "no-inputs",
         "input-over-batch",
         "negative-tokens",

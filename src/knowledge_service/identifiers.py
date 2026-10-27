@@ -60,6 +60,10 @@ class EmbeddingSpaceId(StableIdentifier):
     """Internal identity of an Embedding Space."""
 
 
+class IndexConfigurationId(StableIdentifier):
+    """Internal identity of an Index configuration."""
+
+
 class UserId(StableIdentifier):
     """Internal identity of a User."""
 
