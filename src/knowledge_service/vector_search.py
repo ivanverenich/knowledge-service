@@ -16,6 +16,9 @@ What a caller can rely on in a `VectorSearchResult`:
 - **Fewer than k.** When fewer eligible Chunks exist, all of them are
   returned and `truncated` is False. `truncated` is True only when more
   eligible Chunks exist beyond the limit.
+- **Filters.** Optional `filters` (see `retrieval_filters`) narrow the
+  eligible Chunks further, in the same WHERE, so every guarantee above,
+  `truncated` included, counts only Chunks that are eligible and match.
 - **Empty.** No eligible Chunk is a normal, empty result, not an error.
   A Chunk whose stored vector has no direction (all zeros) has no distance,
   so it is never a Candidate.
@@ -27,7 +30,7 @@ then ordered by those digits, not by Chunk ID.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, cast
@@ -51,7 +54,9 @@ from knowledge_service.persistence import (
     documents,
     eligible_chunks_predicate,
     load_current_embedding_space_id,
+    metadata_predicate,
 )
+from knowledge_service.retrieval_filters import MetadataCondition, checked_conditions
 
 # The largest top-k one search may ask for, so its rows stay bounded.
 MAX_CANDIDATES = 100
@@ -124,6 +129,7 @@ async def search_similar_chunks(
     query: Vector,
     context: AuthorizationContext,
     limit: int,
+    filters: Sequence[MetadataCondition] = (),
 ) -> VectorSearchResult:
     """Return up to `limit` eligible Chunks, nearest first.
 
@@ -134,6 +140,7 @@ async def search_similar_chunks(
     """
     _check_limit(limit)
     unit_query = _unit_query(query, dimensions=identity.dimensions)
+    conditions = checked_conditions(filters)
     space_id = await load_current_embedding_space_id(connection, identity)
     if space_id is None:
         raise NoCurrentEmbeddingSpace("the current embedding space is another model")
@@ -141,6 +148,7 @@ async def search_similar_chunks(
         space_id=space_id,
         query=unit_query,
         eligibility=eligible_chunks_predicate(context),
+        restriction=metadata_predicate(conditions),
         # One row more than asked shows whether more eligible Chunks exist.
         limit=limit + 1,
     )
@@ -161,6 +169,7 @@ def vector_search_statement(
     space_id: EmbeddingSpaceId,
     query: Vector,
     eligibility: sa.ColumnElement[bool],
+    restriction: sa.ColumnElement[bool],
     limit: int,
 ) -> sa.Select[*tuple[Any, ...]]:
     """Select the nearest Chunks of one space that meet `eligibility`.
@@ -192,6 +201,7 @@ def vector_search_statement(
         .where(
             chunk_embeddings.c.space_id == space_id.value,
             eligibility,
+            restriction,
             distance != float("nan"),
         )
         .order_by(distance, chunks.c.chunk_id)

@@ -1,0 +1,170 @@
+"""Typed conditions that narrow retrieval to some Documents.
+
+A caller never writes SQL. It names a field and an operator from a fixed
+list, with a value of the type that field takes, and the persistence layer
+turns each pair into a fixed SQL condition with bound parameters:
+
+| Field | Operator | Value |
+|---|---|---|
+| `SOURCE` | `ANY_OF` | a non-empty frozenset of `SourceId` |
+| `MEDIA_TYPE` | `ANY_OF` | a non-empty frozenset of media types (`text/markdown`) |
+| `LANGUAGE` | `ANY_OF` | a non-empty frozenset of `Language` |
+| `MODIFIED_AT` | `ON_OR_AFTER` | a UTC `datetime` |
+
+Every other pair, value type, or a second condition on the same field raises
+`UnsupportedFilter`. Conditions only narrow: they are added to the
+eligibility check, never in place of it, so a filter cannot show a Document
+the reader may not see.
+"""
+
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import cast
+from uuid import UUID
+
+from knowledge_service.documents import MAX_MEDIA_TYPE_CHARACTERS
+from knowledge_service.identifiers import SourceId
+from knowledge_service.language import Language
+
+# Bounds the values one condition sends to the database.
+MAX_FILTER_VALUES = 100
+
+# A canonical media type: lowercase type/subtype from the characters RFC 6838
+# allows in a name, so no space, quote, control character, or parameter.
+_MEDIA_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
+
+
+class UnsupportedFilter(ValueError):
+    """A condition is not one of the allowed field, operator, and value types."""
+
+
+class FilterField(StrEnum):
+    """What a condition looks at."""
+
+    SOURCE = "source"
+    MEDIA_TYPE = "media_type"
+    LANGUAGE = "language"
+    MODIFIED_AT = "modified_at"
+
+
+class FilterOperator(StrEnum):
+    """How a condition compares."""
+
+    ANY_OF = "any_of"
+    ON_OR_AFTER = "on_or_after"
+
+
+_ALLOWED_OPERATOR = {
+    FilterField.SOURCE: FilterOperator.ANY_OF,
+    FilterField.MEDIA_TYPE: FilterOperator.ANY_OF,
+    FilterField.LANGUAGE: FilterOperator.ANY_OF,
+    FilterField.MODIFIED_AT: FilterOperator.ON_OR_AFTER,
+}
+
+_ELEMENT_TYPE: dict[FilterField, type] = {
+    FilterField.SOURCE: SourceId,
+    FilterField.MEDIA_TYPE: str,
+    FilterField.LANGUAGE: Language,
+}
+
+type FilterValue = frozenset[SourceId] | frozenset[str] | frozenset[Language] | datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataCondition:
+    """One allowed condition, such as "language is any of uk, en"."""
+
+    field: FilterField
+    operator: FilterOperator
+    value: FilterValue
+
+    def __post_init__(self) -> None:
+        # A plain string would compare equal to the enum, so exact types.
+        if type(self.field) is not FilterField:
+            raise UnsupportedFilter("the field is not a FilterField")
+        if type(self.operator) is not FilterOperator:
+            raise UnsupportedFilter("the operator is not a FilterOperator")
+        if self.operator is not _ALLOWED_OPERATOR[self.field]:
+            raise UnsupportedFilter(
+                f"{self.field.value} does not support {self.operator.value}"
+            )
+        if self.field is FilterField.MODIFIED_AT:
+            # Keep a plain UTC copy, never the caller's tzinfo object, which
+            # could answer differently once it has been checked.
+            object.__setattr__(self, "value", _utc_moment(self.value))
+        else:
+            _check_values(self.field, self.value)
+
+
+def checked_conditions(
+    conditions: Sequence[MetadataCondition],
+) -> tuple[MetadataCondition, ...]:
+    """Return the conditions checked again, refusing anything but one per field.
+
+    Each condition is rebuilt, so one changed after it was made (a frozen
+    dataclass can still be altered through `object.__setattr__`) is checked
+    again. Two conditions on one field would have to be combined somehow;
+    refusing them keeps the meaning obvious: every condition must hold.
+    """
+    if type(conditions) is not tuple and type(conditions) is not list:
+        raise UnsupportedFilter("conditions must be a tuple or a list")
+    given = tuple(cast(Sequence[object], conditions))
+    if any(type(condition) is not MetadataCondition for condition in given):
+        raise UnsupportedFilter("every condition must be a MetadataCondition")
+    checked = tuple(
+        MetadataCondition(c.field, c.operator, c.value)
+        for c in cast(tuple[MetadataCondition, ...], given)
+    )
+    fields = [condition.field for condition in checked]
+    if len(set(fields)) != len(fields):
+        raise UnsupportedFilter("at most one condition per field")
+    return checked
+
+
+def _utc_moment(value: object) -> datetime:
+    if type(value) is not datetime:
+        raise UnsupportedFilter("modified_at takes a datetime")
+    try:
+        offset = value.utcoffset()
+    except Exception:  # a tzinfo is caller code and may raise anything
+        raise UnsupportedFilter("modified_at has an unusable time zone") from None
+    if offset != timedelta(0):
+        raise UnsupportedFilter("modified_at must be a UTC-aware datetime")
+    return value.replace(tzinfo=UTC)
+
+
+def _check_values(field: FilterField, value: object) -> None:
+    if type(value) is not frozenset:
+        raise UnsupportedFilter(f"{field.value} takes a frozenset of values")
+    values = cast(frozenset[object], value)
+    if not values:
+        raise UnsupportedFilter(f"{field.value} needs at least one value")
+    if len(values) > MAX_FILTER_VALUES:
+        raise UnsupportedFilter(
+            f"{field.value} takes at most {MAX_FILTER_VALUES} values"
+        )
+    expected = _ELEMENT_TYPE[field]
+    if any(type(element) is not expected for element in values):
+        raise UnsupportedFilter(
+            f"every {field.value} value must be a {expected.__name__}"
+        )
+    if field is FilterField.SOURCE and any(
+        # A SourceId can be altered after it was made, like any frozen value.
+        type(cast(SourceId, element).value) is not UUID
+        for element in values
+    ):
+        raise UnsupportedFilter("every source value must hold a UUID")
+    if field is FilterField.MEDIA_TYPE and not all(
+        _is_media_type(cast(str, element)) for element in values
+    ):
+        raise UnsupportedFilter("a media type is lowercase type/subtype")
+
+
+def _is_media_type(value: str) -> bool:
+    return (
+        len(value) <= MAX_MEDIA_TYPE_CHARACTERS
+        and _MEDIA_TYPE.fullmatch(value) is not None
+    )

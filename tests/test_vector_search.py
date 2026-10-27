@@ -18,7 +18,13 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.persistence import eligible_chunks_predicate
+from knowledge_service.language import Language
+from knowledge_service.persistence import eligible_chunks_predicate, metadata_predicate
+from knowledge_service.retrieval_filters import (
+    FilterField,
+    FilterOperator,
+    MetadataCondition,
+)
 from knowledge_service.vector_search import (
     MAX_CANDIDATES,
     DistanceMetric,
@@ -34,6 +40,8 @@ IDENTITY = EmbeddingModelIdentity(provider="fake", model="fake-embedding", dimen
 USER = UserId.parse("00000000-0000-0000-0000-0000000000a1")
 GROUP = GroupId.parse("00000000-0000-0000-0000-0000000000b1")
 MARKER = "zebramarker"
+# A media type that must reach the database only as a bound parameter.
+INJECTED_MEDIA_TYPE = "text/x-zebramarker"
 
 
 def test_a_context_names_one_user_and_only_groups() -> None:
@@ -105,6 +113,20 @@ def test_the_reader_and_the_query_are_bound_parameters() -> None:
         eligibility=eligible_chunks_predicate(
             AuthorizationContext(user_id=USER, group_ids=frozenset({GROUP}))
         ),
+        restriction=metadata_predicate(
+            (
+                MetadataCondition(
+                    FilterField.MEDIA_TYPE,
+                    FilterOperator.ANY_OF,
+                    frozenset({INJECTED_MEDIA_TYPE}),
+                ),
+                MetadataCondition(
+                    FilterField.LANGUAGE,
+                    FilterOperator.ANY_OF,
+                    frozenset({Language.UKRAINIAN}),
+                ),
+            )
+        ),
         limit=5,
     )
 
@@ -115,8 +137,12 @@ def test_the_reader_and_the_query_are_bound_parameters() -> None:
     assert str(USER.value) not in sql
     assert str(GROUP.value) not in sql
     assert "0.25" not in sql
+    assert INJECTED_MEDIA_TYPE not in sql
+    assert "'uk'" not in sql
     assert USER.value in values
     assert [GROUP.value] in values
+    assert [INJECTED_MEDIA_TYPE] in values
+    assert ["uk"] in values
 
 
 def test_a_candidate_repr_shows_no_document_text() -> None:

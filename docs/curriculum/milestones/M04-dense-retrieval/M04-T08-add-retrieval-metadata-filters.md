@@ -7,7 +7,7 @@ depends_on: ["M04-T07"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["metadata-filter model"]
-status: planned
+status: completed
 ---
 
 # M04-T08 — Add retrieval metadata filters

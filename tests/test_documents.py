@@ -1,19 +1,23 @@
 """Tests for Document version and availability invariants."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+from typing import cast
 
 import pytest
 
 from knowledge_service.documents import (
+    MAX_MEDIA_TYPE_CHARACTERS,
     MAX_TITLE_CHARACTERS,
     AuthorizationVersion,
     ContentVersion,
     Document,
     DocumentAvailability,
+    DocumentMetadata,
     DocumentProvenance,
     InvalidDocument,
 )
 from knowledge_service.identifiers import DocumentId, SourceId
+from knowledge_service.language import Language
 
 OBSERVED_AT = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 
@@ -143,4 +147,54 @@ def test_a_blank_or_overlong_title_is_refused(title: str) -> None:
             authorization_fingerprint="acl-a",
             source_version="17",
             observed_at=OBSERVED_AT + timedelta(minutes=1),
+        )
+
+
+def test_metadata_may_have_no_modification_time() -> None:
+    described = DocumentMetadata(
+        document_id=DocumentId.parse("00000000-0000-0000-0000-000000000001"),
+        media_type="text/plain",
+        language=Language.UNKNOWN,
+        modified_at=None,
+        observed_at=OBSERVED_AT,
+    )
+
+    assert described.modified_at is None
+
+
+@pytest.mark.parametrize(
+    ("media_type", "language", "modified_at", "observed_at"),
+    [
+        ("", Language.ENGLISH, None, OBSERVED_AT),
+        ("   ", Language.ENGLISH, None, OBSERVED_AT),
+        (
+            "text/" + "x" * MAX_MEDIA_TYPE_CHARACTERS,
+            Language.ENGLISH,
+            None,
+            OBSERVED_AT,
+        ),
+        ("text/plain", "en", None, OBSERVED_AT),
+        ("text/plain", Language.ENGLISH, datetime(2026, 10, 1), OBSERVED_AT),
+        (
+            "text/plain",
+            Language.ENGLISH,
+            datetime(2026, 10, 1, tzinfo=timezone(timedelta(hours=2))),
+            OBSERVED_AT,
+        ),
+        ("text/plain", Language.ENGLISH, None, datetime(2026, 10, 1)),
+    ],
+)
+def test_metadata_refuses_invalid_values(
+    media_type: str,
+    language: object,
+    modified_at: datetime | None,
+    observed_at: datetime,
+) -> None:
+    with pytest.raises(InvalidDocument):
+        DocumentMetadata(
+            document_id=DocumentId.parse("00000000-0000-0000-0000-000000000001"),
+            media_type=media_type,
+            language=cast(Language, language),
+            modified_at=modified_at,
+            observed_at=observed_at,
         )

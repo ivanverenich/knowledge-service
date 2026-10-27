@@ -7,7 +7,7 @@ and write them.
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, assert_never, cast
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -45,6 +45,7 @@ from knowledge_service.documents import (
     ContentVersion,
     Document,
     DocumentAvailability,
+    DocumentMetadata,
     DocumentProvenance,
     InvalidDocument,
 )
@@ -70,6 +71,8 @@ from knowledge_service.identifiers import (
     UserId,
 )
 from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
+from knowledge_service.language import Language
+from knowledge_service.retrieval_filters import FilterField, MetadataCondition
 
 metadata = sa.MetaData()
 
@@ -153,6 +156,31 @@ documents = sa.Table(
     sa.CheckConstraint(
         "availability in ('available', 'tombstoned')",
         name="ck_documents_availability",
+    ),
+)
+
+# What retrieval may filter a Document by. Kept apart from `documents`, so
+# the Document's own versions and fingerprints do not change with it.
+document_metadata = sa.Table(
+    "document_metadata",
+    metadata,
+    sa.Column(
+        "document_id",
+        sa.Uuid(),
+        sa.ForeignKey("documents.document_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("media_type", sa.Text(), nullable=False),
+    sa.Column("language", sa.String(length=8), nullable=False),
+    sa.Column("modified_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint(
+        "media_type <> '' and length(media_type) <= 255",
+        name="ck_document_metadata_media_type",
+    ),
+    sa.CheckConstraint(
+        "language in ('en', 'uk', 'mixed', 'unknown')",
+        name="ck_document_metadata_language",
     ),
 )
 
@@ -1008,6 +1036,119 @@ def eligible_chunks_predicate(context: AuthorizationContext) -> sa.ColumnElement
     return sa.and_(
         documents.c.availability == DocumentAvailability.AVAILABLE.value,
         granted,
+    )
+
+
+def metadata_predicate(
+    conditions: Sequence[MetadataCondition],
+) -> sa.ColumnElement[bool]:
+    """The condition a Chunk's Document must meet for every given filter.
+
+    Each allowed field maps to one fixed SQL condition here, and every value
+    is a bound parameter. With no conditions it is simply true. The
+    statement using it must join `chunks` to `documents`. A Document with no
+    metadata row matches no media type, language, or modified-since
+    condition; a Source condition still matches it.
+    """
+    return sa.and_(sa.true(), *(_condition_clause(c) for c in conditions))
+
+
+def _condition_clause(condition: MetadataCondition) -> sa.ColumnElement[bool]:
+    match condition.field:
+        case FilterField.SOURCE:
+            source_ids = cast(frozenset[SourceId], condition.value)
+            return documents.c.source_id == _any_of(
+                "source_ids", sorted(s.value for s in source_ids), sa.Uuid()
+            )
+        case FilterField.MEDIA_TYPE:
+            media_types = cast(frozenset[str], condition.value)
+            return _described(
+                document_metadata.c.media_type
+                == _any_of("media_types", sorted(media_types), sa.Text())
+            )
+        case FilterField.LANGUAGE:
+            languages = cast(frozenset[Language], condition.value)
+            return _described(
+                document_metadata.c.language
+                == _any_of(
+                    "languages", sorted(lang.value for lang in languages), sa.Text()
+                )
+            )
+        case FilterField.MODIFIED_AT:
+            since = cast(datetime, condition.value)
+            # NULL >= since is not true, so an unknown time never matches.
+            return _described(document_metadata.c.modified_at >= since)
+        case _:
+            assert_never(condition.field)
+
+
+def _any_of(
+    name: str, values: Sequence[object], item_type: sa.types.TypeEngine[Any]
+) -> sa.ColumnElement[Any]:
+    # One array parameter, however many values; unique keeps names apart.
+    return sa.any_(
+        sa.bindparam(name, list(values), type_=ARRAY(item_type), unique=True)
+    )
+
+
+def _described(clause: sa.ColumnElement[bool]) -> sa.ColumnElement[bool]:
+    return sa.exists().where(
+        document_metadata.c.document_id == documents.c.document_id, clause
+    )
+
+
+async def upsert_document_metadata(
+    connection: AsyncConnection, described: DocumentMetadata
+) -> None:
+    """Store a Document's metadata, replacing what was stored before."""
+    values = {
+        "document_id": described.document_id.value,
+        "media_type": described.media_type,
+        "language": described.language.value,
+        "modified_at": described.modified_at,
+        "observed_at": described.observed_at,
+    }
+    statement = insert(document_metadata).values(values)
+    await connection.execute(
+        statement.on_conflict_do_update(
+            index_elements=[document_metadata.c.document_id],
+            set_={
+                "media_type": statement.excluded.media_type,
+                "language": statement.excluded.language,
+                "modified_at": statement.excluded.modified_at,
+                "observed_at": statement.excluded.observed_at,
+            },
+        )
+    )
+
+
+async def load_document_metadata(
+    connection: AsyncConnection, *, document_id: DocumentId
+) -> DocumentMetadata | None:
+    """Read a Document's stored metadata, or None if it has none yet."""
+    record = (
+        (
+            await connection.execute(
+                sa.select(document_metadata).where(
+                    document_metadata.c.document_id == document_id.value
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return None
+    try:
+        language = Language(cast(str, record["language"]))
+    except ValueError:
+        raise InvalidDocument("stored language is not a known value") from None
+    return DocumentMetadata(
+        document_id=document_id,
+        media_type=cast(str, record["media_type"]),
+        language=language,
+        modified_at=cast("datetime | None", record["modified_at"]),
+        observed_at=cast(datetime, record["observed_at"]),
     )
 
 

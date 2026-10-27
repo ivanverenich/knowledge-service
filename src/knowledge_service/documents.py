@@ -3,8 +3,10 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from knowledge_service.identifiers import DocumentId, SourceId
+from knowledge_service.language import Language
 
 MAX_TITLE_CHARACTERS = 200
+MAX_MEDIA_TYPE_CHARACTERS = 255
 
 
 class InvalidDocument(ValueError):
@@ -59,6 +61,35 @@ class DocumentProvenance:
             raise InvalidDocument("external source ID must not be empty")
         if self.source_version is not None and not self.source_version.strip():
             raise InvalidDocument("source version must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentMetadata:
+    """What retrieval may filter a Document by, as of its last reconcile.
+
+    `modified_at` is when the Source last changed the item, or None when the
+    Source does not say. `observed_at` is when the observation that last
+    changed these values was made; an older observation must not replace them.
+    """
+
+    document_id: DocumentId
+    media_type: str
+    language: Language
+    modified_at: datetime | None
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.media_type.strip():
+            raise InvalidDocument("media type must not be empty")
+        if len(self.media_type) > MAX_MEDIA_TYPE_CHARACTERS:
+            raise InvalidDocument(
+                f"media type must be at most {MAX_MEDIA_TYPE_CHARACTERS} characters"
+            )
+        if type(self.language) is not Language:
+            raise InvalidDocument("language must be a Language")
+        if self.modified_at is not None:
+            _require_utc(self.modified_at, "modified_at")
+        _require_utc(self.observed_at, "observed_at")
 
 
 def _require_utc(value: datetime, field_name: str) -> None:

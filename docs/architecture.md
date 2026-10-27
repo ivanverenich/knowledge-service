@@ -73,6 +73,7 @@ erDiagram
     sources ||--o{ synchronization_runs : "records"
     documents ||--o{ chunks : "is split into"
     documents ||--o{ access_grants : "is reachable through"
+    documents ||--o| document_metadata : "is described by"
     chunks ||--o{ chunk_embeddings : "is embedded as"
     embedding_spaces ||--o{ chunk_embeddings : "holds"
     conversations ||--o{ messages : "holds"
@@ -86,6 +87,7 @@ The rules each table enforces:
 | `sources` | One Source per `(kind, location)`. |
 | `synchronization_runs` | A Source has at most one run in flight; a finished run leaves the way clear for the next. |
 | `documents` | One Document per `(source_id, external_id)`; `content_version >= 1`; availability is `available` or `tombstoned`. |
+| `document_metadata` | At most one row per Document, removed with it; a non-empty media type of at most 255 characters; language is `en`, `uk`, `mixed`, or `unknown`; `modified_at` may be unknown. |
 | `chunks` | One Chunk per `(document_id, ordinal)`; `token_count >= 1`; a Chunk's `content_version` is at least 1. |
 | `embedding_spaces` | One space per `(provider, model, dimensions)`; dimensions from 1 to 16000; at most one space is current. |
 | `chunk_embeddings` | One vector per `(chunk_id, space_id)`; the vector's length must equal its space's dimensions; removed with its Chunk or its space. |
@@ -206,20 +208,22 @@ of its Chunks and not others.
 one reader may see. Eligibility is part of the same SQL statement as the
 ranking, so a Chunk the reader may not see is never ranked and never leaves
 the database. Stored vectors and the query both have length 1, and cosine
-distance runs from 0 (same direction) to 2 (opposite).
+distance runs from 0 (same direction) to 2 (opposite). Optional metadata
+filters (Source, media type, language, modified since) are typed conditions
+from a fixed list; they are added to the same WHERE and only narrow it.
 
 ```mermaid
 sequenceDiagram
     participant Caller
     participant Search as search_similar_chunks
     participant DB as PostgreSQL
-    Caller->>Search: query vector, model identity, Authorization Context, limit
-    Search->>Search: refuse a bad query or limit, scale the query to length 1
+    Caller->>Search: query vector, model identity, Authorization Context, limit, filters
+    Search->>Search: refuse a bad query, limit, or filter; scale the query to length 1
     Search->>DB: find the current Embedding Space for the model identity
     alt not current
         Search-->>Caller: NoCurrentEmbeddingSpace
     else current
-        Search->>DB: one SELECT: space AND available AND a matching Access Grant AND a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
+        Search->>DB: one SELECT: space AND available AND a matching Access Grant AND every filter AND a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
         DB-->>Search: eligible Chunks with provenance and distance
         Search-->>Caller: VectorSearchResult: up to k ranked Candidates, nearest first, and whether more exist
     end

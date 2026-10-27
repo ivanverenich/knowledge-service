@@ -9,13 +9,20 @@ and writes only what changed, all in one transaction:
 - only who may read it changed: the Access Grants are replaced, and the Chunks
   are kept, because re-chunking would change nothing.
 
+In every case the Document's metadata (media type, language, and when the
+Source last changed it) is stored if it differs from the stored row, so a
+Document reconciled before that row existed gets one on its next run. If
+only the metadata changed, the change is `METADATA`. An observation older
+than the stored metadata that would change it raises `InvalidDocument`
+instead of rolling it back.
+
 A reader sees either the previous complete version or the new one, never a
-mixture, because the Document row, its Chunks, and its Access Grants are
-written together and committed once.
+mixture, because the Document row, its Chunks, its Access Grants, and its
+metadata are written together and committed once.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 
@@ -29,6 +36,7 @@ from knowledge_service.deletions import availability_event
 from knowledge_service.documents import (
     Document,
     DocumentAvailability,
+    DocumentMetadata,
     InvalidDocument,
 )
 from knowledge_service.fingerprints import (
@@ -40,10 +48,12 @@ from knowledge_service.normalization import NormalizedDocument
 from knowledge_service.persistence import (
     insert_document,
     load_document,
+    load_document_metadata,
     record_audit_event,
     replace_access_grants,
     replace_chunks,
     upsert_document,
+    upsert_document_metadata,
 )
 from knowledge_service.provenance import chunk_sources
 
@@ -59,6 +69,7 @@ class Change(StrEnum):
     RESTORED = "restored"
     SOURCE_VERSION = "source_version"
     TITLE = "title"
+    METADATA = "metadata"
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +121,7 @@ async def reconcile_document(
             if await insert_document(connection, created):
                 await _write_chunks(connection, normalized, created)
                 await _write_grants(connection, created, readers, observed_at)
+                await _write_metadata(connection, normalized, created, observed_at)
                 return Reconciliation(document=created, change=Change.CREATED)
             # Another run created it after the lookup; decide against its row.
             stored = await load_document(
@@ -128,8 +140,14 @@ async def reconcile_document(
             source_version=provenance.source_version,
             observed_at=observed_at,
         )
+        metadata_changed = await _write_metadata(
+            connection, normalized, stored, observed_at
+        )
         if document is stored:
-            return Reconciliation(document=stored, change=Change.UNCHANGED)
+            return Reconciliation(
+                document=stored,
+                change=Change.METADATA if metadata_changed else Change.UNCHANGED,
+            )
         content_changed = document.content_version != stored.content_version
         access_changed = document.authorization_version != stored.authorization_version
         restored = stored.availability is DocumentAvailability.TOMBSTONED
@@ -204,6 +222,38 @@ async def _write_chunks(
     await replace_chunks(
         connection, document=document, chunk_run=build_chunks(normalized, document)
     )
+
+
+async def _write_metadata(
+    connection: AsyncConnection,
+    normalized: NormalizedDocument,
+    document: Document,
+    observed_at: datetime,
+) -> bool:
+    """Store the observed metadata if it differs; return whether it did.
+
+    Like the Document's own versions, the metadata only moves forward: an
+    observation older than the one that last changed it, with different
+    values, raises `InvalidDocument`, so a late run cannot roll it back. An
+    older observation with the same values changes nothing and passes.
+    """
+    observed = DocumentMetadata(
+        document_id=document.document_id,
+        media_type=normalized.media_type,
+        language=normalized.language.language,
+        modified_at=normalized.modified_at,
+        observed_at=observed_at,
+    )
+    stored = await load_document_metadata(connection, document_id=document.document_id)
+    if stored is not None:
+        if replace(stored, observed_at=observed_at) == observed:
+            return False
+        if observed_at < stored.observed_at:
+            raise InvalidDocument(
+                "observed_at must not be earlier than the stored metadata"
+            )
+    await upsert_document_metadata(connection, observed)
+    return True
 
 
 async def _write_grants(
