@@ -8,6 +8,9 @@ from knowledge_service.persistence import metadata
 ACCESS_PATTERN_INDEXES = {
     "ix_access_grants_subject_document",
     "ix_chunk_embeddings_space_id",
+    "ix_embedding_migrations_source_space_id",
+    "ix_embedding_migrations_target_configuration_id",
+    "ix_embedding_migrations_target_space_id",
     "ix_audit_events_target_occurred_at",
     "ix_conversations_retention_deadline",
     "ix_synchronization_runs_source_started_at",

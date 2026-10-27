@@ -7,7 +7,7 @@ depends_on: ["M04-T09"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["embedding migration workflow"]
-status: planned
+status: completed
 ---
 
 # M04-T10 — Migrate embedding models safely

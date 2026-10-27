@@ -57,6 +57,7 @@ from knowledge_service.persistence import (
     chunks,
     documents,
     eligible_chunks_predicate,
+    embedding_spaces,
     load_current_embedding_space_id,
     metadata_predicate,
 )
@@ -151,6 +152,14 @@ async def search_similar_chunks(
         limit=limit + 1,
     )
     records = (await connection.execute(statement)).mappings().all()
+    # The statement reads the space only while it is still current. If a
+    # migration switched away between the two reads, say so instead of
+    # returning a silently empty result.
+    if (
+        not records
+        and await load_current_embedding_space_id(connection, identity) != space_id
+    ):
+        raise NoCurrentEmbeddingSpace("the current embedding space is another model")
     return VectorSearchResult(
         metric=DistanceMetric.COSINE,
         limit=limit,
@@ -173,7 +182,9 @@ def vector_search_statement(
     """Select the nearest Chunks of one space that meet `eligibility`.
 
     The predicate sits in the same WHERE as the space, so PostgreSQL applies
-    it before ORDER BY and LIMIT. Ties in distance are broken by Chunk ID so
+    it before ORDER BY and LIMIT. The space must still be current when the
+    statement runs, so it never reads a space a migration has just switched
+    away from. Ties in distance are broken by Chunk ID so
     that equal inputs always return the same order. A stored vector with no
     direction gives a NaN distance, which is not a distance, so its row is
     left out; PostgreSQL treats NaN as equal to NaN.
@@ -198,6 +209,10 @@ def vector_search_statement(
         .join(documents, documents.c.document_id == chunks.c.document_id)
         .where(
             chunk_embeddings.c.space_id == space_id.value,
+            sa.exists().where(
+                embedding_spaces.c.space_id == space_id.value,
+                embedding_spaces.c.is_current,
+            ),
             eligibility,
             restriction,
             distance != float("nan"),

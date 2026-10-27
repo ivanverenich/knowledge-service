@@ -17,7 +17,8 @@ work is therefore split in three:
    changed, nothing is written and the caller is told the result is stale;
    otherwise every vector is written in one statement. This is
    compare-and-swap: the write happens only if the state is still the one it
-   was computed from.
+   was computed from. Nothing is written into a space search will never read
+   again: one neither current nor the target of a running migration.
 
 A Document is therefore never left with vectors for some of its Chunks: when
 any batch fails, nothing is written, and the next run embeds them all again.
@@ -47,6 +48,7 @@ from knowledge_service.persistence import (
     load_document_by_id,
     load_embedded_chunk_ids,
     load_embedding_space_id,
+    space_accepts_writes,
 )
 
 
@@ -160,7 +162,14 @@ async def publish_document_embeddings(
         current = await _snapshot(
             connection, document_id=document_id, space_id=space_id
         )
-        if current_space != space_id or current is None or current != snapshot:
+        # A migration may have switched away from this space meanwhile; its
+        # vectors would never be read again (M04-T10).
+        if (
+            current_space != space_id
+            or current is None
+            or current != snapshot
+            or not await space_accepts_writes(connection, space_id)
+        ):
             return EmbeddingPublication(
                 document_id=document_id, status=EmbeddingPublicationStatus.STALE
             )

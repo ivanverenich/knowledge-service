@@ -76,6 +76,8 @@ erDiagram
     documents ||--o| document_metadata : "is described by"
     chunks ||--o{ chunk_embeddings : "is embedded as"
     embedding_spaces ||--o{ chunk_embeddings : "holds"
+    embedding_spaces ||--o{ embedding_migrations : "is moved from or to"
+    index_configurations ||--o{ embedding_migrations : "describes the target of"
     conversations ||--o{ messages : "holds"
     messages ||--o{ message_feedback : "is rated by"
 ```
@@ -91,6 +93,7 @@ The rules each table enforces:
 | `chunks` | One Chunk per `(document_id, ordinal)`; `token_count >= 1`; a Chunk's `content_version` is at least 1. |
 | `index_configurations` | One row per settings `fingerprint` (64 lowercase hex digits); rows are only inserted, so a changed setting is a new row. |
 | `embedding_spaces` | One space per `(provider, model, dimensions)`; dimensions from 1 to 16000; at most one space is current. |
+| `embedding_migrations` | A state of `dual_writing`, `switched`, or `cleaned`; `updated_at >= started_at`; a deleted space leaves the row with that space set to null. |
 | `chunk_embeddings` | One vector per `(chunk_id, space_id)`; the vector's length must equal its space's dimensions; removed with its Chunk or its space. |
 | `access_grants` | One Grant per `(document_id, subject_kind, subject_id)`; a `public` Grant carries no subject and every other kind carries one. |
 | `conversations` | `retention_deadline > created_at`; `last_message_at >= created_at`. |
@@ -229,6 +232,26 @@ sequenceDiagram
         Search-->>Caller: VectorSearchResult: up to k ranked Candidates, nearest first, and whether more exist
     end
 ```
+
+#### Embedding model migration as built in M04
+
+Moving search to a new embedding model goes through three stored states.
+Search reads only the current space in every one of them, so it never
+mixes vectors of different lengths and is never without a current space.
+
+```mermaid
+stateDiagram-v2
+    [*] --> dual_writing: start (target space created, not current)
+    dual_writing --> dual_writing: backfill older Documents into the target
+    dual_writing --> switched: switch (target has every searchable vector; one transaction)
+    switched --> cleaned: clean up (source space and its vectors deleted)
+    cleaned --> [*]
+```
+
+While `dual_writing`, publication writes to both spaces and search reads the
+source; from `switched` on, both happen in the target only. Publication
+refuses to write into any space that is neither current nor the target of a
+`dual_writing` migration.
 
 ### Answering
 

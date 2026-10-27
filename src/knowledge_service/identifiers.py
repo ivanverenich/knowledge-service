@@ -88,6 +88,10 @@ class SynchronizationRunId(StableIdentifier):
     """Internal identity of a Synchronization Run"""
 
 
+class EmbeddingMigrationId(StableIdentifier):
+    """Internal identity of an Embedding Migration."""
+
+
 class EvaluationDatasetId(StableIdentifier):
     """Internal identity of an Evaluation Dataset."""
 
