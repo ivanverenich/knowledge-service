@@ -61,7 +61,7 @@ Each module above has its own package under `src/knowledge_service/`
 | `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document` |
 | `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
 | `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `publish_document_embeddings`, the migration workflow |
-| `retrieval` | Retrieval | `search_similar_chunks`, `MetadataCondition` |
+| `retrieval` | Retrieval | `search_similar_chunks`, `search_english_chunks`, `MetadataCondition` |
 | `persistence` | PostgreSQL implementation | `schema` and one module per kind of record |
 
 Domain values, settings, the database runtime, and the HTTP application stay
@@ -106,7 +106,7 @@ The rules each table enforces:
 | `synchronization_runs` | A Source has at most one run in flight; a finished run leaves the way clear for the next. |
 | `documents` | One Document per `(source_id, external_id)`; `content_version >= 1`; availability is `available` or `tombstoned`. |
 | `document_metadata` | At most one row per Document, removed with it; a non-empty media type of at most 255 characters; language is `en`, `uk`, `mixed`, or `unknown`; `modified_at` may be unknown. |
-| `chunks` | One Chunk per `(document_id, ordinal)`; `token_count >= 1`; a Chunk's `content_version` is at least 1. |
+| `chunks` | One Chunk per `(document_id, ordinal)`; `token_count >= 1`; a Chunk's `content_version` is at least 1. `search_en`, its English search terms (title A, headings B, text C), is computed by database triggers on every insert and update of the Chunk and when the Document's title changes; the application never writes it. |
 | `index_configurations` | One row per settings `fingerprint` (64 lowercase hex digits); rows are only inserted, so a changed setting is a new row. |
 | `embedding_spaces` | One space per `(provider, model, dimensions)`; dimensions from 1 to 16000; at most one space is current. |
 | `embedding_migrations` | A state of `dual_writing`, `switched`, or `cleaned`; `updated_at >= started_at`; a deleted space leaves the row with that space set to null. |

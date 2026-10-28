@@ -7,7 +7,7 @@ depends_on: ["M04-T12"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["English FTS migration","English lexical query"]
-status: planned
+status: completed
 ---
 
 # M05-T01 — Index English full-text search

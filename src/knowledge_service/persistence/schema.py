@@ -2,7 +2,7 @@
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 
 metadata = sa.MetaData()
 
@@ -131,10 +131,23 @@ chunks = sa.Table(
     sa.Column("token_count", sa.Integer(), nullable=False),
     sa.Column("content_fingerprint", sa.Text(), nullable=False),
     sa.Column("source_anchor", sa.Text(), nullable=True),
+    # English full-text search: the Document's title (weight A), the
+    # headings (B), and the text (C). Never written by the application:
+    # triggers from migration c7d8e9f0a1b2 compute it on every insert and
+    # update of the Chunk, and again when the Document's title changes.
+    sa.Column("search_en", TSVECTOR(), nullable=False),
     sa.UniqueConstraint("document_id", "ordinal", name="uq_chunks_document_ordinal"),
     sa.CheckConstraint("content_version >= 1", name="ck_chunks_content_version"),
     sa.CheckConstraint("ordinal >= 0", name="ck_chunks_ordinal"),
     sa.CheckConstraint("token_count >= 1", name="ck_chunks_token_count"),
+    # Without the pending list (fastupdate), a new Chunk goes straight into
+    # the index, so the planner keeps choosing it between vacuums.
+    sa.Index(
+        "ix_chunks_search_en",
+        "search_en",
+        postgresql_using="gin",
+        postgresql_with={"fastupdate": "off"},
+    ),
 )
 
 # One row per embedding model identity. Vectors are comparable only within
