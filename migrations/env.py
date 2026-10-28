@@ -5,7 +5,7 @@ from alembic import context
 from sqlalchemy.engine import Connection
 
 from knowledge_service.database import create_database_runtime
-from knowledge_service.persistence import metadata
+from knowledge_service.persistence.schema import metadata
 from knowledge_service.settings import Settings
 
 # this is the Alembic Config object, which provides

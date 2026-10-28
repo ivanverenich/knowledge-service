@@ -2,8 +2,8 @@
 
 import pytest
 
-from knowledge_service.structure import BlockKind, DocumentTooLarge
-from knowledge_service.text_parser import parse_text
+from knowledge_service.ingestion.parsers.structure import BlockKind, DocumentTooLarge
+from knowledge_service.ingestion.parsers.text_parser import parse_text
 
 
 def test_blank_lines_separate_paragraphs_and_line_breaks_stay_inside() -> None:

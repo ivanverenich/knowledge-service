@@ -28,7 +28,7 @@ from pypdf import PageObject, PasswordType, PdfReader
 from pypdf.errors import LimitReachedError
 from pypdf.generic import ArrayObject, DictionaryObject, PdfObject, StreamObject
 
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     CorruptDocument,
     DocumentParseError,

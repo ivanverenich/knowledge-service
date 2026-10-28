@@ -16,7 +16,8 @@ from knowledge_service.documents import (
     DocumentProvenance,
 )
 from knowledge_service.identifiers import DocumentId, SourceId
-from knowledge_service.persistence import documents, load_document, upsert_document
+from knowledge_service.persistence.documents import load_document, upsert_document
+from knowledge_service.persistence.schema import documents
 
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")

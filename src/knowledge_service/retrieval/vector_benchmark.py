@@ -46,7 +46,7 @@ from sqlalchemy.ext.compiler import compiles
 
 from knowledge_service.access import AuthorizationContext, SubjectKind
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.embeddings import Vector, unit_length
+from knowledge_service.embeddings.port import Vector, unit_length
 from knowledge_service.identifiers import (
     ChunkId,
     DocumentId,
@@ -54,18 +54,21 @@ from knowledge_service.identifiers import (
     GroupId,
     UserId,
 )
-from knowledge_service.persistence import (
+from knowledge_service.persistence.access import eligible_chunks_predicate
+from knowledge_service.persistence.embeddings import insert_chunk_embeddings
+from knowledge_service.persistence.filters import metadata_predicate
+from knowledge_service.persistence.schema import (
     access_grants,
     chunk_embeddings,
     chunks,
     documents,
-    eligible_chunks_predicate,
     embedding_spaces,
-    insert_chunk_embeddings,
-    metadata_predicate,
     sources,
 )
-from knowledge_service.vector_search import MAX_CANDIDATES, vector_search_statement
+from knowledge_service.retrieval.vector_search import (
+    MAX_CANDIDATES,
+    vector_search_statement,
+)
 
 # pgvector's HNSW index holds vectors of at most 2000 dimensions.
 MAX_HNSW_DIMENSIONS = 2000

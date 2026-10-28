@@ -17,7 +17,7 @@ Source's access rules, whatever language the text is in.
 from dataclasses import dataclass
 from enum import StrEnum
 
-from knowledge_service.structure import BlockKind, ParsedDocument
+from knowledge_service.ingestion.parsers.structure import BlockKind, ParsedDocument
 
 MIN_LETTERS = 20
 CONFIDENT_LETTERS = 200

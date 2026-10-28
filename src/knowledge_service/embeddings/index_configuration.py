@@ -9,8 +9,9 @@ dimensions, embedded them, scaled the same way, for the same distance. An
 Its `fingerprint` is a SHA-256 hash of one canonical form of the settings,
 so equal settings always give the same fingerprint, whatever order they were
 listed in, and changing any one of them gives a different one. Storing a
-configuration (see `persistence.ensure_index_configuration`) reuses the row
-of an equal configuration and creates a row for a changed one.
+configuration (see `persistence.embeddings.ensure_index_configuration`)
+reuses the row of an equal configuration and creates a row for a changed
+one.
 """
 
 import unicodedata
@@ -18,19 +19,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
-from knowledge_service.chunking import (
+from knowledge_service.embeddings.port import (
+    VECTOR_SCALING,
+    DistanceMetric,
+    EmbeddingModelIdentity,
+)
+from knowledge_service.ingestion.chunking import (
     CHUNKER_VERSION,
     MAX_TOKENS,
     MIN_TOKENS,
     OVERLAP_TOKENS,
 )
-from knowledge_service.embeddings import (
-    VECTOR_SCALING,
-    DistanceMetric,
-    EmbeddingModelIdentity,
-)
-from knowledge_service.fingerprints import canonical_hash
-from knowledge_service.normalization import (
+from knowledge_service.ingestion.fingerprints import canonical_hash
+from knowledge_service.ingestion.normalization import (
     NORMALIZATION_VERSION,
     media_type_aliases,
     parser_versions,

@@ -5,8 +5,8 @@ from typing import Literal
 
 import pytest
 
-from knowledge_service.pdf_parser import parse_pdf
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.pdf_parser import parse_pdf
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     CorruptDocument,
     DocumentTooLarge,

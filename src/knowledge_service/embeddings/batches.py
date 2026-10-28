@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
 
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingError,
     EmbeddingInputRejected,

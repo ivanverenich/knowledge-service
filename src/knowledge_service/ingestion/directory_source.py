@@ -15,7 +15,7 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from knowledge_service.sources import (
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
     SourceMetadata,

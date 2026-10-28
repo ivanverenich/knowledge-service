@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingInputRejected,
     EmbeddingMalformedResponse,
     EmbeddingRateLimited,

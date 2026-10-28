@@ -14,3 +14,4 @@ These records capture decisions that are costly to reverse, surprising without c
 10. [Production telemetry redacted by default](0010-redact-production-telemetry-by-default.md)
 11. [Redis for ephemeral coordination only](0011-use-redis-for-ephemeral-coordination-only.md)
 12. [Application workflows own transaction boundaries](0012-application-workflows-own-transaction-boundaries.md)
+13. [Group code into packages by module](0013-group-code-into-packages-by-module.md)

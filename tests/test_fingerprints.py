@@ -10,10 +10,6 @@ from hypothesis import strategies as st
 
 from knowledge_service.access import AccessGrant, InvalidGrant, Subject
 from knowledge_service.documents import Document, DocumentProvenance
-from knowledge_service.fingerprints import (
-    authorization_fingerprint,
-    content_fingerprint,
-)
 from knowledge_service.identifiers import (
     AccessGrantId,
     DocumentId,
@@ -21,8 +17,16 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.markdown_parser import parse_markdown
-from knowledge_service.structure import BlockKind, ParsedDocument, StructuralBlock
+from knowledge_service.ingestion.fingerprints import (
+    authorization_fingerprint,
+    content_fingerprint,
+)
+from knowledge_service.ingestion.parsers.markdown_parser import parse_markdown
+from knowledge_service.ingestion.parsers.structure import (
+    BlockKind,
+    ParsedDocument,
+    StructuralBlock,
+)
 
 # The same examples on every run, and no example database written to disk.
 DETERMINISTIC = settings(derandomize=True, database=None, deadline=None)

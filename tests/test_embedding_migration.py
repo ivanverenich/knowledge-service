@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from knowledge_service.embedding_migration import (
+from knowledge_service.embeddings.migration import (
     EmbeddingMigration,
     EmbeddingMigrationError,
     InvalidMigrationTransition,

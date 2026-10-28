@@ -11,7 +11,7 @@ from knowledge_service.documents import (
     InvalidDocument,
 )
 from knowledge_service.identifiers import DocumentId, SourceId
-from knowledge_service.persistence import as_document, as_row
+from knowledge_service.persistence.documents import as_document, as_row
 
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 

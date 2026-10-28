@@ -7,15 +7,17 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from knowledge_service.chunking import (
+from knowledge_service.ingestion.chunking import (
     DraftChunk,
     chunk_by_structure,
     chunk_document,
 )
-from knowledge_service.html_parser import parse_html
-from knowledge_service.markdown_parser import parse_markdown
-from knowledge_service.pdf_parser import parse_pdf
-from knowledge_service.provenance import (
+from knowledge_service.ingestion.parsers.html_parser import parse_html
+from knowledge_service.ingestion.parsers.markdown_parser import parse_markdown
+from knowledge_service.ingestion.parsers.pdf_parser import parse_pdf
+from knowledge_service.ingestion.parsers.structure import Link
+from knowledge_service.ingestion.parsers.text_parser import parse_text
+from knowledge_service.ingestion.provenance import (
     EXCERPT_CHARACTERS,
     UNKNOWN_LOCATION,
     ChunkSource,
@@ -23,8 +25,6 @@ from knowledge_service.provenance import (
     chunk_sources,
     display_url,
 )
-from knowledge_service.structure import Link
-from knowledge_service.text_parser import parse_text
 from pdf_builder import build_pdf, text_page
 
 HANDBOOK = Path(__file__).parent / "fixtures" / "chunking" / "handbook.md"

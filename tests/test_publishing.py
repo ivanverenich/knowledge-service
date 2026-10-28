@@ -14,7 +14,7 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.publishing import InvalidPublication, Publication
+from knowledge_service.ingestion.publishing import InvalidPublication, Publication
 
 OBSERVED_AT = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")

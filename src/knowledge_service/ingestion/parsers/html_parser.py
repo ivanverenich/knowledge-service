@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     DocumentParseError,
     DocumentTooLarge,

@@ -32,7 +32,7 @@ import unicodedata
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 
-from knowledge_service.structure import BlockKind, ParsedDocument
+from knowledge_service.ingestion.parsers.structure import BlockKind, ParsedDocument
 
 # Raise when the cutting rules change, so vectors made under the old rules
 # belong to another index configuration.

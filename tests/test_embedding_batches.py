@@ -12,14 +12,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from fakes import FakeEmbeddingModel
-from knowledge_service.embedding_batches import (
+from knowledge_service.embeddings.batches import (
     BatchOutcome,
     BatchStatus,
     embed_in_batches,
     plan_batches,
     vectors_by_position,
 )
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingInputRejected,
     EmbeddingLimits,

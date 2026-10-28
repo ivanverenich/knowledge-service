@@ -12,28 +12,34 @@ from pydantic import SecretStr
 from knowledge_service.access import AuthorizationContext, Subject
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
 from knowledge_service.documents import DocumentMetadata, InvalidDocument
-from knowledge_service.embeddings import EmbeddingModelIdentity
+from knowledge_service.embeddings.port import EmbeddingModelIdentity
 from knowledge_service.identifiers import DocumentId, EmbeddingSpaceId, SourceId, UserId
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import Change, reconcile_document
+from knowledge_service.ingestion.sources import (
+    SourceAccess,
+    SourceMetadata,
+    SourceRecord,
+)
 from knowledge_service.language import Language
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
-    document_metadata,
-    embedding_spaces,
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.documents import load_document_metadata
+from knowledge_service.persistence.embeddings import (
     insert_chunk_embeddings,
-    load_chunks,
-    load_document_metadata,
     load_embedding_space_id,
 )
-from knowledge_service.reconciliation import Change, reconcile_document
-from knowledge_service.retrieval_filters import (
+from knowledge_service.persistence.schema import document_metadata, embedding_spaces
+from knowledge_service.retrieval.filters import (
     FilterField,
     FilterOperator,
     MetadataCondition,
     UnsupportedFilter,
 )
+from knowledge_service.retrieval.vector_search import (
+    VectorSearchResult,
+    search_similar_chunks,
+)
 from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceMetadata, SourceRecord
-from knowledge_service.vector_search import VectorSearchResult, search_similar_chunks
 
 HANDBOOK = SourceId.parse("00000000-0000-0000-0000-000000000021")
 WIKI = SourceId.parse("00000000-0000-0000-0000-000000000022")

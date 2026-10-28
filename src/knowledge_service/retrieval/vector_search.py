@@ -16,7 +16,7 @@ What a caller can rely on in a `VectorSearchResult`:
 - **Fewer than k.** When fewer eligible Chunks exist, all of them are
   returned and `truncated` is False. `truncated` is True only when more
   eligible Chunks exist beyond the limit.
-- **Filters.** Optional `filters` (see `retrieval_filters`) narrow the
+- **Filters.** Optional `filters` (see `retrieval.filters`) narrow the
   eligible Chunks further, in the same WHERE, so every guarantee above,
   `truncated` included, counts only Chunks that are eligible and match.
 - **Empty.** No eligible Chunk is a normal, empty result, not an error.
@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.documents import ContentVersion
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     DistanceMetric,
     EmbeddingModelIdentity,
     Vector,
@@ -52,16 +52,16 @@ from knowledge_service.identifiers import (
     EmbeddingSpaceId,
     SourceId,
 )
-from knowledge_service.persistence import (
+from knowledge_service.persistence.access import eligible_chunks_predicate
+from knowledge_service.persistence.embeddings import load_current_embedding_space_id
+from knowledge_service.persistence.filters import metadata_predicate
+from knowledge_service.persistence.schema import (
     chunk_embeddings,
     chunks,
     documents,
-    eligible_chunks_predicate,
     embedding_spaces,
-    load_current_embedding_space_id,
-    metadata_predicate,
 )
-from knowledge_service.retrieval_filters import MetadataCondition, checked_conditions
+from knowledge_service.retrieval.filters import MetadataCondition, checked_conditions
 
 # The largest top-k one search may ask for, so its rows stay bounded.
 MAX_CANDIDATES = 100

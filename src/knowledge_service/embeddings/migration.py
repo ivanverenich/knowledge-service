@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from knowledge_service.embeddings import EmbeddingModelIdentity
+from knowledge_service.embeddings.port import EmbeddingModelIdentity
 from knowledge_service.identifiers import (
     EmbeddingMigrationId,
     EmbeddingSpaceId,

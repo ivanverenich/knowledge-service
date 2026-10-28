@@ -20,16 +20,13 @@ from knowledge_service.identifiers import (
     UserId,
 )
 from knowledge_service.jobs import Job, JobKind, JobStatus
-from knowledge_service.persistence import (
+from knowledge_service.persistence.audit import load_audit_events, record_audit_event
+from knowledge_service.persistence.evaluation import (
     create_evaluation_run,
-    enqueue_job,
-    load_audit_events,
     load_evaluation_run,
-    load_job,
-    record_audit_event,
     save_evaluation_run,
-    save_job,
 )
+from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
 
 OBSERVED_AT = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 USER_ID = UserId.parse("00000000-0000-0000-0000-000000000030")

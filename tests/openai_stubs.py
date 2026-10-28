@@ -10,7 +10,7 @@ import openai
 from openai import AsyncOpenAI
 from openai.types import CreateEmbeddingResponse
 
-from knowledge_service.openai_embeddings import (
+from knowledge_service.embeddings.openai_adapter import (
     OpenAIEmbeddingModel,
     OpenAIEmbeddingSettings,
 )

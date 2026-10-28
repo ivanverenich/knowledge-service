@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from knowledge_service.directory_source import DirectorySource
-from knowledge_service.sources import (
+from knowledge_service.ingestion.directory_source import DirectorySource
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
     SourcePort,

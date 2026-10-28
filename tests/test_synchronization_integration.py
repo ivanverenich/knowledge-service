@@ -9,20 +9,20 @@ from pydantic import SecretStr
 from sqlalchemy import text
 
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.directory_source import DirectorySource
 from knowledge_service.identifiers import SourceId
-from knowledge_service.normalization import QuarantineReason
-from knowledge_service.persistence import load_searchable_chunks
-from knowledge_service.reconciliation import Change
-from knowledge_service.settings import Settings
-from knowledge_service.sources import (
+from knowledge_service.ingestion.directory_source import DirectorySource
+from knowledge_service.ingestion.normalization import QuarantineReason
+from knowledge_service.ingestion.reconciliation import Change
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
     SourcePage,
     SourceRecord,
     SourceUnavailable,
 )
-from knowledge_service.synchronization import synchronize_source
+from knowledge_service.ingestion.synchronization import synchronize_source
+from knowledge_service.persistence.chunks import load_searchable_chunks
+from knowledge_service.settings import Settings
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 OBSERVED_AT = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)

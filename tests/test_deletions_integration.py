@@ -8,42 +8,28 @@ from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from knowledge_service import deletions
 from knowledge_service.access import Subject
 from knowledge_service.audit import AuditAction
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.deletions import (
+from knowledge_service.documents import Document, DocumentAvailability
+from knowledge_service.identifiers import DocumentId, JobId, SourceId
+from knowledge_service.ingestion import deletions
+from knowledge_service.ingestion.deletions import (
     PURGE_FAILED,
     purge_document_chunks,
     requeue_unfinished_purges,
     tombstone_missing,
 )
-from knowledge_service.documents import (
-    Document,
-    DocumentAvailability,
-)
-from knowledge_service.identifiers import DocumentId, JobId, SourceId
-from knowledge_service.jobs import (
-    InvalidJob,
-    Job,
-    JobKind,
-    JobNotRetryable,
-    JobStatus,
-)
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
-    enqueue_job,
-    load_access_grants,
-    load_audit_events,
-    load_chunks,
-    load_document,
-    load_job,
-    load_searchable_chunks,
-    save_job,
-)
-from knowledge_service.reconciliation import Change, reconcile_document
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import Change, reconcile_document
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.jobs import InvalidJob, Job, JobKind, JobNotRetryable, JobStatus
+from knowledge_service.persistence.access import load_access_grants
+from knowledge_service.persistence.audit import load_audit_events
+from knowledge_service.persistence.chunks import load_chunks, load_searchable_chunks
+from knowledge_service.persistence.documents import load_document
+from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
 from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceRecord
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 OTHER_SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000011")

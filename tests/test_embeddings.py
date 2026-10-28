@@ -11,7 +11,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fakes import FakeEmbeddingModel
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingInputRejected,
     EmbeddingLimits,

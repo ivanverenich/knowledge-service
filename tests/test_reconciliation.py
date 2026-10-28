@@ -3,11 +3,11 @@
 from datetime import UTC, datetime
 
 from knowledge_service.documents import Document
-from knowledge_service.fingerprints import content_fingerprint
 from knowledge_service.identifiers import DocumentId, SourceId
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.reconciliation import build_chunks
-from knowledge_service.sources import SourceAccess, SourceRecord
+from knowledge_service.ingestion.fingerprints import content_fingerprint
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import build_chunks
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 OBSERVED_AT = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)

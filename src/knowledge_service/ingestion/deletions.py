@@ -28,17 +28,15 @@ from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document, DocumentAvailability
 from knowledge_service.identifiers import AuditEventId, DocumentId, JobId, SourceId
 from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
-from knowledge_service.persistence import (
-    delete_chunks,
-    enqueue_job,
+from knowledge_service.persistence.audit import record_audit_event
+from knowledge_service.persistence.chunks import delete_chunks
+from knowledge_service.persistence.documents import (
     load_available_documents,
     load_document_by_id,
-    load_job,
     load_unpurged_documents,
-    record_audit_event,
-    save_job,
     upsert_document,
 )
+from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
 
 PURGE_FAILED = "chunk_purge_failed"
 

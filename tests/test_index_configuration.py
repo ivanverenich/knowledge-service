@@ -8,14 +8,11 @@ from typing import cast
 
 import pytest
 
-import knowledge_service.chunking as chunking
-import knowledge_service.index_configuration as index_configuration
-import knowledge_service.reconciliation as reconciliation
-from knowledge_service.chunking import DraftChunk
+import knowledge_service.embeddings.index_configuration as index_configuration
+import knowledge_service.ingestion.chunking as chunking
+import knowledge_service.ingestion.reconciliation as reconciliation
 from knowledge_service.documents import Document, DocumentProvenance
-from knowledge_service.embeddings import DistanceMetric, EmbeddingModelIdentity
-from knowledge_service.identifiers import DocumentId, SourceId
-from knowledge_service.index_configuration import (
+from knowledge_service.embeddings.index_configuration import (
     MAX_CHUNK_TOKENS,
     MAX_DIMENSIONS,
     MAX_SETTING_ENTRIES,
@@ -25,9 +22,12 @@ from knowledge_service.index_configuration import (
     NormalizationSettings,
     current_index_configuration,
 )
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.sources import SourceAccess, SourceRecord
-from knowledge_service.structure import ParsedDocument
+from knowledge_service.embeddings.port import DistanceMetric, EmbeddingModelIdentity
+from knowledge_service.identifiers import DocumentId, SourceId
+from knowledge_service.ingestion.chunking import DraftChunk
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.parsers.structure import ParsedDocument
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
 
 OBSERVED_AT = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)
 MODEL = EmbeddingModelIdentity(provider="openai", model="embed-small", dimensions=8)

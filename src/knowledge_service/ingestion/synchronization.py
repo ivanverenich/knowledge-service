@@ -13,15 +13,15 @@ from datetime import datetime
 
 from knowledge_service.access import Subject
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.deletions import (
+from knowledge_service.identifiers import JobId, SourceId
+from knowledge_service.ingestion.deletions import (
     Tombstone,
     requeue_unfinished_purges,
     tombstone_missing,
 )
-from knowledge_service.identifiers import JobId, SourceId
-from knowledge_service.normalization import Quarantined, normalize
-from knowledge_service.reconciliation import Change, reconcile_document
-from knowledge_service.sources import (
+from knowledge_service.ingestion.normalization import Quarantined, normalize
+from knowledge_service.ingestion.reconciliation import Change, reconcile_document
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
     SourcePort,

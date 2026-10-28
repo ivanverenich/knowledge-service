@@ -17,11 +17,11 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.persistence import (
+from knowledge_service.persistence.access import (
     load_access_grants,
     replace_access_grants,
-    upsert_document,
 )
+from knowledge_service.persistence.documents import upsert_document
 
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")

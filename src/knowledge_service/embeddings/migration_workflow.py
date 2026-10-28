@@ -1,6 +1,6 @@
 """Move search to a new embedding model in four steps, without downtime.
 
-See `embedding_migration` for the states. Each function here is one step
+See `embeddings.migration` for the states. Each function here is one step
 and opens its own short transactions (ADR 0012):
 
 - `start_embedding_migration` creates the target space and enters
@@ -22,7 +22,11 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.embedding_migration import (
+from knowledge_service.embeddings.index_configuration import (
+    InvalidIndexConfiguration,
+    current_index_configuration,
+)
+from knowledge_service.embeddings.migration import (
     EmbeddingMigration,
     EmbeddingMigrationError,
     InvalidMigrationTransition,
@@ -32,39 +36,37 @@ from knowledge_service.embedding_migration import (
     next_state,
     written_spaces,
 )
-from knowledge_service.embedding_publication import (
-    EmbeddingPublicationError,
-    EmbeddingPublicationStatus,
-    publish_document_embeddings,
-)
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingError,
     EmbeddingModel,
     EmbeddingModelIdentity,
+)
+from knowledge_service.embeddings.publication import (
+    EmbeddingPublicationError,
+    EmbeddingPublicationStatus,
+    publish_document_embeddings,
 )
 from knowledge_service.identifiers import (
     DocumentId,
     EmbeddingMigrationId,
     EmbeddingSpaceId,
 )
-from knowledge_service.index_configuration import (
-    InvalidIndexConfiguration,
-    current_index_configuration,
-)
-from knowledge_service.persistence import (
+from knowledge_service.persistence.embedding_migrations import (
     count_chunks_missing_from_target,
-    delete_embedding_space,
-    ensure_index_configuration,
     insert_embedding_migration,
-    insert_embedding_space,
-    load_current_embedding_space,
     load_documents_missing_from_target,
     load_embedding_migration,
+    load_open_embedding_migration,
+    save_embedding_migration,
+)
+from knowledge_service.persistence.embeddings import (
+    delete_embedding_space,
+    ensure_index_configuration,
+    insert_embedding_space,
+    load_current_embedding_space,
     load_embedding_space,
     load_embedding_space_id,
-    load_open_embedding_migration,
     make_embedding_space_current,
-    save_embedding_migration,
 )
 
 # Bounds the Documents one backfill call embeds.

@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from knowledge_service.chunks import Chunk, StaleChunkWrite
 from knowledge_service.documents import Document, DocumentProvenance
 from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
-from knowledge_service.persistence import load_chunks, replace_chunks, upsert_document
+from knowledge_service.persistence.chunks import load_chunks, replace_chunks
+from knowledge_service.persistence.documents import upsert_document
 
 OBSERVED_AT = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")

@@ -3,13 +3,13 @@
 Alembic's drift check does not compare CHECK bodies, index predicates, or
 vector dimensions, so these declarations could drift from the migration
 unnoticed. The integration test pins what PostgreSQL stores; this test pins
-what persistence.py declares.
+what persistence.schema declares.
 """
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
 
-from knowledge_service.persistence import chunk_embeddings, embedding_spaces
+from knowledge_service.persistence.schema import chunk_embeddings, embedding_spaces
 
 
 def check_text(table: sa.Table, name: str) -> str:

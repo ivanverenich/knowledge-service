@@ -8,7 +8,7 @@ import pytest
 
 from knowledge_service.identifiers import DocumentId, SourceId, UserId
 from knowledge_service.language import Language
-from knowledge_service.retrieval_filters import (
+from knowledge_service.retrieval.filters import (
     MAX_FILTER_VALUES,
     FilterField,
     FilterOperator,

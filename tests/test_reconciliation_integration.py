@@ -8,31 +8,23 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy import text
 
-from knowledge_service import reconciliation
 from knowledge_service.access import AccessGrant, Subject
 from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.documents import (
-    Document,
-    DocumentAvailability,
-    InvalidDocument,
-)
+from knowledge_service.documents import Document, DocumentAvailability, InvalidDocument
 from knowledge_service.identifiers import DocumentId, GroupId, SourceId, UserId
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
-    load_access_grants,
-    load_chunks,
-    load_document,
-    replace_chunks,
-    upsert_document,
-)
-from knowledge_service.reconciliation import (
+from knowledge_service.ingestion import reconciliation
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import (
     Change,
     Reconciliation,
     reconcile_document,
 )
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.persistence.access import load_access_grants
+from knowledge_service.persistence.chunks import load_chunks, replace_chunks
+from knowledge_service.persistence.documents import load_document, upsert_document
 from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceRecord
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 EXTERNAL_ID = "guides/handbook.md"

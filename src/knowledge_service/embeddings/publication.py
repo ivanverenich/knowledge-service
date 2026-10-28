@@ -35,17 +35,17 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import ContentVersion, DocumentAvailability
-from knowledge_service.embedding_batches import (
+from knowledge_service.embeddings.batches import (
     BatchStatus,
     embed_in_batches,
     vectors_by_position,
 )
-from knowledge_service.embeddings import EmbeddingModel, Vector
+from knowledge_service.embeddings.port import EmbeddingModel, Vector
 from knowledge_service.identifiers import ChunkId, DocumentId, EmbeddingSpaceId
-from knowledge_service.persistence import (
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.documents import load_document_by_id
+from knowledge_service.persistence.embeddings import (
     insert_chunk_embeddings,
-    load_chunks,
-    load_document_by_id,
     load_embedded_chunk_ids,
     load_embedding_space_id,
     space_accepts_writes,

@@ -29,33 +29,33 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AccessGrant, Subject
-from knowledge_service.chunking import chunk_by_structure
 from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.deletions import availability_event
 from knowledge_service.documents import (
     Document,
     DocumentAvailability,
     DocumentMetadata,
     InvalidDocument,
 )
-from knowledge_service.fingerprints import (
+from knowledge_service.identifiers import AccessGrantId, ChunkId, DocumentId
+from knowledge_service.ingestion.chunking import chunk_by_structure
+from knowledge_service.ingestion.deletions import availability_event
+from knowledge_service.ingestion.fingerprints import (
     authorization_fingerprint,
     content_fingerprint,
 )
-from knowledge_service.identifiers import AccessGrantId, ChunkId, DocumentId
-from knowledge_service.normalization import NormalizedDocument
-from knowledge_service.persistence import (
+from knowledge_service.ingestion.normalization import NormalizedDocument
+from knowledge_service.ingestion.provenance import chunk_sources
+from knowledge_service.persistence.access import replace_access_grants
+from knowledge_service.persistence.audit import record_audit_event
+from knowledge_service.persistence.chunks import replace_chunks
+from knowledge_service.persistence.documents import (
     insert_document,
     load_document,
     load_document_metadata,
-    record_audit_event,
-    replace_access_grants,
-    replace_chunks,
     upsert_document,
     upsert_document_metadata,
 )
-from knowledge_service.provenance import chunk_sources
 
 
 class Change(StrEnum):

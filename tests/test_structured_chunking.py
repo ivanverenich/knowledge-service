@@ -9,16 +9,16 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from knowledge_service.chunking import (
+from knowledge_service.ingestion.chunking import (
     DraftChunk,
     InvalidChunking,
     chunk_by_structure,
     reading_text,
     token_spans,
 )
-from knowledge_service.markdown_parser import parse_markdown
-from knowledge_service.structure import ParsedDocument
-from knowledge_service.text_parser import parse_text
+from knowledge_service.ingestion.parsers.markdown_parser import parse_markdown
+from knowledge_service.ingestion.parsers.structure import ParsedDocument
+from knowledge_service.ingestion.parsers.text_parser import parse_text
 
 FIXTURES = Path(__file__).parent / "fixtures" / "chunking"
 # Small budgets keep the golden file readable.

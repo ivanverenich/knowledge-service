@@ -51,6 +51,22 @@ flowchart TD
 
 Domain values do not import FastAPI, Dramatiq, SQLAlchemy, OpenAI SDKs, or LangGraph. Transport adapters translate protocol data into application requests and translate results back. The OpenAI-compatible interface adapts to the same question-answer module as the native interface.
 
+## Code layout
+
+Each module above has its own package under `src/knowledge_service/`
+([ADR 0013](adr/0013-group-code-into-packages-by-module.md)):
+
+| Package | Module | Main entry points |
+|---|---|---|
+| `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document` |
+| `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
+| `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `publish_document_embeddings`, the migration workflow |
+| `retrieval` | Retrieval | `search_similar_chunks`, `MetadataCondition` |
+| `persistence` | PostgreSQL implementation | `schema` and one module per kind of record |
+
+Domain values, settings, the database runtime, and the HTTP application stay
+at the top level.
+
 ## Data model
 
 Every row is named by an opaque identifier it keeps for its whole life:

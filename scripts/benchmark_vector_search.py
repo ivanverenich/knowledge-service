@@ -14,8 +14,7 @@ import sys
 from pathlib import Path
 
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.settings import Settings
-from knowledge_service.vector_benchmark import (
+from knowledge_service.retrieval.vector_benchmark import (
     BenchmarkParameters,
     BenchmarkReport,
     InvalidBenchmark,
@@ -23,6 +22,7 @@ from knowledge_service.vector_benchmark import (
     render_report,
     run_benchmark,
 )
+from knowledge_service.settings import Settings
 
 REPORT = Path("artifacts/benchmarks/vector-query-plans.md")
 # Building an index over a large corpus takes longer than a request may.

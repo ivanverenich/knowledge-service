@@ -3,7 +3,7 @@
 import pytest
 import sqlalchemy as sa
 
-from knowledge_service.persistence import metadata
+from knowledge_service.persistence.schema import metadata
 
 ACCESS_PATTERN_INDEXES = {
     "ix_access_grants_subject_document",

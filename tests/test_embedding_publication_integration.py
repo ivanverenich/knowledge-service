@@ -14,19 +14,11 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.pool import QueuePool
 
-import knowledge_service.embedding_publication as embedding_publication
+import knowledge_service.embeddings.publication as embedding_publication
 from fakes import FakeEmbeddingModel
 from knowledge_service.access import Subject
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.deletions import tombstone_missing
-from knowledge_service.embedding_publication import (
-    EmbeddingPublication,
-    EmbeddingPublicationStatus,
-    IncompleteEmbedding,
-    UnknownEmbeddingSpace,
-    publish_document_embeddings,
-)
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingError,
     EmbeddingLimits,
@@ -34,19 +26,27 @@ from knowledge_service.embeddings import (
     EmbeddingRateLimited,
     EmbeddingUnavailable,
 )
+from knowledge_service.embeddings.publication import (
+    EmbeddingPublication,
+    EmbeddingPublicationStatus,
+    IncompleteEmbedding,
+    UnknownEmbeddingSpace,
+    publish_document_embeddings,
+)
 from knowledge_service.identifiers import DocumentId, EmbeddingSpaceId, SourceId
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
+from knowledge_service.ingestion.deletions import tombstone_missing
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.publishing import Publication, publish_document
+from knowledge_service.ingestion.reconciliation import reconcile_document
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.documents import load_document_by_id
+from knowledge_service.persistence.schema import (
     chunk_embeddings,
     chunks,
     embedding_spaces,
-    load_chunks,
-    load_document_by_id,
 )
-from knowledge_service.publishing import Publication, publish_document
-from knowledge_service.reconciliation import reconcile_document
 from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceRecord
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000011")
 OBSERVED_AT = datetime(2026, 10, 23, 9, 0, tzinfo=UTC)

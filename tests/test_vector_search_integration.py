@@ -11,8 +11,7 @@ from pydantic import SecretStr
 
 from knowledge_service.access import AuthorizationContext, Subject
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.deletions import tombstone_missing
-from knowledge_service.embeddings import EmbeddingModelIdentity
+from knowledge_service.embeddings.port import EmbeddingModelIdentity
 from knowledge_service.identifiers import (
     ChunkId,
     DocumentId,
@@ -21,25 +20,25 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
-    chunk_embeddings,
-    embedding_spaces,
+from knowledge_service.ingestion.deletions import tombstone_missing
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import reconcile_document
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.documents import load_document_by_id
+from knowledge_service.persistence.embeddings import (
     insert_chunk_embeddings,
-    load_chunks,
-    load_document_by_id,
     load_embedding_space_id,
 )
-from knowledge_service.reconciliation import reconcile_document
-from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceRecord
-from knowledge_service.vector_search import (
+from knowledge_service.persistence.schema import chunk_embeddings, embedding_spaces
+from knowledge_service.retrieval.vector_search import (
     DistanceMetric,
     NoCurrentEmbeddingSpace,
     VectorCandidate,
     VectorSearchResult,
     search_similar_chunks,
 )
+from knowledge_service.settings import Settings
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000012")
 OBSERVED_AT = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)

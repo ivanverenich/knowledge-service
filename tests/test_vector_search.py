@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext, InvalidAuthorizationContext
 from knowledge_service.documents import ContentVersion
-from knowledge_service.embeddings import EmbeddingModelIdentity, Vector
+from knowledge_service.embeddings.port import EmbeddingModelIdentity, Vector
 from knowledge_service.identifiers import (
     ChunkId,
     DocumentId,
@@ -19,13 +19,14 @@ from knowledge_service.identifiers import (
     UserId,
 )
 from knowledge_service.language import Language
-from knowledge_service.persistence import eligible_chunks_predicate, metadata_predicate
-from knowledge_service.retrieval_filters import (
+from knowledge_service.persistence.access import eligible_chunks_predicate
+from knowledge_service.persistence.filters import metadata_predicate
+from knowledge_service.retrieval.filters import (
     FilterField,
     FilterOperator,
     MetadataCondition,
 )
-from knowledge_service.vector_search import (
+from knowledge_service.retrieval.vector_search import (
     MAX_CANDIDATES,
     DistanceMetric,
     InvalidCandidateLimit,

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from knowledge_service.identifiers import SourceId, SynchronizationRunId
-from knowledge_service.sources import (
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     RunStatus,
     Source,

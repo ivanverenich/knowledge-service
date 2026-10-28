@@ -26,8 +26,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
-from knowledge_service.chunking import BLOCK_SEPARATOR, DraftChunk, reading_text
-from knowledge_service.structure import BlockKind, Link, ParsedDocument, StructuralBlock
+from knowledge_service.ingestion.chunking import (
+    BLOCK_SEPARATOR,
+    DraftChunk,
+    reading_text,
+)
+from knowledge_service.ingestion.parsers.structure import (
+    BlockKind,
+    Link,
+    ParsedDocument,
+    StructuralBlock,
+)
 
 EXCERPT_CHARACTERS = 200
 UNKNOWN_LOCATION = "unknown source"

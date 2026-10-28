@@ -17,7 +17,7 @@ from knowledge_service.conversations import (
     MessageRole,
 )
 from knowledge_service.identifiers import ConversationId, MessageId, UserId
-from knowledge_service.persistence import (
+from knowledge_service.persistence.conversations import (
     append_message,
     create_conversation,
     load_conversation,

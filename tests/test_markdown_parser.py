@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from knowledge_service.markdown_parser import parse_markdown
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.markdown_parser import parse_markdown
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     DocumentTooLarge,
     InvalidBlock,

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from knowledge_service.identifiers import ChunkId
-from knowledge_service.vector_benchmark import (
+from knowledge_service.retrieval.vector_benchmark import (
     MAX_HNSW_DIMENSIONS,
     BenchmarkParameters,
     BenchmarkReport,

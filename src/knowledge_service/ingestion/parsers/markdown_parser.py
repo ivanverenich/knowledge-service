@@ -10,7 +10,7 @@ from collections.abc import Iterator, Sequence
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     DocumentParseError,
     DocumentTooLarge,

@@ -13,7 +13,8 @@ import pytest
 from openai.types import CreateEmbeddingResponse
 from pydantic import ValidationError
 
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.openai_adapter import OpenAIEmbeddingSettings
+from knowledge_service.embeddings.port import (
     EmbeddingError,
     EmbeddingInputRejected,
     EmbeddingMalformedResponse,
@@ -23,7 +24,6 @@ from knowledge_service.embeddings import (
     EmbeddingUnavailable,
 )
 from knowledge_service.errors import RetryOwner, classify_failure, policy_for
-from knowledge_service.openai_embeddings import OpenAIEmbeddingSettings
 from openai_stubs import (
     URL,
     StubEmbeddings,
@@ -291,7 +291,7 @@ async def test_each_call_logs_counts_and_outcome_but_never_text(
     ours = [
         record
         for record in caplog.records
-        if record.name == "knowledge_service.openai_embeddings"
+        if record.name == "knowledge_service.embeddings.openai_adapter"
     ]
     # `extra` fields become attributes, which a type checker cannot see.
     fields: list[dict[str, Any]] = [record.__dict__["embedding"] for record in ours]

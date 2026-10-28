@@ -10,18 +10,17 @@ import sqlalchemy as sa
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-import knowledge_service.vector_search as vector_search
+import knowledge_service.retrieval.vector_search as vector_search
 from fakes import FakeEmbeddingModel
 from knowledge_service.access import AuthorizationContext, Subject
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.deletions import tombstone_missing
-from knowledge_service.embedding_migration import (
+from knowledge_service.embeddings.migration import (
     EmbeddingMigration,
     EmbeddingMigrationError,
     InvalidMigrationTransition,
     MigrationState,
 )
-from knowledge_service.embedding_migration_workflow import (
+from knowledge_service.embeddings.migration_workflow import (
     BackfillProgress,
     IncompleteBackfill,
     InvalidTarget,
@@ -36,16 +35,16 @@ from knowledge_service.embedding_migration_workflow import (
     start_embedding_migration,
     switch_to_target_space,
 )
-from knowledge_service.embedding_publication import (
-    EmbeddingPublicationStatus,
-    publish_document_embeddings,
-)
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingLimits,
     EmbeddingModel,
     EmbeddingModelIdentity,
     EmbeddingUnavailable,
+)
+from knowledge_service.embeddings.publication import (
+    EmbeddingPublicationStatus,
+    publish_document_embeddings,
 )
 from knowledge_service.identifiers import (
     DocumentId,
@@ -54,20 +53,18 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
-    chunk_embeddings,
-    embedding_spaces,
-    insert_embedding_space,
-    load_chunks,
-)
-from knowledge_service.reconciliation import reconcile_document
-from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceRecord
-from knowledge_service.vector_search import (
+from knowledge_service.ingestion.deletions import tombstone_missing
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import reconcile_document
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.embeddings import insert_embedding_space
+from knowledge_service.persistence.schema import chunk_embeddings, embedding_spaces
+from knowledge_service.retrieval.vector_search import (
     NoCurrentEmbeddingSpace,
     search_similar_chunks,
 )
+from knowledge_service.settings import Settings
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000031")
 STARTED_AT = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)

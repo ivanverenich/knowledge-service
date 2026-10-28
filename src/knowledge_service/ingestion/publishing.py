@@ -15,11 +15,9 @@ from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document
 from knowledge_service.identifiers import DocumentId
-from knowledge_service.persistence import (
-    replace_access_grants,
-    replace_chunks,
-    upsert_document,
-)
+from knowledge_service.persistence.access import replace_access_grants
+from knowledge_service.persistence.chunks import replace_chunks
+from knowledge_service.persistence.documents import upsert_document
 
 
 class InvalidPublication(ValueError):

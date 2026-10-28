@@ -2,14 +2,14 @@
 
 import pytest
 
+from knowledge_service.ingestion.parsers.markdown_parser import parse_markdown
+from knowledge_service.ingestion.parsers.text_parser import parse_text
 from knowledge_service.language import (
     InvalidLanguageProfile,
     Language,
     LanguageProfile,
     detect_language,
 )
-from knowledge_service.markdown_parser import parse_markdown
-from knowledge_service.text_parser import parse_text
 
 ENGLISH = (
     "Every new engineer reads the security policy before the first deploy. "

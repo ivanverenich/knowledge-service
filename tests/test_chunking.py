@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from knowledge_service.chunking import (
+from knowledge_service.ingestion.chunking import (
     MAX_TOKEN_CHARACTERS,
     DraftChunk,
     InvalidChunking,
@@ -14,9 +14,9 @@ from knowledge_service.chunking import (
     reading_text,
     token_spans,
 )
-from knowledge_service.pdf_parser import parse_pdf
-from knowledge_service.structure import ParsedDocument
-from knowledge_service.text_parser import parse_text
+from knowledge_service.ingestion.parsers.pdf_parser import parse_pdf
+from knowledge_service.ingestion.parsers.structure import ParsedDocument
+from knowledge_service.ingestion.parsers.text_parser import parse_text
 from pdf_builder import build_pdf, text_page
 
 # The same examples on every run, and no example database written to disk.

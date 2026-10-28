@@ -16,18 +16,11 @@ from enum import StrEnum
 from importlib.metadata import version
 
 from knowledge_service.documents import MAX_TITLE_CHARACTERS, DocumentProvenance
-from knowledge_service.html_parser import parse_html
 from knowledge_service.identifiers import SourceId
-from knowledge_service.language import LanguageProfile, detect_language
-from knowledge_service.markdown_parser import parse_markdown
-from knowledge_service.pdf_parser import parse_pdf
-from knowledge_service.sources import (
-    InvalidSource,
-    SourceAccess,
-    SourceRecord,
-    SourceRecordState,
-)
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.html_parser import parse_html
+from knowledge_service.ingestion.parsers.markdown_parser import parse_markdown
+from knowledge_service.ingestion.parsers.pdf_parser import parse_pdf
+from knowledge_service.ingestion.parsers.structure import (
     CorruptDocument,
     DocumentParseError,
     DocumentTooLarge,
@@ -35,7 +28,14 @@ from knowledge_service.structure import (
     NoTextLayer,
     ParsedDocument,
 )
-from knowledge_service.text_parser import parse_text
+from knowledge_service.ingestion.parsers.text_parser import parse_text
+from knowledge_service.ingestion.sources import (
+    InvalidSource,
+    SourceAccess,
+    SourceRecord,
+    SourceRecordState,
+)
+from knowledge_service.language import LanguageProfile, detect_language
 
 MAX_DETAIL_CHARACTERS = 200
 # Raise when normalization changes what a Document's text or blocks become,

@@ -3,7 +3,7 @@
 import pytest
 
 from fakes import FakeSource
-from knowledge_service.sources import (
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
     SourcePort,

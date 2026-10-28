@@ -12,17 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import Subject
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.deletions import purge_document_chunks, tombstone_missing
 from knowledge_service.identifiers import SourceId
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import (
+from knowledge_service.ingestion.deletions import (
+    purge_document_chunks,
+    tombstone_missing,
+)
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import reconcile_document
+from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.persistence.schema import (
     chunk_embeddings,
     chunks,
     embedding_spaces,
 )
-from knowledge_service.reconciliation import reconcile_document
 from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceRecord
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 OBSERVED_AT = datetime(2026, 10, 23, 9, 0, tzinfo=UTC)
@@ -388,7 +391,7 @@ async def test_purging_a_deleted_document_removes_its_vectors(
 # PostgreSQL's own rendering of the rules this task adds. The drift check does
 # not compare CHECK bodies, index predicates, or vector dimensions, so a change
 # to the migration must show up here; tests/test_embedding_schema.py pins the
-# declarations in persistence.py the same way.
+# declarations in persistence.schema the same way.
 STORED_RULES = {
     "ck_chunk_embeddings_dimensions": "CHECK ((vector_dims(embedding) = dimensions))",
     "ck_embedding_spaces_dimensions": (

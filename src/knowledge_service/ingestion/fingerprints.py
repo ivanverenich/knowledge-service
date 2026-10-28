@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 from knowledge_service.access import AccessGrant, granted_subjects
 from knowledge_service.identifiers import DocumentId
-from knowledge_service.structure import ParsedDocument
+from knowledge_service.ingestion.parsers.structure import ParsedDocument
 
 _CONTENT_LABEL = "knowledge-service/content/v1"
 _AUTHORIZATION_LABEL = "knowledge-service/authorization/v1"

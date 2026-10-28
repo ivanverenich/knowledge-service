@@ -12,12 +12,10 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from database_fixtures import SYNC_DRIVER
-from knowledge_service.persistence import (
-    audit_trail_statement,
-    due_conversations_statement,
-    source_runs_statement,
-    subject_grants_statement,
-)
+from knowledge_service.persistence.access import subject_grants_statement
+from knowledge_service.persistence.audit import audit_trail_statement
+from knowledge_service.persistence.conversations import due_conversations_statement
+from knowledge_service.persistence.sources import source_runs_statement
 
 SOURCE_ID = UUID("10000000-0000-0000-0000-000000000002")
 SUBJECT_ID = UUID("20000000-0000-0000-0000-000000000002")

@@ -11,16 +11,16 @@ import pytest
 from openai import AsyncOpenAI
 
 from fakes import FakeEmbeddingModel
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.openai_adapter import (
+    OpenAIEmbeddingModel,
+    OpenAIEmbeddingSettings,
+)
+from knowledge_service.embeddings.port import (
     EmbeddingInputRejected,
     EmbeddingMalformedResponse,
     EmbeddingModel,
     EmbeddingRateLimited,
     RejectionReason,
-)
-from knowledge_service.openai_embeddings import (
-    OpenAIEmbeddingModel,
-    OpenAIEmbeddingSettings,
 )
 from openai_stubs import StubEmbeddings, openai_embedding_model, status_error
 

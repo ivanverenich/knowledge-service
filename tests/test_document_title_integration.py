@@ -15,15 +15,20 @@ from database_fixtures import migration_config, migration_environment
 from knowledge_service.access import Subject
 from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.directory_source import DirectorySource
 from knowledge_service.documents import Document
 from knowledge_service.identifiers import SourceId
-from knowledge_service.normalization import NormalizedDocument, normalize
-from knowledge_service.persistence import load_chunks, load_document
-from knowledge_service.reconciliation import Change, reconcile_document
+from knowledge_service.ingestion.directory_source import DirectorySource
+from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
+from knowledge_service.ingestion.reconciliation import Change, reconcile_document
+from knowledge_service.ingestion.sources import (
+    SourceAccess,
+    SourceMetadata,
+    SourceRecord,
+)
+from knowledge_service.ingestion.synchronization import synchronize_source
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.documents import load_document
 from knowledge_service.settings import Settings
-from knowledge_service.sources import SourceAccess, SourceMetadata, SourceRecord
-from knowledge_service.synchronization import synchronize_source
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
 OBSERVED_AT = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)

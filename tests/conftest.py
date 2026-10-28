@@ -20,7 +20,7 @@ from database_fixtures import (
     migrate,
     worker_database_url,
 )
-from knowledge_service.persistence import metadata
+from knowledge_service.persistence.schema import metadata
 
 
 @pytest.fixture(scope="session")

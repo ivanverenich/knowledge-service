@@ -5,9 +5,9 @@ from uuid import UUID
 from sqlalchemy.dialects import postgresql
 
 from knowledge_service.access import Subject
-from knowledge_service.persistence import searchable_chunks_statement
-from knowledge_service.sources import SourceAccess
-from knowledge_service.synchronization import source_readers
+from knowledge_service.ingestion.sources import SourceAccess
+from knowledge_service.ingestion.synchronization import source_readers
+from knowledge_service.persistence.chunks import searchable_chunks_statement
 
 
 def test_searchable_chunks_belong_only_to_available_documents() -> None:

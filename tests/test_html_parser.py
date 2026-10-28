@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from knowledge_service.html_parser import MAX_DEPTH, parse_html
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.html_parser import MAX_DEPTH, parse_html
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     DocumentParseError,
     DocumentTooLarge,

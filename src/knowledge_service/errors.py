@@ -2,7 +2,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingError,
     EmbeddingInputRejected,
     EmbeddingRateLimited,

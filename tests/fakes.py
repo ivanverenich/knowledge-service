@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from knowledge_service.contracts import Answer, Question, Usage
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingError,
     EmbeddingLimits,
@@ -15,13 +15,13 @@ from knowledge_service.embeddings import (
     check_inputs,
     checked_batch,
 )
-from knowledge_service.model import ChatModelUnavailable
-from knowledge_service.sources import (
+from knowledge_service.ingestion.sources import (
     SourceError,
     SourcePage,
     SourceRecord,
     SourceUnavailable,
 )
+from knowledge_service.model import ChatModelUnavailable
 
 
 class FakeChatModel:

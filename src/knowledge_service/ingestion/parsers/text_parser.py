@@ -8,7 +8,7 @@ paragraph are kept. Each block's text is exactly its slice of the text.
 import re
 from collections.abc import Iterator
 
-from knowledge_service.structure import (
+from knowledge_service.ingestion.parsers.structure import (
     BlockKind,
     DocumentTooLarge,
     ParsedDocument,

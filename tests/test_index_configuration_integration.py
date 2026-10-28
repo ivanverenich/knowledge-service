@@ -12,19 +12,17 @@ from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
-from knowledge_service.embeddings import EmbeddingModelIdentity
-from knowledge_service.identifiers import IndexConfigurationId
-from knowledge_service.index_configuration import (
+from knowledge_service.embeddings.index_configuration import (
     IndexConfiguration,
     IndexConfigurationConflict,
     InvalidIndexConfiguration,
     NormalizationSettings,
     current_index_configuration,
 )
-from knowledge_service.persistence import (
-    ensure_index_configuration,
-    index_configurations,
-)
+from knowledge_service.embeddings.port import EmbeddingModelIdentity
+from knowledge_service.identifiers import IndexConfigurationId
+from knowledge_service.persistence.embeddings import ensure_index_configuration
+from knowledge_service.persistence.schema import index_configurations
 from knowledge_service.settings import Settings
 
 CREATED_AT = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)

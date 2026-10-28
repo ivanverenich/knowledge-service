@@ -13,12 +13,11 @@ from pydantic import SecretStr
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from knowledge_service import vector_benchmark
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
 from knowledge_service.identifiers import ChunkId, EmbeddingSpaceId
-from knowledge_service.persistence import chunks, sources
-from knowledge_service.settings import Settings
-from knowledge_service.vector_benchmark import (
+from knowledge_service.persistence.schema import chunks, sources
+from knowledge_service.retrieval import vector_benchmark
+from knowledge_service.retrieval.vector_benchmark import (
     INDEX_NAME,
     SEEDED_TABLES,
     SEEDED_TEXT,
@@ -29,6 +28,7 @@ from knowledge_service.vector_benchmark import (
     render_report,
     run_benchmark,
 )
+from knowledge_service.settings import Settings
 
 # Big enough that PostgreSQL reads the HNSW index for the approximate plans;
 # half the Documents are private and the index hands over only 10 rows.

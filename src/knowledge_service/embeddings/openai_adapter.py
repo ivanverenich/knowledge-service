@@ -35,7 +35,7 @@ from openai import AsyncOpenAI
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-from knowledge_service.embeddings import (
+from knowledge_service.embeddings.port import (
     EmbeddingBatch,
     EmbeddingError,
     EmbeddingInputRejected,

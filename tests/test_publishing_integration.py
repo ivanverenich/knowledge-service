@@ -17,12 +17,13 @@ from knowledge_service.identifiers import (
     SourceId,
     UserId,
 )
-from knowledge_service.persistence import load_chunks, load_document
-from knowledge_service.publishing import (
+from knowledge_service.ingestion.publishing import (
     Publication,
     publish_document,
     publish_documents,
 )
+from knowledge_service.persistence.chunks import load_chunks
+from knowledge_service.persistence.documents import load_document
 from knowledge_service.settings import Settings
 
 OBSERVED_AT = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)

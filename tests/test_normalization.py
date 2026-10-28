@@ -6,23 +6,23 @@ from pathlib import Path
 
 import pytest
 
-from knowledge_service.directory_source import DirectorySource
 from knowledge_service.identifiers import SourceId
-from knowledge_service.language import Language
-from knowledge_service.normalization import (
+from knowledge_service.ingestion.directory_source import DirectorySource
+from knowledge_service.ingestion.normalization import (
     MAX_TITLE_CHARACTERS,
     NormalizedDocument,
     Quarantined,
     QuarantineReason,
     normalize,
 )
-from knowledge_service.sources import (
+from knowledge_service.ingestion.parsers.structure import BlockKind
+from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
     SourceMetadata,
     SourceRecord,
 )
-from knowledge_service.structure import BlockKind
+from knowledge_service.language import Language
 from pdf_builder import IMAGE_ONLY, build_pdf, encrypt, text_page
 
 SOURCE_ID = SourceId.parse("00000000-0000-0000-0000-000000000010")
