@@ -7,7 +7,7 @@ depends_on: ["M04-T10"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["vector benchmark","query-plan report"]
-status: planned
+status: completed
 ---
 
 # M04-T11 — Benchmark vector query plans
