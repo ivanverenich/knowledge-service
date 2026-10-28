@@ -39,6 +39,7 @@ from knowledge_service.vector_search import (
 IDENTITY = EmbeddingModelIdentity(provider="fake", model="fake-embedding", dimensions=3)
 USER = UserId.parse("00000000-0000-0000-0000-0000000000a1")
 GROUP = GroupId.parse("00000000-0000-0000-0000-0000000000b1")
+DOCUMENT = DocumentId.parse("00000000-0000-0000-0000-0000000000c1")
 MARKER = "zebramarker"
 # A media type that must reach the database only as a bound parameter.
 INJECTED_MEDIA_TYPE = "text/x-zebramarker"
@@ -125,6 +126,11 @@ def test_the_reader_and_the_query_are_bound_parameters() -> None:
                     FilterOperator.ANY_OF,
                     frozenset({Language.UKRAINIAN}),
                 ),
+                MetadataCondition(
+                    FilterField.DOCUMENT,
+                    FilterOperator.ANY_OF,
+                    frozenset({DOCUMENT}),
+                ),
             )
         ),
         limit=5,
@@ -139,10 +145,12 @@ def test_the_reader_and_the_query_are_bound_parameters() -> None:
     assert "0.25" not in sql
     assert INJECTED_MEDIA_TYPE not in sql
     assert "'uk'" not in sql
+    assert str(DOCUMENT.value) not in sql
     assert USER.value in values
     assert [GROUP.value] in values
     assert [INJECTED_MEDIA_TYPE] in values
     assert ["uk"] in values
+    assert [DOCUMENT.value] in values
 
 
 def test_a_candidate_repr_shows_no_document_text() -> None:

@@ -1120,7 +1120,7 @@ def metadata_predicate(
     is a bound parameter. With no conditions it is simply true. The
     statement using it must join `chunks` to `documents`. A Document with no
     metadata row matches no media type, language, or modified-since
-    condition; a Source condition still matches it.
+    condition; a Source or Document condition still matches it.
     """
     return sa.and_(sa.true(), *(_condition_clause(c) for c in conditions))
 
@@ -1131,6 +1131,11 @@ def _condition_clause(condition: MetadataCondition) -> sa.ColumnElement[bool]:
             source_ids = cast(frozenset[SourceId], condition.value)
             return documents.c.source_id == _any_of(
                 "source_ids", sorted(s.value for s in source_ids), sa.Uuid()
+            )
+        case FilterField.DOCUMENT:
+            document_ids = cast(frozenset[DocumentId], condition.value)
+            return documents.c.document_id == _any_of(
+                "document_ids", sorted(d.value for d in document_ids), sa.Uuid()
             )
         case FilterField.MEDIA_TYPE:
             media_types = cast(frozenset[str], condition.value)

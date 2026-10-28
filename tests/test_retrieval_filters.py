@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from knowledge_service.identifiers import SourceId, UserId
+from knowledge_service.identifiers import DocumentId, SourceId, UserId
 from knowledge_service.language import Language
 from knowledge_service.retrieval_filters import (
     MAX_FILTER_VALUES,
@@ -19,6 +19,7 @@ from knowledge_service.retrieval_filters import (
 )
 
 SOURCE = SourceId(UUID(int=1))
+DOCUMENT = DocumentId(UUID(int=2))
 SINCE = datetime(2026, 10, 1, tzinfo=UTC)
 
 ANY_OF = FilterOperator.ANY_OF
@@ -29,6 +30,7 @@ ON_OR_AFTER = FilterOperator.ON_OR_AFTER
     ("field", "operator", "value"),
     [
         (FilterField.SOURCE, ANY_OF, frozenset({SOURCE})),
+        (FilterField.DOCUMENT, ANY_OF, frozenset({DOCUMENT})),
         (FilterField.MEDIA_TYPE, ANY_OF, frozenset({"text/markdown", "text/html"})),
         (FilterField.LANGUAGE, ANY_OF, frozenset({Language.UKRAINIAN})),
         (FilterField.MODIFIED_AT, ON_OR_AFTER, SINCE),
@@ -64,6 +66,18 @@ def test_each_field_accepts_its_one_operator(
         (FilterField.SOURCE, ANY_OF, [SOURCE]),
         (FilterField.SOURCE, ANY_OF, frozenset({SOURCE.value})),
         (FilterField.SOURCE, ANY_OF, frozenset({UserId(UUID(int=1))})),
+        (FilterField.DOCUMENT, ON_OR_AFTER, frozenset({DOCUMENT})),
+        (FilterField.DOCUMENT, ANY_OF, frozenset[DocumentId]()),
+        (FilterField.DOCUMENT, ANY_OF, [DOCUMENT]),
+        (FilterField.DOCUMENT, ANY_OF, frozenset({DOCUMENT.value})),
+        (FilterField.DOCUMENT, ANY_OF, frozenset({str(DOCUMENT.value)})),
+        # A Source ID is a UUID too, but names another kind of thing.
+        (FilterField.DOCUMENT, ANY_OF, frozenset({SOURCE})),
+        (
+            FilterField.DOCUMENT,
+            ANY_OF,
+            frozenset(DocumentId(UUID(int=i)) for i in range(MAX_FILTER_VALUES + 1)),
+        ),
         (FilterField.LANGUAGE, ANY_OF, frozenset({"uk"})),
         (FilterField.MEDIA_TYPE, ANY_OF, frozenset({1})),
         (FilterField.MODIFIED_AT, ON_OR_AFTER, SINCE.date()),
@@ -150,14 +164,52 @@ def test_a_condition_altered_after_it_was_made_is_refused() -> None:
         checked_conditions([condition])
 
 
-def test_a_source_id_altered_to_hold_text_is_refused() -> None:
-    source = SourceId(UUID(int=1))
-    condition = MetadataCondition(FilterField.SOURCE, ANY_OF, frozenset({source}))
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (FilterField.SOURCE, frozenset({SOURCE})),
+        (FilterField.DOCUMENT, frozenset({DOCUMENT})),
+    ],
+)
+def test_an_id_altered_inside_a_condition_is_refused(
+    field: FilterField, value: FilterValue
+) -> None:
+    condition = MetadataCondition(field, ANY_OF, value)
+    (held,) = cast(frozenset[SourceId | DocumentId], condition.value)
     # Once reached PostgreSQL and failed there with a DataError.
-    object.__setattr__(source, "value", "' OR 1=1 --")
+    object.__setattr__(held, "value", "' OR 1=1 --")
 
     with pytest.raises(UnsupportedFilter):
         checked_conditions([condition])
+
+
+def test_a_condition_keeps_its_own_copies_of_the_ids() -> None:
+    document = DocumentId(UUID(int=2))
+    condition = MetadataCondition(FilterField.DOCUMENT, ANY_OF, frozenset({document}))
+    # The caller, or another task while the search waits, alters its own ID.
+    object.__setattr__(document, "value", "' OR 1=1 --")
+
+    (checked,) = checked_conditions([condition])
+
+    assert checked.value == frozenset({DocumentId(UUID(int=2))})
+
+
+@pytest.mark.parametrize("number", ["' OR true --", -1, 2**200, None])
+def test_a_uuid_altered_inside_an_id_is_refused(number: object) -> None:
+    uuid = UUID(int=2)
+    object.__setattr__(uuid, "int", number)
+
+    with pytest.raises(UnsupportedFilter):
+        MetadataCondition(FilterField.DOCUMENT, ANY_OF, frozenset({DocumentId(uuid)}))
+
+
+def test_an_id_without_its_value_is_refused() -> None:
+    document = DocumentId(UUID(int=2))
+    documents = frozenset({document})
+    object.__delattr__(document, "value")
+
+    with pytest.raises(UnsupportedFilter):
+        MetadataCondition(FilterField.DOCUMENT, ANY_OF, documents)
 
 
 class ShiftingZone(tzinfo):

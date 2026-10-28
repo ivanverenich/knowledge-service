@@ -186,17 +186,26 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Model as EmbeddingModel
     Caller->>Pub: model, document_id
-    Pub->>DB: short transaction: lock space and Document, read Chunks without a vector
+    Pub->>DB: short transaction: find and share-lock the space for the model identity
+    alt no space holds that identity
+        Pub-->>Caller: UnknownEmbeddingSpace, nothing sent
+    end
+    Pub->>DB: lock the Document, read its Chunks and which lack a vector
+    alt Document not available
+        Pub-->>Caller: UNAVAILABLE, nothing sent
+    else every Chunk has a vector
+        Pub-->>Caller: UNCHANGED, nothing sent
+    end
     Pub->>Model: embed_in_batches (no connection held)
-    Model-->>Pub: one outcome per batch
+    Model-->>Pub: one outcome per batch, each vector checked for the model's length
     alt a batch did not succeed
         Pub-->>Caller: IncompleteEmbedding, nothing written
     else every batch succeeded
         Pub->>DB: short transaction: lock again, compare with the first read
-        alt unchanged
+        alt same space, same Chunks, and the space still accepts writes
             Pub->>DB: insert every vector in one statement
             Pub-->>Caller: PUBLISHED
-        else changed
+        else anything changed, or the space was retired by a migration
             Pub-->>Caller: STALE, nothing written
         end
     end
@@ -213,8 +222,9 @@ one reader may see. Eligibility is part of the same SQL statement as the
 ranking, so a Chunk the reader may not see is never ranked and never leaves
 the database. Stored vectors and the query both have length 1, and cosine
 distance runs from 0 (same direction) to 2 (opposite). Optional metadata
-filters (Source, media type, language, modified since) are typed conditions
-from a fixed list; they are added to the same WHERE and only narrow it.
+filters (Source, Document, media type, language, modified since) are typed
+conditions from a fixed list; they are added to the same WHERE and only
+narrow it.
 
 ```mermaid
 sequenceDiagram
@@ -222,14 +232,18 @@ sequenceDiagram
     participant Search as search_similar_chunks
     participant DB as PostgreSQL
     Caller->>Search: query vector, model identity, Authorization Context, limit, filters
-    Search->>Search: refuse a bad query, limit, or filter; scale the query to length 1
+    Search->>Search: refuse a bad limit or query, scale the query to length 1, then refuse a bad filter
     Search->>DB: find the current Embedding Space for the model identity
     alt not current
         Search-->>Caller: NoCurrentEmbeddingSpace
     else current
-        Search->>DB: one SELECT: space AND available AND a matching Access Grant AND every filter AND a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
+        Search->>DB: one SELECT: space still current AND available AND a matching Access Grant AND every filter AND a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
         DB-->>Search: eligible Chunks with provenance and distance
-        Search-->>Caller: VectorSearchResult: up to k ranked Candidates, nearest first, and whether more exist
+        alt no rows and the space is no longer current
+            Search-->>Caller: NoCurrentEmbeddingSpace (a migration switched meanwhile)
+        else
+            Search-->>Caller: VectorSearchResult: up to k ranked Candidates, nearest first, and whether more exist
+        end
     end
 ```
 
@@ -243,7 +257,7 @@ mixes vectors of different lengths and is never without a current space.
 stateDiagram-v2
     [*] --> dual_writing: start (target space created, not current)
     dual_writing --> dual_writing: backfill older Documents into the target
-    dual_writing --> switched: switch (target has every searchable vector; one transaction)
+    dual_writing --> switched: switch (target has every searchable vector, in one transaction)
     switched --> cleaned: clean up (source space and its vectors deleted)
     cleaned --> [*]
 ```

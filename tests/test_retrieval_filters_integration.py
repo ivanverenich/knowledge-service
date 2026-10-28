@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import cast
+from uuid import UUID
 
 import pytest
 import sqlalchemy as sa
@@ -217,6 +218,12 @@ def languages(*values: Language) -> MetadataCondition:
 def modified_since(moment: datetime) -> MetadataCondition:
     return MetadataCondition(
         FilterField.MODIFIED_AT, FilterOperator.ON_OR_AFTER, moment
+    )
+
+
+def in_documents(*document_ids: DocumentId) -> MetadataCondition:
+    return MetadataCondition(
+        FilterField.DOCUMENT, FilterOperator.ANY_OF, frozenset(document_ids)
     )
 
 
@@ -520,3 +527,105 @@ async def test_a_late_observation_cannot_roll_the_metadata_back(
         stored = await load_document_metadata(connection, document_id=document_id)
     assert stored is not None
     assert stored.modified_at == newer
+
+
+@pytest.mark.integration
+async def test_a_document_filter_keeps_the_ranking_of_the_documents_it_names(
+    runtime: DatabaseRuntime,
+) -> None:
+    await a_corpus(runtime)
+    everything = await search(runtime, ())
+    named = {"uk-old.txt", "en-old.txt", "uk-new.md"}
+    chosen = [c for c in everything.candidates if c.external_id in named]
+    ids = [c.document_id for c in chosen]
+
+    filtered = await search(runtime, (in_documents(*ids),))
+    nearest = await search(runtime, (in_documents(*ids),), limit=2)
+
+    # The same Chunks, in the same order, at the same distances.
+    assert [(c.chunk_id, c.distance) for c in filtered.candidates] == [
+        (c.chunk_id, c.distance) for c in chosen
+    ]
+    assert [c.rank for c in filtered.candidates] == [1, 2, 3]
+    assert filtered.truncated is False
+    assert names(nearest) == ["en-old.txt", "uk-new.md"]
+    assert nearest.truncated is True
+
+
+@pytest.mark.integration
+async def test_a_document_filter_orders_equal_distances_by_chunk_id(
+    runtime: DatabaseRuntime,
+) -> None:
+    for name in ("twin-a.txt", "twin-b.txt", "twin-c.txt"):
+        await a_document(
+            runtime,
+            a_record(
+                name,
+                source=HANDBOOK,
+                media_type="text/plain",
+                text=ENGLISH,
+                modified_at=None,
+            ),
+            vector=[0.0, 0.0, 1.0],
+        )
+    everything = await search(runtime, ())
+    ids = [c.document_id for c in everything.candidates]
+
+    result = await search(runtime, (in_documents(*ids),))
+
+    chunk_ids = [c.chunk_id for c in result.candidates]
+    assert len({c.distance for c in result.candidates}) == 1
+    assert chunk_ids == sorted(chunk_ids, key=lambda chunk_id: chunk_id.value)
+
+
+@pytest.mark.integration
+async def test_naming_a_document_the_reader_may_not_see_finds_nothing(
+    runtime: DatabaseRuntime,
+) -> None:
+    hidden = await a_document(
+        runtime,
+        a_record(
+            "hidden.md",
+            source=WIKI,
+            media_type="text/markdown",
+            text=ENGLISH,
+            modified_at=None,
+        ),
+        vector=[1.0, 0.0, 0.0],
+        readers=[Subject.user(OTHER_USER)],
+    )
+    visible = await a_document(
+        runtime,
+        a_record(
+            "visible.md",
+            source=WIKI,
+            media_type="text/markdown",
+            text=ENGLISH,
+            modified_at=None,
+        ),
+        vector=[0.0, 1.0, 0.0],
+    )
+
+    only_hidden = await search(runtime, (in_documents(hidden),))
+    unknown = await search(runtime, (in_documents(DocumentId.new()),))
+    both = await search(runtime, (in_documents(hidden, visible),), limit=1)
+
+    # A hidden Document looks exactly like one that does not exist.
+    assert only_hidden == unknown
+    assert names(only_hidden) == []
+    assert only_hidden.truncated is False
+    assert names(both) == ["visible.md"]
+    assert both.truncated is False
+
+
+@pytest.mark.integration
+async def test_a_document_id_altered_to_hold_text_is_refused_before_the_search(
+    runtime: DatabaseRuntime,
+) -> None:
+    await a_corpus(runtime)
+    condition = in_documents(DocumentId(UUID(int=1)))
+    (held,) = cast(frozenset[DocumentId], condition.value)
+    object.__setattr__(held, "value", "' OR true --")
+
+    with pytest.raises(UnsupportedFilter):
+        await search(runtime, (condition,))

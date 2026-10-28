@@ -7,6 +7,7 @@ turns each pair into a fixed SQL condition with bound parameters:
 | Field | Operator | Value |
 |---|---|---|
 | `SOURCE` | `ANY_OF` | a non-empty frozenset of `SourceId` |
+| `DOCUMENT` | `ANY_OF` | a non-empty frozenset of `DocumentId` |
 | `MEDIA_TYPE` | `ANY_OF` | a non-empty frozenset of media types (`text/markdown`) |
 | `LANGUAGE` | `ANY_OF` | a non-empty frozenset of `Language` |
 | `MODIFIED_AT` | `ON_OR_AFTER` | a UTC `datetime` |
@@ -26,7 +27,7 @@ from typing import cast
 from uuid import UUID
 
 from knowledge_service.documents import MAX_MEDIA_TYPE_CHARACTERS
-from knowledge_service.identifiers import SourceId
+from knowledge_service.identifiers import DocumentId, SourceId
 from knowledge_service.language import Language
 
 # Bounds the values one condition sends to the database.
@@ -45,6 +46,7 @@ class FilterField(StrEnum):
     """What a condition looks at."""
 
     SOURCE = "source"
+    DOCUMENT = "document"
     MEDIA_TYPE = "media_type"
     LANGUAGE = "language"
     MODIFIED_AT = "modified_at"
@@ -59,18 +61,28 @@ class FilterOperator(StrEnum):
 
 _ALLOWED_OPERATOR = {
     FilterField.SOURCE: FilterOperator.ANY_OF,
+    FilterField.DOCUMENT: FilterOperator.ANY_OF,
     FilterField.MEDIA_TYPE: FilterOperator.ANY_OF,
     FilterField.LANGUAGE: FilterOperator.ANY_OF,
     FilterField.MODIFIED_AT: FilterOperator.ON_OR_AFTER,
 }
 
+_ID_FIELDS = frozenset({FilterField.SOURCE, FilterField.DOCUMENT})
+
 _ELEMENT_TYPE: dict[FilterField, type] = {
     FilterField.SOURCE: SourceId,
+    FilterField.DOCUMENT: DocumentId,
     FilterField.MEDIA_TYPE: str,
     FilterField.LANGUAGE: Language,
 }
 
-type FilterValue = frozenset[SourceId] | frozenset[str] | frozenset[Language] | datetime
+type FilterValue = (
+    frozenset[SourceId]
+    | frozenset[DocumentId]
+    | frozenset[str]
+    | frozenset[Language]
+    | datetime
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +107,8 @@ class MetadataCondition:
             # Keep a plain UTC copy, never the caller's tzinfo object, which
             # could answer differently once it has been checked.
             object.__setattr__(self, "value", _utc_moment(self.value))
+        elif self.field in _ID_FIELDS:
+            object.__setattr__(self, "value", _copied_ids(self.field, self.value))
         else:
             _check_values(self.field, self.value)
 
@@ -151,16 +165,31 @@ def _check_values(field: FilterField, value: object) -> None:
         raise UnsupportedFilter(
             f"every {field.value} value must be a {expected.__name__}"
         )
-    if field is FilterField.SOURCE and any(
-        # A SourceId can be altered after it was made, like any frozen value.
-        type(cast(SourceId, element).value) is not UUID
-        for element in values
-    ):
-        raise UnsupportedFilter("every source value must hold a UUID")
     if field is FilterField.MEDIA_TYPE and not all(
         _is_media_type(cast(str, element)) for element in values
     ):
         raise UnsupportedFilter("a media type is lowercase type/subtype")
+
+
+def _copied_ids(
+    field: FilterField, value: object
+) -> frozenset[SourceId] | frozenset[DocumentId]:
+    """Return new IDs rebuilt from the checked numbers of the given ones.
+
+    An ID, and even the UUID inside it, can be altered after it was made,
+    also while a search waits on the database. The condition keeps these
+    copies, which no caller holds, so what was checked is what is sent.
+    """
+    _check_values(field, value)
+    kind = cast(type[SourceId] | type[DocumentId], _ELEMENT_TYPE[field])
+    copies: set[SourceId | DocumentId] = set()
+    for element in cast(frozenset[object], value):
+        uuid = getattr(element, "value", None)
+        number = getattr(uuid, "int", None) if type(uuid) is UUID else None
+        if type(number) is not int or not 0 <= number < 2**128:
+            raise UnsupportedFilter(f"every {field.value} value must hold a UUID")
+        copies.add(kind(UUID(int=number)))
+    return cast(frozenset[SourceId] | frozenset[DocumentId], frozenset(copies))
 
 
 def _is_media_type(value: str) -> bool:

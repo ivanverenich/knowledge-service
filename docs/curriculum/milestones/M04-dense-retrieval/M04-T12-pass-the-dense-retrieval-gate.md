@@ -7,7 +7,7 @@ depends_on: ["M04-T11"]
 estimate: 90m
 topics: ["embeddings","pgvector","retrieval"]
 deliverables: ["M04 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M04-T12 — Pass the dense-retrieval understanding gate
