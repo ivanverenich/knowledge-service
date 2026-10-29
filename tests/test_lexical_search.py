@@ -1,5 +1,6 @@
 """Checks on English full-text search that need no database."""
 
+from collections.abc import Awaitable, Callable
 from typing import cast
 from uuid import UUID
 
@@ -15,6 +16,8 @@ from knowledge_service.retrieval.lexical_search import (
     InvalidLexicalQuery,
     english_search_statement,
     search_english_chunks,
+    search_ukrainian_chunks,
+    ukrainian_search_statement,
 )
 from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 
@@ -22,6 +25,7 @@ CONTEXT = AuthorizationContext(user_id=UserId(UUID(int=1)))
 MARKER = "zebramarker"
 
 
+@pytest.mark.parametrize("search", [search_english_chunks, search_ukrainian_chunks])
 @pytest.mark.parametrize(
     ("text", "limit"),
     [
@@ -41,13 +45,13 @@ MARKER = "zebramarker"
     ],
 )
 async def test_bad_text_or_limit_is_refused_before_the_database(
-    text: object, limit: object
+    search: Callable[..., Awaitable[object]], text: object, limit: object
 ) -> None:
     # Any use of the connection would fail: the check must come first.
     unused = cast(AsyncConnection, object())
 
     with pytest.raises(InvalidLexicalQuery):
-        await search_english_chunks(
+        await search(
             unused,
             text=cast(str, text),
             context=CONTEXT,
@@ -75,3 +79,19 @@ def test_the_query_text_is_a_bound_parameter_with_a_named_configuration() -> Non
     assert f"{MARKER}' OR true --" in compiled.params.values()
     assert "websearch_to_tsquery('english'::regconfig" in sql
     assert "chunks.search_en @@" in sql
+
+
+def test_the_ukrainian_query_is_a_bound_parameter_with_the_simple_configuration() -> (
+    None
+):
+    statement = ukrainian_search_statement(
+        text=f"{MARKER}' OR true --", eligibility=sa.true(), limit=5
+    )
+
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+
+    assert MARKER not in sql
+    assert f"{MARKER}' OR true --" in compiled.params.values()
+    assert "websearch_to_tsquery('simple'::regconfig" in sql
+    assert "chunks.search_simple @@" in sql

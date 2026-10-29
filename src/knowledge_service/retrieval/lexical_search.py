@@ -1,10 +1,19 @@
-"""Find the Chunks whose words match an English query that one reader may see.
+"""Find the Chunks whose words match a query that one reader may see.
 
-Every Chunk stores its English search terms in `chunks.search_en`: the
-Document's title (weight A), the headings it sits under (B), and its text (C),
-each reduced by PostgreSQL's `english` configuration to word stems without
-stop words. The query goes through the same configuration, so "requesting
-leave" matches "requests for leave".
+Every Chunk stores two sets of search terms, each from the Document's title
+(weight A), the headings it sits under (B), and its text (C):
+
+- `chunks.search_en`, built with PostgreSQL's `english` configuration: word
+  stems without stop words, so "requesting leave" matches "requests for
+  leave". `search_english_chunks` reads it.
+- `chunks.search_simple`, built with the `simple` configuration: every word
+  lowercased, with no stemming and no stop words. `search_ukrainian_chunks`
+  reads it. This is only a baseline for Ukrainian: "відпустка" matches
+  "Відпустка" but not "відпустку" or "відпустки", an apostrophe splits
+  "сім'я" into "сім" and "я", and a common word such as "на" matches almost
+  every Chunk.
+
+The query goes through the same configuration as the terms it searches.
 
 What a caller can rely on:
 
@@ -27,11 +36,14 @@ What a caller can rely on:
   `InvalidLexicalQuery` before the database is used.
 """
 
+import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy import RowMapping
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -46,8 +58,9 @@ from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 MAX_QUERY_CHARACTERS = 1_000
 
 # Named, not taken from the server's `default_text_search_config`, and the
-# same configuration the stored vectors were built with.
+# same configurations the stored vectors were built with.
 ENGLISH = sa.literal_column("'english'::regconfig", type_=REGCONFIG)
+SIMPLE = sa.literal_column("'simple'::regconfig", type_=REGCONFIG)
 
 
 class LexicalSearchError(Exception):
@@ -79,37 +92,40 @@ async def search_english_chunks(
     context: AuthorizationContext,
     limit: int,
 ) -> tuple[LexicalMatch, ...]:
-    """Return up to `limit` eligible Chunks matching `text`, best first.
+    """Return up to `limit` eligible Chunks matching English `text`, best first.
 
     Raises `InvalidLexicalQuery` for unusable text or a bad limit, and for
     text PostgreSQL cannot turn into a query.
     """
-    _check_text(text)
-    _check_limit(limit)
-    statement = english_search_statement(
+    return await _search(
+        connection,
+        chunks.c.search_en,
+        ENGLISH,
         text=text,
-        eligibility=eligible_chunks_predicate(context),
+        context=context,
         limit=limit,
     )
-    try:
-        # A savepoint, so a refused query leaves the caller's transaction usable.
-        async with connection.begin_nested():
-            records = (await connection.execute(statement)).mappings().all()
-    except DBAPIError as error:
-        # `websearch_to_tsquery` overflows on long runs of operators, such as
-        # a pasted line of dashes. The error repeats the query text, so it is
-        # dropped.
-        if "tsquery stack too small" in str(error.orig):
-            raise InvalidLexicalQuery("query text has too many operators") from None
-        raise
-    return tuple(
-        LexicalMatch(
-            rank=index,
-            chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
-            document_id=DocumentId(cast(UUID, record["document_id"])),
-            score=cast(float, record["score"]),
-        )
-        for index, record in enumerate(records, start=1)
+
+
+async def search_ukrainian_chunks(
+    connection: AsyncConnection,
+    *,
+    text: str,
+    context: AuthorizationContext,
+    limit: int,
+) -> tuple[LexicalMatch, ...]:
+    """Return up to `limit` eligible Chunks containing the exact words of `text`.
+
+    Words match after lowercasing only, in the form they were typed. Raises
+    `InvalidLexicalQuery` like `search_english_chunks`.
+    """
+    return await _search(
+        connection,
+        chunks.c.search_simple,
+        SIMPLE,
+        text=text,
+        context=context,
+        limit=limit,
     )
 
 
@@ -121,11 +137,99 @@ def english_search_statement(
 ) -> sa.Select[*tuple[Any, ...]]:
     """Select the eligible Chunks whose English terms match the query text.
 
-    The text is one bound parameter. `@@` on the stored vector is what the
-    GIN index `ix_chunks_search_en` answers.
+    `@@` on the stored vector is what the GIN index `ix_chunks_search_en`
+    answers.
     """
-    query = sa.func.websearch_to_tsquery(ENGLISH, sa.bindparam("query_text", text))
-    score = sa.func.ts_rank(chunks.c.search_en, query)
+    return _search_statement(
+        chunks.c.search_en,
+        ENGLISH,
+        text=text,
+        eligibility=eligibility,
+        limit=limit,
+    )
+
+
+def ukrainian_search_statement(
+    *,
+    text: str,
+    eligibility: sa.ColumnElement[bool],
+    limit: int,
+) -> sa.Select[*tuple[Any, ...]]:
+    """Select the eligible Chunks whose `simple` terms match the query text.
+
+    `@@` on the stored vector is what the GIN index `ix_chunks_search_simple`
+    answers.
+    """
+    return _search_statement(
+        chunks.c.search_simple,
+        SIMPLE,
+        text=text,
+        eligibility=eligibility,
+        limit=limit,
+    )
+
+
+async def _search(
+    connection: AsyncConnection,
+    terms: sa.Column[Any],
+    configuration: sa.ColumnElement[Any],
+    *,
+    text: str,
+    context: AuthorizationContext,
+    limit: int,
+) -> tuple[LexicalMatch, ...]:
+    _check_text(text)
+    _check_limit(limit)
+    statement = _search_statement(
+        terms,
+        configuration,
+        # One form for letters such as й and ї, which can also arrive as a
+        # letter plus a combining mark; the stored terms use the same form.
+        text=unicodedata.normalize("NFC", text),
+        eligibility=eligible_chunks_predicate(context),
+        limit=limit,
+    )
+    records: Sequence[RowMapping] = ()
+    refused = False
+    try:
+        # A savepoint, so a refused query leaves the caller's transaction usable.
+        async with connection.begin_nested():
+            records = (await connection.execute(statement)).mappings().all()
+    except DBAPIError as error:
+        # `websearch_to_tsquery` overflows on long runs of operators, such as
+        # a pasted line of dashes.
+        if "tsquery stack too small" not in str(error.orig):
+            raise
+        refused = True
+    if refused:
+        # Raised outside the handler, so no exception chain keeps the
+        # database error, which repeats the query text.
+        raise InvalidLexicalQuery("query text has too many operators")
+    return tuple(
+        LexicalMatch(
+            rank=index,
+            chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
+            document_id=DocumentId(cast(UUID, record["document_id"])),
+            score=cast(float, record["score"]),
+        )
+        for index, record in enumerate(records, start=1)
+    )
+
+
+def _search_statement(
+    terms: sa.Column[Any],
+    configuration: sa.ColumnElement[Any],
+    *,
+    text: str,
+    eligibility: sa.ColumnElement[bool],
+    limit: int,
+) -> sa.Select[*tuple[Any, ...]]:
+    # The text is one bound parameter, read with the configuration the
+    # stored terms were built with.
+    query = sa.func.websearch_to_tsquery(
+        configuration, sa.bindparam("query_text", text)
+    )
+    score = sa.func.ts_rank(terms, query)
     return (
         sa.select(
             chunks.c.chunk_id,
@@ -133,7 +237,7 @@ def english_search_statement(
             score.label("score"),
         )
         .join(documents, documents.c.document_id == chunks.c.document_id)
-        .where(chunks.c.search_en.bool_op("@@")(query), eligibility)
+        .where(terms.bool_op("@@")(query), eligibility)
         .order_by(score.desc(), chunks.c.chunk_id)
         .limit(limit)
     )

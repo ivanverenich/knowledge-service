@@ -9,6 +9,7 @@ ACCESS_PATTERN_INDEXES = {
     "ix_access_grants_subject_document",
     "ix_chunk_embeddings_space_id",
     "ix_chunks_search_en",
+    "ix_chunks_search_simple",
     "ix_embedding_migrations_source_space_id",
     "ix_embedding_migrations_target_configuration_id",
     "ix_embedding_migrations_target_space_id",

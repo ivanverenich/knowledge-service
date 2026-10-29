@@ -7,7 +7,7 @@ depends_on: ["M05-T01"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["Ukrainian FTS baseline","limitation report"]
-status: planned
+status: completed
 ---
 
 # M05-T02 — Establish the Ukrainian lexical baseline

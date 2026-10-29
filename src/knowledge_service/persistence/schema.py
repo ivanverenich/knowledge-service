@@ -136,6 +136,11 @@ chunks = sa.Table(
     # triggers from migration c7d8e9f0a1b2 compute it on every insert and
     # update of the Chunk, and again when the Document's title changes.
     sa.Column("search_en", TSVECTOR(), nullable=False),
+    # The same, built with the `simple` configuration: lowercased words with
+    # no stemming and no stop words, the Ukrainian baseline. The Chunk
+    # trigger from migration d8e9f0a1b2c3 computes it on every insert and
+    # update; a title change reaches it through the English Document trigger.
+    sa.Column("search_simple", TSVECTOR(), nullable=False),
     sa.UniqueConstraint("document_id", "ordinal", name="uq_chunks_document_ordinal"),
     sa.CheckConstraint("content_version >= 1", name="ck_chunks_content_version"),
     sa.CheckConstraint("ordinal >= 0", name="ck_chunks_ordinal"),
@@ -145,6 +150,12 @@ chunks = sa.Table(
     sa.Index(
         "ix_chunks_search_en",
         "search_en",
+        postgresql_using="gin",
+        postgresql_with={"fastupdate": "off"},
+    ),
+    sa.Index(
+        "ix_chunks_search_simple",
+        "search_simple",
         postgresql_using="gin",
         postgresql_with={"fastupdate": "off"},
     ),
