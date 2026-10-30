@@ -7,7 +7,7 @@ depends_on: ["M05-T02"]
 estimate: 75m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["language-aware lexical search"]
-status: planned
+status: completed
 ---
 
 # M05-T03 — Route language-aware lexical queries

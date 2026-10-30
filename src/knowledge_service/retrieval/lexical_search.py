@@ -14,6 +14,11 @@ Every Chunk stores two sets of search terms, each from the Document's title
   every Chunk.
 
 The query goes through the same configuration as the terms it searches.
+`search_lexical_chunks` chooses the configuration for each Question with
+`route_lexical_question`, from the language the caller states, the
+alphabet of the Question, and whether English keeps any of its words; when
+these do not agree on one configuration, it matches both in one statement
+and keeps a Chunk that either finds.
 
 What a caller can rely on:
 
@@ -25,9 +30,10 @@ What a caller can rely on:
   PostgreSQL still refuses a few queries with too many operators in a row,
   such as a line of 33 dashes; that raises `InvalidLexicalQuery`, and the
   caller's transaction stays usable.
-- **Order.** Highest `ts_rank` first, so a match in a title outranks the same
-  match in a heading, and a heading outranks the text; then by Chunk ID, so
-  equal scores always come back in the same order.
+- **Order.** Highest `ts_rank` first, so a match in a title outranks the
+  same match in a heading, and a heading outranks the text; then by Chunk
+  ID, so equal scores always come back in the same order. With two
+  configurations, a Chunk's score is the higher rank among those that match.
 - **Eligibility.** The same permission check as vector search sits in the
   same WHERE, so a Chunk the reader may not see is never ranked and never
   leaves the database.
@@ -50,8 +56,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.identifiers import ChunkId, DocumentId
+from knowledge_service.language import Language
 from knowledge_service.persistence.access import eligible_chunks_predicate
 from knowledge_service.persistence.schema import chunks, documents
+from knowledge_service.retrieval.lexical_routing import (
+    LexicalConfiguration,
+    LexicalRoute,
+    route_lexical_question,
+)
 from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 
 # Long enough for any question, short enough to bound the work per query.
@@ -61,6 +73,13 @@ MAX_QUERY_CHARACTERS = 1_000
 # same configurations the stored vectors were built with.
 ENGLISH = sa.literal_column("'english'::regconfig", type_=REGCONFIG)
 SIMPLE = sa.literal_column("'simple'::regconfig", type_=REGCONFIG)
+
+# The stored words of each configuration, and the configuration to read a
+# query with.
+_TERMS: dict[LexicalConfiguration, tuple[sa.Column[Any], sa.ColumnElement[Any]]] = {
+    LexicalConfiguration.ENGLISH: (chunks.c.search_en, ENGLISH),
+    LexicalConfiguration.SIMPLE: (chunks.c.search_simple, SIMPLE),
+}
 
 
 class LexicalSearchError(Exception):
@@ -85,6 +104,56 @@ class LexicalMatch:
     score: float
 
 
+@dataclass(frozen=True, slots=True)
+class LexicalSearch:
+    """The matches for one Question, and the route that chose how to match it."""
+
+    route: LexicalRoute
+    matches: tuple[LexicalMatch, ...]
+
+
+async def search_lexical_chunks(
+    connection: AsyncConnection,
+    *,
+    text: str,
+    context: AuthorizationContext,
+    limit: int,
+    language: Language | None = None,
+) -> LexicalSearch:
+    """Return up to `limit` eligible Chunks matching `text`, best first.
+
+    `language` is what the caller states about this Question, or None. It
+    is one signal for the route, next to the Question's own alphabet; see
+    `route_lexical_question`. Raises `InvalidLexicalQuery` like
+    `search_english_chunks`, and for a `language` that is not a `Language`.
+    """
+    # Checked here as well as in `_search`, because the route reads the text.
+    _check_text(text)
+    _check_limit(limit)
+    if language is not None and type(language) is not Language:
+        raise InvalidLexicalQuery("language must be a Language or None")
+    text = unicodedata.normalize("NFC", text)
+    route = route_lexical_question(text, stated=language)
+    if route.configurations == (LexicalConfiguration.ENGLISH,):
+        # Only the database knows its English stop words.
+        query = sa.func.websearch_to_tsquery(
+            ENGLISH, sa.bindparam("query_text", text, type_=sa.Text())
+        )
+        records = await _execute(
+            connection, sa.select(sa.func.numnode(query).label("words"))
+        )
+        if records[0]["words"] == 0:
+            route = route_lexical_question(text, stated=language, english_words=False)
+    matches = await _search(
+        connection,
+        route.configurations,
+        text=text,
+        context=context,
+        limit=limit,
+    )
+    return LexicalSearch(route=route, matches=matches)
+
+
 async def search_english_chunks(
     connection: AsyncConnection,
     *,
@@ -99,8 +168,7 @@ async def search_english_chunks(
     """
     return await _search(
         connection,
-        chunks.c.search_en,
-        ENGLISH,
+        (LexicalConfiguration.ENGLISH,),
         text=text,
         context=context,
         limit=limit,
@@ -121,8 +189,7 @@ async def search_ukrainian_chunks(
     """
     return await _search(
         connection,
-        chunks.c.search_simple,
-        SIMPLE,
+        (LexicalConfiguration.SIMPLE,),
         text=text,
         context=context,
         limit=limit,
@@ -140,9 +207,8 @@ def english_search_statement(
     `@@` on the stored vector is what the GIN index `ix_chunks_search_en`
     answers.
     """
-    return _search_statement(
-        chunks.c.search_en,
-        ENGLISH,
+    return lexical_search_statement(
+        (LexicalConfiguration.ENGLISH,),
         text=text,
         eligibility=eligibility,
         limit=limit,
@@ -160,19 +226,75 @@ def ukrainian_search_statement(
     `@@` on the stored vector is what the GIN index `ix_chunks_search_simple`
     answers.
     """
-    return _search_statement(
-        chunks.c.search_simple,
-        SIMPLE,
+    return lexical_search_statement(
+        (LexicalConfiguration.SIMPLE,),
         text=text,
         eligibility=eligibility,
         limit=limit,
     )
 
 
+def lexical_search_statement(
+    configurations: Sequence[LexicalConfiguration],
+    *,
+    text: str,
+    eligibility: sa.ColumnElement[bool],
+    limit: int,
+) -> sa.Select[*tuple[Any, ...]]:
+    """Select the eligible Chunks whose words match the query text.
+
+    With one configuration, the stored words of that configuration must
+    match. With several, the words of any one may match, each read with its
+    own configuration, and a Chunk scores the highest rank among those that
+    match. Each `@@` is answered by that configuration's GIN index.
+    """
+    if (
+        not configurations
+        or any(type(item) is not LexicalConfiguration for item in configurations)
+        or len(set(configurations)) != len(configurations)
+    ):
+        raise InvalidLexicalQuery(
+            "configurations must be distinct LexicalConfiguration values"
+        )
+    # The text is one bound parameter, read with the configuration the
+    # stored terms were built with.
+    query_text = sa.bindparam("query_text", text, type_=sa.Text())
+    conditions: list[sa.ColumnElement[bool]] = []
+    ranks: list[sa.ColumnElement[Any]] = []
+    for configuration in configurations:
+        terms, regconfig = _TERMS[configuration]
+        query = sa.func.websearch_to_tsquery(regconfig, query_text)
+        condition = terms.bool_op("@@")(query)
+        conditions.append(condition)
+        ranks.append(sa.func.ts_rank(terms, query))
+    if len(configurations) == 1:
+        matched, score = conditions[0], ranks[0]
+    else:
+        matched = sa.or_(*conditions)
+        # A rank counts only where its own query matches: `ts_rank` also
+        # scores a Chunk that has only some of the words.
+        score = sa.func.greatest(
+            *(
+                sa.case((condition, rank))
+                for condition, rank in zip(conditions, ranks, strict=True)
+            )
+        )
+    return (
+        sa.select(
+            chunks.c.chunk_id,
+            chunks.c.document_id,
+            score.label("score"),
+        )
+        .join(documents, documents.c.document_id == chunks.c.document_id)
+        .where(matched, eligibility)
+        .order_by(score.desc(), chunks.c.chunk_id)
+        .limit(limit)
+    )
+
+
 async def _search(
     connection: AsyncConnection,
-    terms: sa.Column[Any],
-    configuration: sa.ColumnElement[Any],
+    configurations: Sequence[LexicalConfiguration],
     *,
     text: str,
     context: AuthorizationContext,
@@ -180,15 +302,29 @@ async def _search(
 ) -> tuple[LexicalMatch, ...]:
     _check_text(text)
     _check_limit(limit)
-    statement = _search_statement(
-        terms,
-        configuration,
+    statement = lexical_search_statement(
+        configurations,
         # One form for letters such as й and ї, which can also arrive as a
         # letter plus a combining mark; the stored terms use the same form.
         text=unicodedata.normalize("NFC", text),
         eligibility=eligible_chunks_predicate(context),
         limit=limit,
     )
+    records = await _execute(connection, statement)
+    return tuple(
+        LexicalMatch(
+            rank=index,
+            chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
+            document_id=DocumentId(cast(UUID, record["document_id"])),
+            score=cast(float, record["score"]),
+        )
+        for index, record in enumerate(records, start=1)
+    )
+
+
+async def _execute(
+    connection: AsyncConnection, statement: sa.Select[*tuple[Any, ...]]
+) -> Sequence[RowMapping]:
     records: Sequence[RowMapping] = ()
     refused = False
     try:
@@ -205,42 +341,7 @@ async def _search(
         # Raised outside the handler, so no exception chain keeps the
         # database error, which repeats the query text.
         raise InvalidLexicalQuery("query text has too many operators")
-    return tuple(
-        LexicalMatch(
-            rank=index,
-            chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
-            document_id=DocumentId(cast(UUID, record["document_id"])),
-            score=cast(float, record["score"]),
-        )
-        for index, record in enumerate(records, start=1)
-    )
-
-
-def _search_statement(
-    terms: sa.Column[Any],
-    configuration: sa.ColumnElement[Any],
-    *,
-    text: str,
-    eligibility: sa.ColumnElement[bool],
-    limit: int,
-) -> sa.Select[*tuple[Any, ...]]:
-    # The text is one bound parameter, read with the configuration the
-    # stored terms were built with.
-    query = sa.func.websearch_to_tsquery(
-        configuration, sa.bindparam("query_text", text)
-    )
-    score = sa.func.ts_rank(terms, query)
-    return (
-        sa.select(
-            chunks.c.chunk_id,
-            chunks.c.document_id,
-            score.label("score"),
-        )
-        .join(documents, documents.c.document_id == chunks.c.document_id)
-        .where(terms.bool_op("@@")(query), eligibility)
-        .order_by(score.desc(), chunks.c.chunk_id)
-        .limit(limit)
-    )
+    return records
 
 
 def _check_text(text: object) -> None:

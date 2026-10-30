@@ -1,4 +1,4 @@
-"""Checks on English full-text search that need no database."""
+"""Checks on full-text search that need no database."""
 
 from collections.abc import Awaitable, Callable
 from typing import cast
@@ -11,11 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.identifiers import UserId
+from knowledge_service.language import Language
+from knowledge_service.retrieval.lexical_routing import LexicalConfiguration
 from knowledge_service.retrieval.lexical_search import (
     MAX_QUERY_CHARACTERS,
     InvalidLexicalQuery,
     english_search_statement,
+    lexical_search_statement,
     search_english_chunks,
+    search_lexical_chunks,
     search_ukrainian_chunks,
     ukrainian_search_statement,
 )
@@ -25,7 +29,9 @@ CONTEXT = AuthorizationContext(user_id=UserId(UUID(int=1)))
 MARKER = "zebramarker"
 
 
-@pytest.mark.parametrize("search", [search_english_chunks, search_ukrainian_chunks])
+@pytest.mark.parametrize(
+    "search", [search_english_chunks, search_ukrainian_chunks, search_lexical_chunks]
+)
 @pytest.mark.parametrize(
     ("text", "limit"),
     [
@@ -95,3 +101,58 @@ def test_the_ukrainian_query_is_a_bound_parameter_with_the_simple_configuration(
     assert f"{MARKER}' OR true --" in compiled.params.values()
     assert "websearch_to_tsquery('simple'::regconfig" in sql
     assert "chunks.search_simple @@" in sql
+
+
+@pytest.mark.parametrize("language", ["en", "fr", 1, Language])
+async def test_a_stated_language_that_is_not_a_language_is_refused(
+    language: object,
+) -> None:
+    unused = cast(AsyncConnection, object())
+
+    with pytest.raises(InvalidLexicalQuery):
+        await search_lexical_chunks(
+            unused,
+            text="leave",
+            context=CONTEXT,
+            limit=5,
+            language=cast(Language, language),
+        )
+
+
+def test_both_configurations_share_one_bound_parameter() -> None:
+    statement = lexical_search_statement(
+        (LexicalConfiguration.ENGLISH, LexicalConfiguration.SIMPLE),
+        text=f"{MARKER}' OR true --",
+        eligibility=sa.true(),
+        limit=5,
+    )
+
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+
+    assert MARKER not in sql
+    assert list(compiled.params.values()).count(f"{MARKER}' OR true --") == 1
+    assert "chunks.search_en @@ websearch_to_tsquery('english'::regconfig" in sql
+    assert "chunks.search_simple @@ websearch_to_tsquery('simple'::regconfig" in sql
+    assert " OR " in sql
+    # A rank counts only where its own configuration matches.
+    assert "greatest(CASE WHEN" in sql
+
+
+@pytest.mark.parametrize(
+    "configurations",
+    [
+        (),
+        (LexicalConfiguration.ENGLISH, LexicalConfiguration.ENGLISH),
+        ("english",),
+        (5,),
+    ],
+)
+def test_a_statement_needs_distinct_configurations(configurations: object) -> None:
+    with pytest.raises(InvalidLexicalQuery):
+        lexical_search_statement(
+            cast(tuple[LexicalConfiguration, ...], configurations),
+            text="leave",
+            eligibility=sa.true(),
+            limit=5,
+        )
