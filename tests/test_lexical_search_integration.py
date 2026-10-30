@@ -28,7 +28,7 @@ from knowledge_service.persistence.access import eligible_chunks_predicate
 from knowledge_service.persistence.chunks import load_chunks
 from knowledge_service.retrieval.lexical_search import (
     InvalidLexicalQuery,
-    LexicalMatch,
+    LexicalCandidate,
     english_search_statement,
     search_english_chunks,
 )
@@ -117,7 +117,7 @@ async def search(
     *,
     limit: int = 10,
     context: AuthorizationContext = CONTEXT,
-) -> tuple[LexicalMatch, ...]:
+) -> tuple[LexicalCandidate, ...]:
     async with runtime.transaction() as connection:
         return await search_english_chunks(
             connection, text=text, context=context, limit=limit

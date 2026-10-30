@@ -20,7 +20,9 @@ alphabet of the Question, and whether English keeps any of its words; when
 these do not agree on one configuration, it matches both in one statement
 and keeps a Chunk that either finds.
 
-What a caller can rely on:
+Matches come back as `LexicalCandidate`s, with the same provenance and the
+same guarantees as vector search; see `retrieval.candidates`. What a caller
+can rely on besides:
 
 - **Syntax.** The query is web-search text, read by `websearch_to_tsquery`:
   words must all match, `"quoted words"` must appear next to each other in
@@ -34,17 +36,17 @@ What a caller can rely on:
   same match in a heading, and a heading outranks the text; then by Chunk
   ID, so equal scores always come back in the same order. With two
   configurations, a Chunk's score is the higher rank among those that match.
-- **Eligibility.** The same permission check as vector search sits in the
-  same WHERE, so a Chunk the reader may not see is never ranked and never
-  leaves the database.
-- **Bounded.** At most `limit` matches, an int from 1 to `MAX_CANDIDATES`.
+- **Highlights.** Where the query's words occur in the Candidate's `text`,
+  as character offsets, never as marked-up text. Words found only in the
+  title or the headings have no highlight.
+- **Bounded.** At most `limit` Candidates, an int from 1 to `MAX_CANDIDATES`.
   Anything else, or a query that is not usable text, raises
   `InvalidLexicalQuery` before the database is used.
 """
 
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 from uuid import UUID
 
@@ -55,7 +57,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.access import AuthorizationContext
-from knowledge_service.identifiers import ChunkId, DocumentId
+from knowledge_service.documents import ContentVersion
+from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
 from knowledge_service.language import Language
 from knowledge_service.persistence.access import eligible_chunks_predicate
 from knowledge_service.persistence.schema import chunks, documents
@@ -81,6 +84,12 @@ _TERMS: dict[LexicalConfiguration, tuple[sa.Column[Any], sa.ColumnElement[Any]]]
     LexicalConfiguration.SIMPLE: (chunks.c.search_simple, SIMPLE),
 }
 
+# `ts_headline` marks each matched word with these two control characters
+# and keeps every other character of the text, so the marks give offsets.
+_START = "\x02"
+_STOP = "\x03"
+_HEADLINE_OPTIONS = f"HighlightAll=true, StartSel={_START}, StopSel={_STOP}"
+
 
 class LexicalSearchError(Exception):
     """Base error for a full-text search."""
@@ -91,25 +100,50 @@ class InvalidLexicalQuery(LexicalSearchError):
 
 
 @dataclass(frozen=True, slots=True)
-class LexicalMatch:
-    """One eligible Chunk whose words match the query, and how well.
+class Highlight:
+    """Where one matched word, or a run of them, sits: `text[start:end]`."""
+
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class LexicalCandidate:
+    """One eligible Chunk whose words match the query, and where it came from.
 
     `rank` is its 1-based position in the result; `score` is PostgreSQL's
     `ts_rank`, where higher is better and only the order means anything.
+    `highlights` are in text order and never overlap. The fields holding
+    Document text are kept out of repr, so logging a Candidate never shows
+    them.
     """
 
     rank: int
     chunk_id: ChunkId
     document_id: DocumentId
+    source_id: SourceId
+    content_version: ContentVersion
+    ordinal: int
     score: float
+    highlights: tuple[Highlight, ...]
+    external_id: str = field(repr=False)
+    title: str = field(repr=False)
+    heading_path: str | None = field(repr=False)
+    source_anchor: str | None = field(repr=False)
+    text: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class LexicalSearch:
-    """The matches for one Question, and the route that chose how to match it."""
+    """The Candidates for one Question, and the route that chose how to match it.
+
+    `truncated` is True only when more eligible Chunks match beyond `limit`.
+    """
 
     route: LexicalRoute
-    matches: tuple[LexicalMatch, ...]
+    limit: int
+    candidates: tuple[LexicalCandidate, ...]
+    truncated: bool
 
 
 async def search_lexical_chunks(
@@ -144,14 +178,16 @@ async def search_lexical_chunks(
         )
         if records[0]["words"] == 0:
             route = route_lexical_question(text, stated=language, english_words=False)
-    matches = await _search(
+    candidates, truncated = await _search(
         connection,
         route.configurations,
         text=text,
         context=context,
         limit=limit,
     )
-    return LexicalSearch(route=route, matches=matches)
+    return LexicalSearch(
+        route=route, limit=limit, candidates=candidates, truncated=truncated
+    )
 
 
 async def search_english_chunks(
@@ -160,19 +196,20 @@ async def search_english_chunks(
     text: str,
     context: AuthorizationContext,
     limit: int,
-) -> tuple[LexicalMatch, ...]:
+) -> tuple[LexicalCandidate, ...]:
     """Return up to `limit` eligible Chunks matching English `text`, best first.
 
     Raises `InvalidLexicalQuery` for unusable text or a bad limit, and for
     text PostgreSQL cannot turn into a query.
     """
-    return await _search(
+    candidates, _ = await _search(
         connection,
         (LexicalConfiguration.ENGLISH,),
         text=text,
         context=context,
         limit=limit,
     )
+    return candidates
 
 
 async def search_ukrainian_chunks(
@@ -181,19 +218,20 @@ async def search_ukrainian_chunks(
     text: str,
     context: AuthorizationContext,
     limit: int,
-) -> tuple[LexicalMatch, ...]:
+) -> tuple[LexicalCandidate, ...]:
     """Return up to `limit` eligible Chunks containing the exact words of `text`.
 
     Words match after lowercasing only, in the form they were typed. Raises
     `InvalidLexicalQuery` like `search_english_chunks`.
     """
-    return await _search(
+    candidates, _ = await _search(
         connection,
         (LexicalConfiguration.SIMPLE,),
         text=text,
         context=context,
         limit=limit,
     )
+    return candidates
 
 
 def english_search_statement(
@@ -247,6 +285,9 @@ def lexical_search_statement(
     match. With several, the words of any one may match, each read with its
     own configuration, and a Chunk scores the highest rank among those that
     match. Each `@@` is answered by that configuration's GIN index.
+
+    The ranked, limited rows are chosen first; only those are marked by
+    `ts_headline`, once for each configuration that matched them.
     """
     if (
         not configurations
@@ -259,13 +300,14 @@ def lexical_search_statement(
     # The text is one bound parameter, read with the configuration the
     # stored terms were built with.
     query_text = sa.bindparam("query_text", text, type_=sa.Text())
+    queries: list[tuple[sa.ColumnElement[Any], sa.ColumnElement[Any]]] = []
     conditions: list[sa.ColumnElement[bool]] = []
     ranks: list[sa.ColumnElement[Any]] = []
     for configuration in configurations:
         terms, regconfig = _TERMS[configuration]
         query = sa.func.websearch_to_tsquery(regconfig, query_text)
-        condition = terms.bool_op("@@")(query)
-        conditions.append(condition)
+        queries.append((regconfig, query))
+        conditions.append(terms.bool_op("@@")(query))
         ranks.append(sa.func.ts_rank(terms, query))
     if len(configurations) == 1:
         matched, score = conditions[0], ranks[0]
@@ -279,17 +321,55 @@ def lexical_search_statement(
                 for condition, rank in zip(conditions, ranks, strict=True)
             )
         )
-    return (
+    ranked = (
         sa.select(
             chunks.c.chunk_id,
             chunks.c.document_id,
+            documents.c.source_id,
+            chunks.c.content_version,
+            chunks.c.ordinal,
             score.label("score"),
+            documents.c.external_id,
+            documents.c.title,
+            chunks.c.heading_path,
+            chunks.c.source_anchor,
+            chunks.c.text,
+            *(
+                condition.label(f"matched_{index}")
+                for index, condition in enumerate(conditions)
+            ),
         )
         .join(documents, documents.c.document_id == chunks.c.document_id)
         .where(matched, eligibility)
         .order_by(score.desc(), chunks.c.chunk_id)
         .limit(limit)
+        .subquery("ranked")
     )
+    options = sa.literal(_HEADLINE_OPTIONS, type_=sa.Text())
+    # NULL where this configuration did not match the row.
+    marked = (
+        sa.case(
+            (
+                ranked.c[f"matched_{index}"],
+                sa.func.ts_headline(regconfig, ranked.c.text, query, options),
+            )
+        ).label(f"marked_{index}")
+        for index, (regconfig, query) in enumerate(queries)
+    )
+    return sa.select(
+        ranked.c.chunk_id,
+        ranked.c.document_id,
+        ranked.c.source_id,
+        ranked.c.content_version,
+        ranked.c.ordinal,
+        ranked.c.score,
+        ranked.c.external_id,
+        ranked.c.title,
+        ranked.c.heading_path,
+        ranked.c.source_anchor,
+        ranked.c.text,
+        *marked,
+    ).order_by(ranked.c.score.desc(), ranked.c.chunk_id)
 
 
 async def _search(
@@ -299,7 +379,8 @@ async def _search(
     text: str,
     context: AuthorizationContext,
     limit: int,
-) -> tuple[LexicalMatch, ...]:
+) -> tuple[tuple[LexicalCandidate, ...], bool]:
+    """Return up to `limit` Candidates, and whether more eligible Chunks match."""
     _check_text(text)
     _check_limit(limit)
     statement = lexical_search_statement(
@@ -308,18 +389,15 @@ async def _search(
         # letter plus a combining mark; the stored terms use the same form.
         text=unicodedata.normalize("NFC", text),
         eligibility=eligible_chunks_predicate(context),
-        limit=limit,
+        # One row more than asked shows whether more eligible Chunks exist.
+        limit=limit + 1,
     )
     records = await _execute(connection, statement)
-    return tuple(
-        LexicalMatch(
-            rank=index,
-            chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
-            document_id=DocumentId(cast(UUID, record["document_id"])),
-            score=cast(float, record["score"]),
-        )
-        for index, record in enumerate(records, start=1)
+    candidates = tuple(
+        _candidate_from(record, rank=index, marks=len(configurations))
+        for index, record in enumerate(records[:limit], start=1)
     )
+    return candidates, len(records) > limit
 
 
 async def _execute(
@@ -342,6 +420,78 @@ async def _execute(
         # database error, which repeats the query text.
         raise InvalidLexicalQuery("query text has too many operators")
     return records
+
+
+def _candidate_from(record: RowMapping, *, rank: int, marks: int) -> LexicalCandidate:
+    text = cast(str, record["text"])
+    return LexicalCandidate(
+        rank=rank,
+        chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
+        document_id=DocumentId(cast(UUID, record["document_id"])),
+        source_id=SourceId(cast(UUID, record["source_id"])),
+        content_version=ContentVersion(cast(int, record["content_version"])),
+        ordinal=cast(int, record["ordinal"]),
+        score=cast(float, record["score"]),
+        highlights=_highlights(
+            text,
+            [cast("str | None", record[f"marked_{index}"]) for index in range(marks)],
+        ),
+        external_id=cast(str, record["external_id"]),
+        title=cast(str, record["title"]),
+        heading_path=cast("str | None", record["heading_path"]),
+        source_anchor=cast("str | None", record["source_anchor"]),
+        text=text,
+    )
+
+
+def _highlights(text: str, marked: Sequence[str | None]) -> tuple[Highlight, ...]:
+    """Merge the words each configuration marked into ordered, separate spans.
+
+    Returns no highlights when a marked text is not exactly `text` plus
+    marks, for example because `text` itself holds a mark character: an
+    offset that points at the wrong words is worse than none.
+    """
+    spans: list[tuple[int, int]] = []
+    for one in marked:
+        if one is None:
+            continue
+        found = _spans(text, one)
+        if found is None:
+            return ()
+        spans.extend(found)
+    merged: list[Highlight] = []
+    for start, end in sorted(spans):
+        # Touching spans join, so "E-1042", marked as "E" and "-1042", is one.
+        if merged and start <= merged[-1].end:
+            if end > merged[-1].end:
+                merged[-1] = Highlight(start=merged[-1].start, end=end)
+        else:
+            merged.append(Highlight(start=start, end=end))
+    return tuple(merged)
+
+
+def _spans(text: str, marked: str) -> list[tuple[int, int]] | None:
+    spans: list[tuple[int, int]] = []
+    position = 0
+    start: int | None = None
+    for character in marked:
+        if character == _START:
+            if start is not None:
+                return None
+            start = position
+        elif character == _STOP:
+            if start is None:
+                return None
+            if position > start:
+                spans.append((start, position))
+            start = None
+        elif position < len(text) and text[position] == character:
+            position += 1
+        else:
+            return None
+    if start is not None or position != len(text):
+        return None
+    return spans
 
 
 def _check_text(text: object) -> None:

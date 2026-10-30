@@ -150,7 +150,7 @@ async def found(runtime: DatabaseRuntime, text: str, **kwargs: Any) -> list[str]
             sa.text("SELECT document_id, external_id FROM documents")
         )
         by_id = {row.document_id: row.external_id for row in rows}
-    return [by_id[match.document_id.value] for match in result.matches]
+    return [by_id[candidate.document_id.value] for candidate in result.candidates]
 
 
 @pytest.mark.integration
@@ -309,10 +309,10 @@ async def test_a_chunk_found_by_both_configurations_is_returned_once(
 
     result = await search(runtime, "E-1042")
 
-    chunk_ids = [match.chunk_id for match in result.matches]
+    chunk_ids = [candidate.chunk_id for candidate in result.candidates]
     assert len(chunk_ids) == len(set(chunk_ids)) == 3
-    assert [match.rank for match in result.matches] == [1, 2, 3]
-    scores = [match.score for match in result.matches]
+    assert [candidate.rank for candidate in result.candidates] == [1, 2, 3]
+    scores = [candidate.score for candidate in result.candidates]
     assert scores == sorted(scores, reverse=True)
 
 

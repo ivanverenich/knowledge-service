@@ -36,7 +36,7 @@ from knowledge_service.ingestion.sources import (
 from knowledge_service.persistence.access import eligible_chunks_predicate
 from knowledge_service.retrieval.lexical_search import (
     InvalidLexicalQuery,
-    LexicalMatch,
+    LexicalCandidate,
     search_ukrainian_chunks,
     ukrainian_search_statement,
 )
@@ -168,7 +168,7 @@ async def search(
     *,
     limit: int = 10,
     context: AuthorizationContext = CONTEXT,
-) -> tuple[LexicalMatch, ...]:
+) -> tuple[LexicalCandidate, ...]:
     async with runtime.transaction() as connection:
         return await search_ukrainian_chunks(
             connection, text=text, context=context, limit=limit

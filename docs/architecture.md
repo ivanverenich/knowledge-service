@@ -61,7 +61,7 @@ Each module above has its own package under `src/knowledge_service/`
 | `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document` |
 | `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
 | `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `publish_document_embeddings`, the migration workflow |
-| `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both), `search_english_chunks`, `search_ukrainian_chunks`, `MetadataCondition` |
+| `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both), `search_english_chunks`, `search_ukrainian_chunks`, `Candidate` (the fields every branch returns), `MetadataCondition` |
 | `persistence` | PostgreSQL implementation | `schema` and one module per kind of record |
 
 Domain values, settings, the database runtime, and the HTTP application stay

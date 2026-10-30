@@ -7,7 +7,7 @@ depends_on: ["M05-T03"]
 estimate: 75m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["lexical candidate adapter"]
-status: planned
+status: completed
 ---
 
 # M05-T04 — Shape lexical Candidates

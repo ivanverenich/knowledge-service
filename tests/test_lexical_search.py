@@ -139,6 +139,36 @@ def test_both_configurations_share_one_bound_parameter() -> None:
     assert "greatest(CASE WHEN" in sql
 
 
+def test_only_the_ranked_and_limited_rows_are_highlighted() -> None:
+    statement = lexical_search_statement(
+        (LexicalConfiguration.ENGLISH, LexicalConfiguration.SIMPLE),
+        text="leave",
+        eligibility=sa.true(),
+        limit=5,
+    )
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    outer, ranked = sql.split("FROM (SELECT", 1)
+
+    # `ts_headline` reads a whole text, so it runs once per configuration on
+    # the rows LIMIT kept, never on every match.
+    assert outer.count("ts_headline(") == 2
+    assert "ts_headline" not in ranked
+    assert "LIMIT" in ranked
+
+
+def test_ties_are_broken_by_chunk_id_before_the_limit_cuts() -> None:
+    statement = english_search_statement(text="leave", eligibility=sa.true(), limit=5)
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    ranked = sql.split("FROM (SELECT", 1)[1]
+    order = ranked[ranked.index("ORDER BY") : ranked.index("LIMIT")]
+
+    # Without it, PostgreSQL may keep any of the tied rows when LIMIT cuts,
+    # and the outer ORDER BY cannot bring back the ones it dropped.
+    assert order.rstrip().endswith("DESC, chunks.chunk_id")
+
+
 @pytest.mark.parametrize(
     "configurations",
     [
