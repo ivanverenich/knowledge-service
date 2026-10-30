@@ -7,7 +7,7 @@ depends_on: ["M05-T04"]
 estimate: 75m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["RRF function"]
-status: planned
+status: completed
 ---
 
 # M05-T05 — Implement Reciprocal Rank Fusion
