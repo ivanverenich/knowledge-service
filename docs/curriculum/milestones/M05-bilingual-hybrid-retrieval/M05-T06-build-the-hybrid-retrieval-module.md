@@ -7,7 +7,7 @@ depends_on: ["M05-T05"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["hybrid retrieval module"]
-status: planned
+status: completed
 ---
 
 # M05-T06 — Build the hybrid retrieval module
