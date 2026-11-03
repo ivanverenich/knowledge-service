@@ -7,7 +7,7 @@ depends_on: ["M05-T06"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["seed bilingual dataset"]
-status: planned
+status: completed
 ---
 
 # M05-T07 — Create the first bilingual retrieval set

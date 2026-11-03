@@ -1,0 +1,172 @@
+{
+  "name": "bilingual-seed",
+  "version": 1,
+  "cases": [
+    {
+      "id": "en-en-annual-leave-days",
+      "question": "How many days of annual leave does an employee get per year?",
+      "question_language": "en",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/annual-leave.md", "heading": "Annual leave policy > Days per year"}
+      ],
+      "ineligible": [
+        {"document": "restricted/executive-leave.md", "heading": "Executive annual leave > Executive days per year"}
+      ]
+    },
+    {
+      "id": "en-en-expense-deadline",
+      "question": "What is the deadline for submitting an expense report?",
+      "question_language": "en",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Submission deadline"}
+      ]
+    },
+    {
+      "id": "en-en-vpn-first-connection",
+      "question": "How do I connect to the VPN for the first time?",
+      "question_language": "en",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Connecting for the first time"}
+      ]
+    },
+    {
+      "id": "en-en-error-exp-2041",
+      "question": "What does error EXP-2041 mean?",
+      "question_language": "en",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Error code EXP-2041"}
+      ]
+    },
+    {
+      "id": "en-en-error-vpn-4031",
+      "question": "VPN-4031",
+      "question_language": "en",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Error VPN-4031"}
+      ]
+    },
+    {
+      "id": "en-en-renewed-certificate",
+      "question": "How is an expired device certificate renewed?",
+      "question_language": "en",
+      "evidence_language": "en",
+      "query_class": "morphology",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Error VPN-4031"}
+      ]
+    },
+    {
+      "id": "uk-uk-sick-first-day",
+      "question": "Що робити в перший день хвороби?",
+      "question_language": "uk",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Перший день хвороби"}
+      ]
+    },
+    {
+      "id": "uk-uk-per-diem-abroad",
+      "question": "Які добові за кордоном?",
+      "question_language": "uk",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    },
+    {
+      "id": "uk-uk-form-it-0457",
+      "question": "Як заповнити форму ІТ-0457?",
+      "question_language": "uk",
+      "evidence_language": "uk",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/obladnannia.md", "heading": "Робоче обладнання > Замовлення ноутбука"}
+      ]
+    },
+    {
+      "id": "uk-uk-who-pays-sick-leaves",
+      "question": "Хто оплачує лікарняні?",
+      "question_language": "uk",
+      "evidence_language": "uk",
+      "query_class": "morphology",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Оплата лікарняного"}
+      ]
+    },
+    {
+      "id": "uk-uk-order-laptops",
+      "question": "Як замовити ноутбуки?",
+      "question_language": "uk",
+      "evidence_language": "uk",
+      "query_class": "morphology",
+      "relevant": [
+        {"document": "public/obladnannia.md", "heading": "Робоче обладнання > Замовлення ноутбука"}
+      ]
+    },
+    {
+      "id": "en-uk-per-diem-abroad",
+      "question": "How much is the daily allowance for business trips abroad?",
+      "question_language": "en",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    },
+    {
+      "id": "en-uk-who-pays-sick-leave",
+      "question": "Who pays for sick leave?",
+      "question_language": "en",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Оплата лікарняного"}
+      ]
+    },
+    {
+      "id": "uk-en-annual-leave-days",
+      "question": "Скільки днів щорічної відпустки має працівник?",
+      "question_language": "uk",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/annual-leave.md", "heading": "Annual leave policy > Days per year"}
+      ],
+      "ineligible": [
+        {"document": "restricted/executive-leave.md", "heading": "Executive annual leave > Executive days per year"}
+      ]
+    },
+    {
+      "id": "uk-en-error-vpn-4031",
+      "question": "Що означає помилка VPN-4031?",
+      "question_language": "uk",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Error VPN-4031"}
+      ]
+    },
+    {
+      "id": "uk-en-lost-receipt",
+      "question": "Що робити, якщо загубився чек?",
+      "question_language": "uk",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Error code EXP-2041"}
+      ]
+    }
+  ]
+}
