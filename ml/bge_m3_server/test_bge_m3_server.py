@@ -10,6 +10,7 @@ import random
 import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,10 +23,18 @@ PLANTED = "the salary of Olena is 9000"
 class FakeEncoder:
     """Counts one token per character and records what it encoded."""
 
-    def __init__(self, *, fail: bool = False, value: float = 1.0) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        value: float = 1.0,
+        sparse: object = None,
+    ) -> None:
         self.encoded: list[list[str]] = []
         self._fail = fail
         self._value = value
+        # What `encode_sparse` returns for every text; one pair by default.
+        self._sparse = {7: 0.5, 3: 0.25} if sparse is None else sparse
 
     def count_tokens(self, text: str) -> int:
         if text == "uncountable":
@@ -37,6 +46,13 @@ class FakeEncoder:
             raise RuntimeError(f"out of memory while encoding {texts[0]}")
         self.encoded.append(list(texts))
         return [[self._value] + [0.0] * (server.DIMENSIONS - 1) for _ in texts]
+
+    def encode_sparse(self, texts: Sequence[str]) -> list[dict[int, float]]:
+        if self._fail:
+            raise RuntimeError(f"out of memory while encoding {texts[0]}")
+        self.encoded.append(list(texts))
+        # Deliberately unchecked: tests pass weights the server must refuse.
+        return [cast(dict[int, float], self._sparse) for _ in texts]
 
 
 def client(encoder: FakeEncoder) -> TestClient:
@@ -146,6 +162,88 @@ def test_a_changed_or_missing_model_file_is_refused(tmp_path: Path) -> None:
         server.check_files(tmp_path)
 
 
+def test_sparse_weights_name_the_pinned_model_and_come_by_token_id() -> None:
+    encoder = FakeEncoder()
+
+    answer = client(encoder).post("/v1/sparse", json={"inputs": ["a", "bc"]})
+
+    assert answer.status_code == 200
+    assert answer.json() == {
+        "model": "BAAI/bge-m3",
+        "revision": server.REVISION,
+        "vocabulary_size": server.VOCABULARY_SIZE,
+        "input_tokens": 3,
+        "weights": [[[3, 0.25], [7, 0.5]], [[3, 0.25], [7, 0.5]]],
+    }
+    assert encoder.encoded == [["a", "bc"]]
+
+
+def test_sparse_weights_obey_the_same_limits() -> None:
+    encoder = FakeEncoder()
+
+    answer = client(encoder).post(
+        "/v1/sparse", json={"inputs": ["x" * (server.MAX_INPUT_TOKENS + 1)]}
+    )
+
+    assert answer.status_code == 413
+    assert answer.json() == {"error": "input_too_long", "index": 0}
+    assert encoder.encoded == []
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {7: -0.5},
+        {7: 0.0},
+        {7: float("nan")},
+        {7: float("inf")},
+        {server.VOCABULARY_SIZE: 0.5},
+        {-1: 0.5},
+        {"7": 0.5},
+        {7: 1},
+        [0.5],
+    ],
+    ids=[
+        "negative",
+        "zero",
+        "not a number",
+        "infinite",
+        "outside the vocabulary",
+        "negative token",
+        "token as text",
+        "weight as int",
+        "not a mapping",
+    ],
+)
+def test_invalid_sparse_weights_are_refused_without_text(
+    weights: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+
+    answer = client(FakeEncoder(sparse=weights)).post(
+        "/v1/sparse", json={"inputs": [PLANTED]}
+    )
+
+    assert answer.status_code == 500
+    assert answer.json() == {"error": "encoding_failed", "index": None}
+    assert PLANTED not in answer.text
+    assert PLANTED not in caplog.text
+
+
+def test_a_sparse_encoding_failure_carries_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+
+    answer = client(FakeEncoder(fail=True)).post(
+        "/v1/sparse", json={"inputs": [PLANTED]}
+    )
+
+    assert answer.status_code == 500
+    assert PLANTED not in answer.text
+    assert PLANTED not in caplog.text
+
+
 def _cached_model() -> Path | None:
     from huggingface_hub import snapshot_download
 
@@ -207,3 +305,27 @@ def test_the_application_token_bound_is_never_too_low() -> None:
             len(item.ids) <= bound(text)
             for text, item in zip(group, encoded, strict=True)
         )
+
+
+@pytest.mark.model
+def test_real_sparse_weights_are_positive_repeatable_and_skip_special_tokens() -> None:
+    folder = _cached_model()
+    if folder is None or not (folder / "sparse_linear.pt").is_file():
+        pytest.skip("the pinned BGE-M3 files are not in the Hugging Face cache")
+    from tokenizers import Tokenizer
+
+    encoder = server.BgeM3Encoder(folder, "cpu")
+    texts = ["Помилка VPN-4031 під час підключення", "відпустка"]
+
+    first = encoder.encode_sparse(texts)
+    second = encoder.encode_sparse(list(reversed(texts)))
+
+    assert first == list(reversed(second))
+    tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
+    vpn = tokenizer.token_to_id("\N{LOWER ONE EIGHTH BLOCK}VPN")
+    assert vpn in first[0]
+    special = {0, 1, 2, 3}  # <s>, <pad>, </s>, <unk>
+    for weights in first:
+        assert weights
+        assert not special & weights.keys()
+        assert all(0 < value < 10 for value in weights.values())

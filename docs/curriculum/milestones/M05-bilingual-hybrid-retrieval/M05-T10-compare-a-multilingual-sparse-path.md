@@ -7,7 +7,7 @@ depends_on: ["M05-T09"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["sparse retrieval prototype","decision report"]
-status: planned
+status: completed
 ---
 
 # M05-T10 — Compare a multilingual sparse path

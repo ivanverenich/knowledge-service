@@ -27,6 +27,12 @@ What a caller can rely on:
   only, meaning only, and both fused. A Chunk that cannot be embedded
   raises `CorpusNotEmbedded` before any case runs. Every Chunk, restricted
   ones included, is sent to the embedding model's provider.
+- **Compared with sparse weights.** `compare_sparse` indexes every Chunk
+  with a sparse model such as BGE-M3 (see `retrieval.sparse_search`), then
+  runs every case twice: PostgreSQL word search, and sparse search alone.
+  It also returns what the index costs and how long each case took, which
+  `render_sparse_comparison` adds to the report. This is the M05-T10
+  prototype; nothing in production uses it.
 - **Scored per slice.** `score_slices` turns the ranks into Recall@k and
   MRR for every language direction and query class (see
   `retrieval.ranking_metrics`).
@@ -40,6 +46,8 @@ What a caller can rely on:
 
 import json
 import re
+import statistics
+import time
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -60,6 +68,7 @@ from knowledge_service.embeddings.publication import (
     EmbeddingPublicationStatus,
     publish_document_embeddings,
 )
+from knowledge_service.embeddings.sparse import SparseModel, SparseModelIdentity
 from knowledge_service.identifiers import EmbeddingSpaceId, SourceId, UserId
 from knowledge_service.ingestion.chunking import chunk_by_structure
 from knowledge_service.ingestion.directory_source import DirectorySource
@@ -88,6 +97,10 @@ from knowledge_service.retrieval.ranking_metrics import (
     mean,
     recall_at,
     reciprocal_rank,
+)
+from knowledge_service.retrieval.sparse_search import (
+    build_sparse_index,
+    sparse_branch,
 )
 from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 
@@ -218,6 +231,8 @@ class CaseOutcome:
     query_class: QueryClass
     ranks: tuple[int | None, ...]
     degraded: bool
+    # Wall time of the search, in seconds; not compared, as it varies by run.
+    elapsed_seconds: float = field(default=0.0, compare=False)
 
     @property
     def found(self) -> bool:
@@ -236,6 +251,23 @@ class DatasetReport:
     outcomes: tuple[CaseOutcome, ...]
     # The model behind the dense branch; None when the run had no dense branch.
     embedding: EmbeddingModelIdentity | None = None
+    # The model behind the sparse branch; None when the run had none.
+    sparse: SparseModelIdentity | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SparseComparison:
+    """Word search and sparse search on the same corpus, and what each costs.
+
+    `chunks` and `weights` count the indexed Chunks and their stored
+    (token, weight) pairs; `index_seconds` is the time to build the index.
+    """
+
+    lexical: DatasetReport
+    sparse: DatasetReport
+    chunks: int
+    weights: int
+    index_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +454,65 @@ async def compare_branches(
     )
 
 
+async def compare_sparse(
+    runtime: DatabaseRuntime,
+    dataset: EvaluationDataset,
+    corpus: Path,
+    *,
+    observed_at: datetime,
+    model: SparseModel,
+    limit: int = DEFAULT_LIMIT,
+) -> SparseComparison:
+    """Ingest and index the corpus once, then run every case two ways.
+
+    Every Chunk, restricted ones included, is sent to `model` for its
+    weights, because search must be able to score a restricted Chunk for
+    the permission check to matter. Raises like `run_dataset`, and
+    `CorpusNotEmbedded` when the corpus cannot be indexed.
+    """
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise DatasetRunRefused(f"limit must be an int from 1 to {MAX_CANDIDATES}")
+    await verify_corpus(dataset, corpus)
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=None)
+    started = time.perf_counter()
+    failure = "no index"
+    index = None
+    try:
+        index = await build_sparse_index(
+            runtime,
+            model,
+            request_id=uuid5(_REQUEST_IDS, "sparse index"),
+            timeout_seconds=EMBEDDING_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        # The model is outside code, and its message may quote Chunk text.
+        failure = _error_names(error)
+    # Raised outside the `except`, so no linked error carries the text.
+    if index is None:
+        raise CorpusNotEmbedded(f"the corpus could not be indexed: {failure}")
+    index_seconds = time.perf_counter() - started
+    lexical = await _run_cases(
+        dataset,
+        {RetrievalBranch.LEXICAL: lexical_branch(runtime)},
+        limit,
+        embedding=None,
+    )
+    sparse = await _run_cases(
+        dataset,
+        {RetrievalBranch.SPARSE: sparse_branch(runtime, model, index)},
+        limit,
+        embedding=None,
+        sparse=index.identity,
+    )
+    return SparseComparison(
+        lexical=lexical,
+        sparse=sparse,
+        chunks=index.chunks,
+        weights=index.weights,
+        index_seconds=index_seconds,
+    )
+
+
 def score_slices(report: DatasetReport) -> tuple[SliceScore, ...]:
     """Score every case together, then each direction, then each query class."""
     cutoffs = tuple(k for k in RECALL_CUTOFFS if k <= report.limit)
@@ -467,6 +558,47 @@ def render_comparison(reports: tuple[DatasetReport, ...]) -> str:
         lines.append("| " + " | ".join(cells) + " |")
     body = "\n".join(lines) + "\n"
     return body + "".join("\n" + render_report(report) for report in reports)
+
+
+def render_sparse_comparison(comparison: SparseComparison) -> str:
+    """Return the side-by-side report, then what the index costs, then timing.
+
+    Everything above "## Latency" depends only on the data and the model, so
+    two runs can be compared with `diff`; the latency section changes from
+    run to run.
+    """
+    reports = (comparison.lexical, comparison.sparse)
+    chunks, weights = comparison.chunks, comparison.weights
+    per_chunk = weights / chunks if chunks else 0.0
+    # pgvector's sparsevec: 4 bytes of index and 4 of value per weight, plus
+    # a 16-byte header per vector.
+    stored = 8 * weights + 16 * chunks
+    lines = [
+        "",
+        "## Cost",
+        "",
+        f"- Indexed Chunks: {chunks}, restricted ones included.",
+        f"- Stored weights: {weights}, {per_chunk:.1f} per Chunk on average.",
+        f"- As pgvector sparsevec: about {stored / 1024:.1f} KiB for this corpus.",
+        "- Per question: word search runs one SQL statement; sparse search"
+        " also calls the model once, so it needs the BGE-M3 server running.",
+        "",
+        "## Latency",
+        "",
+        "Wall time per case, from the question to the ranked Candidates. It"
+        " changes from run to run.",
+        "",
+        f"- Index build: {comparison.index_seconds:.1f} s.",
+        "",
+        "| Run | Median ms | Slowest ms |",
+        "|---|---:|---:|",
+    ]
+    for report in reports:
+        times = [outcome.elapsed_seconds * 1000 for outcome in report.outcomes]
+        median = statistics.median(times) if times else 0.0
+        slowest = max(times, default=0.0)
+        lines.append(f"| {_label(report)} | {median:.1f} | {slowest:.1f} |")
+    return render_comparison(reports) + "\n".join(lines) + "\n"
 
 
 def render_report(report: DatasetReport) -> str:
@@ -528,6 +660,12 @@ def _configuration(reports: tuple[DatasetReport, ...]) -> list[str]:
         lines.append(
             f"- Embedding model: {model.provider} {model.model},"
             f" {model.dimensions} dimensions."
+        )
+    sparse = next((r.sparse for r in reports if r.sparse is not None), None)
+    if sparse is not None:
+        lines.append(
+            f"- Sparse model: {sparse.provider} {sparse.model},"
+            f" vocabulary of {sparse.vocabulary_size} tokens."
         )
     if any(len(report.branches) > 1 for report in reports):
         lines.append(f"- Fusion: Reciprocal Rank Fusion, k = {DEFAULT_RRF_K}.")
@@ -824,6 +962,7 @@ async def _run_cases(
     limit: int,
     *,
     embedding: EmbeddingModelIdentity | None,
+    sparse: SparseModelIdentity | None = None,
 ) -> DatasetReport:
     outcomes = [await _run_case(case, searches, limit) for case in dataset.cases]
     return DatasetReport(
@@ -833,6 +972,7 @@ async def _run_cases(
         branches=tuple(branch for branch in RetrievalBranch if branch in searches),
         outcomes=tuple(outcomes),
         embedding=embedding if RetrievalBranch.DENSE in searches else None,
+        sparse=sparse if RetrievalBranch.SPARSE in searches else None,
     )
 
 
@@ -843,6 +983,7 @@ async def _run_case(
 ) -> CaseOutcome:
     result: HybridRetrieval | None = None
     unexpected = "no result"
+    started = time.perf_counter()
     try:
         result = await retrieve_hybrid(
             case.question,
@@ -864,6 +1005,7 @@ async def _run_case(
         # A bug in a branch arrives in an ExceptionGroup whose message may
         # repeat the Question. Only the error types leave this function.
         unexpected = _error_names(error)
+    elapsed = time.perf_counter() - started
     # Raised outside the `except`, so no linked error carries the Question.
     if result is None:
         raise CaseFailed(f"case {case.case_id}: the search raised {unexpected}")
@@ -882,4 +1024,5 @@ async def _run_case(
         query_class=case.query_class,
         ranks=tuple(ranks.get((ref.external_id, ref.heading)) for ref in case.relevant),
         degraded=result.degraded,
+        elapsed_seconds=elapsed,
     )

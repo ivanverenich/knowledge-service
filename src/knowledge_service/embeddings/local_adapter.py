@@ -20,7 +20,12 @@ the server. It adds what the port cannot know:
   `EmbeddingUnavailable`, a 429 `EmbeddingRateLimited`, a timeout
   `EmbeddingTimeout`, and any other refusal `EmbeddingRequestRefused`.
 - **A bounded answer.** The response is read in pieces and refused past
-  `MAX_RESPONSE_BYTES`, so a broken server cannot fill the memory.
+  `MAX_RESPONSE_BYTES`, so a broken server cannot fill the memory. A
+  compressed answer is refused unread, because it could unpack to far more.
+- **Sparse weights, as a prototype.** `encode_sparse` asks the same server
+  for BGE-M3's sparse term weights (see `embeddings.sparse`), with the same
+  limits, provenance check, size cap, and errors. Only the M05-T10
+  comparison uses them.
 - **Safe logging.** One log record per call with counts, timing, and the
   outcome; never text. Port errors are raised outside the `except` block,
   because an HTTP error holds the request, and the request holds every text.
@@ -58,12 +63,18 @@ from knowledge_service.embeddings.port import (
     check_inputs,
     checked_batch,
 )
+from knowledge_service.embeddings.sparse import (
+    SparseModelIdentity,
+    SparseVector,
+    checked_sparse_vectors,
+)
 
 logger = logging.getLogger(__name__)
 
 PROVIDER = "local"
 EMBEDDINGS_PATH = "/v1/embeddings"
 MODEL_PATH = "/v1/model"
+SPARSE_PATH = "/v1/sparse"
 # The BGE-M3 weights this application was evaluated with (Hugging Face commit).
 BGE_M3_REVISION = "5617a9f61b028005a4858fdac845db406aefb181"
 # 64 vectors of 1024 numbers as JSON take about 2 MB; far more means a fault.
@@ -85,6 +96,7 @@ class LocalEmbeddingSettings(BaseSettings):
     model: str = Field(default="BAAI/bge-m3", min_length=1)
     revision: str = Field(default=BGE_M3_REVISION, min_length=1)
     dimensions: int = Field(default=1024, gt=0)
+    vocabulary_size: int = Field(default=250_002, gt=0)
     timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     max_inputs: int = Field(default=32, gt=0)
     max_input_tokens: int = Field(default=8192, gt=0)
@@ -116,6 +128,11 @@ class LocalEmbeddingModel:
             model=f"{settings.model}@{settings.revision}",
             dimensions=settings.dimensions,
         )
+        self._sparse_identity = SparseModelIdentity(
+            provider=PROVIDER,
+            model=f"{settings.model}@{settings.revision}",
+            vocabulary_size=settings.vocabulary_size,
+        )
         self._limits = EmbeddingLimits(
             max_inputs=settings.max_inputs,
             max_input_tokens=settings.max_input_tokens,
@@ -125,6 +142,10 @@ class LocalEmbeddingModel:
     @property
     def identity(self) -> EmbeddingModelIdentity:
         return self._identity
+
+    @property
+    def sparse_identity(self) -> SparseModelIdentity:
+        return self._sparse_identity
 
     @property
     def limits(self) -> EmbeddingLimits:
@@ -182,6 +203,56 @@ class LocalEmbeddingModel:
         _log(request_id, self._identity, len(texts), latency_ms, None, batch.usage)
         return batch
 
+    async def encode_sparse(
+        self,
+        texts: Sequence[str],
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> tuple[SparseVector, ...]:
+        """Return BGE-M3's sparse term weights for each text, in order.
+
+        Checked and refused exactly like `embed`; the answer must also name
+        the configured model, revision, and vocabulary size.
+        """
+        deadline = self._deadline(timeout_seconds)
+        try:
+            check_inputs(texts, self._limits, self.count_tokens)
+        except EmbeddingInputRejected as error:
+            _log(request_id, self._identity, len(texts), 0, error, operation="sparse")
+            raise
+        if not texts:
+            return ()
+        started_at = time.perf_counter()
+        try:
+            status, content = await self._send(
+                "POST",
+                SPARSE_PATH,
+                deadline,
+                body={"inputs": list(texts)},
+                headers={"X-Request-ID": str(request_id)},
+            )
+            vectors = self._sparse_from(status, content, texts)
+        except EmbeddingError as error:
+            _log(
+                request_id,
+                self._identity,
+                len(texts),
+                _since(started_at),
+                error,
+                operation="sparse",
+            )
+            raise
+        _log(
+            request_id,
+            self._identity,
+            len(texts),
+            _since(started_at),
+            None,
+            operation="sparse",
+        )
+        return vectors
+
     async def verify_server(self, *, timeout_seconds: float) -> None:
         """Check, sending no text, that the server runs the configured model.
 
@@ -209,9 +280,14 @@ class LocalEmbeddingModel:
         body: object = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, bytes]:
-        """Send one request; return its status and its bytes, up to the cap."""
+        """Send one request; return its status and its bytes, up to the cap.
+
+        The answer must not be compressed: a small compressed body can unpack
+        to far more than the cap before the cap is checked.
+        """
         status = 0
         content = bytearray()
+        encoded = False
         failure: EmbeddingError | None = None
         try:
             async with (
@@ -220,21 +296,27 @@ class LocalEmbeddingModel:
                     method,
                     self._settings.url + path,
                     json=body,
-                    headers=headers,
+                    headers={"Accept-Encoding": "identity", **(headers or {})},
                     timeout=deadline,
                 ) as response,
             ):
                 status = response.status_code
-                async for piece in response.aiter_bytes():
-                    content += piece
-                    if len(content) > MAX_RESPONSE_BYTES:
-                        break
+                coding = response.headers.get("Content-Encoding", "identity")
+                encoded = coding.strip().lower() != "identity"
+                # An encoded body is never read, so nothing is ever unpacked.
+                if not encoded:
+                    async for piece in response.aiter_bytes():
+                        content += piece
+                        if len(content) > MAX_RESPONSE_BYTES:
+                            break
         except TimeoutError, httpx.TimeoutException:
             failure = EmbeddingTimeout()
         except httpx.HTTPError:
             failure = EmbeddingUnavailable()
         if len(content) > MAX_RESPONSE_BYTES:
             failure = EmbeddingMalformedResponse("the response is too large")
+        if encoded and failure is None:
+            failure = EmbeddingMalformedResponse("the response is encoded")
         if failure is not None:
             # Raised outside the except block: the HTTP error holds the request.
             raise failure
@@ -255,6 +337,37 @@ class LocalEmbeddingModel:
             EmbeddingUsage(input_tokens=tokens, latency_ms=latency_ms),
             expected=expected,
         )
+
+    def _sparse_from(
+        self, status: int, content: bytes, texts: Sequence[str]
+    ) -> tuple[SparseVector, ...]:
+        _check_status(status)
+        body = _json_object(content)
+        if body is None:
+            raise EmbeddingMalformedResponse("the local model response was not JSON")
+        size = body.get("vocabulary_size")
+        if (
+            body.get("model") != self._settings.model
+            or body.get("revision") != self._settings.revision
+            or type(size) is not int
+            or size != self._settings.vocabulary_size
+        ):
+            # Weights from another vocabulary would match the wrong tokens.
+            raise EmbeddingRequestRefused(
+                "the local model is not the configured model, revision, or vocabulary"
+            )
+        vectors = checked_sparse_vectors(
+            body.get("weights"),
+            expected=len(texts),
+            vocabulary_size=self._settings.vocabulary_size,
+        )
+        for index, (text, vector) in enumerate(zip(texts, vectors, strict=True)):
+            # A text has at most one weight per token; more would swell the index.
+            if len(vector) > self.count_tokens(text):
+                raise EmbeddingMalformedResponse(
+                    f"sparse vector {index} has more weights than its text has tokens"
+                )
+        return vectors
 
     def _check_provenance(self, body: dict[str, object] | None) -> dict[str, object]:
         if body is None:
@@ -309,6 +422,8 @@ def _log(
     latency_ms: int,
     error: EmbeddingError | None,
     usage: EmbeddingUsage | None = None,
+    *,
+    operation: str | None = None,
 ) -> None:
     """Record one call: identifiers, counts, timing, and the outcome. No text."""
     fields: dict[str, object] = {
@@ -322,5 +437,7 @@ def _log(
     }
     if usage is not None:
         fields["input_tokens"] = usage.input_tokens
+    if operation is not None:
+        fields["operation"] = operation
     level = logging.INFO if error is None else logging.WARNING
     logger.log(level, "embedding request finished", extra={"embedding": fields})

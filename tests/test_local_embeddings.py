@@ -1,6 +1,7 @@
 """The local BGE-M3 adapter: provenance, transport errors, and quiet failures."""
 
 import asyncio
+import gzip
 import json
 import logging
 import math
@@ -11,6 +12,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from fakes import word_weights
 from knowledge_service.embeddings.local_adapter import (
     BGE_M3_REVISION,
     MAX_RESPONSE_BYTES,
@@ -24,6 +26,7 @@ from knowledge_service.embeddings.port import (
     EmbeddingTimeout,
     EmbeddingUnavailable,
 )
+from knowledge_service.embeddings.sparse import SparseModelIdentity
 from local_stubs import URL, StubBgeM3Server, local_embedding_model
 
 REQUEST_ID = UUID("00000000-0000-0000-0000-000000000031")
@@ -232,3 +235,113 @@ async def test_an_answer_over_the_size_cap_is_refused_unread() -> None:
 
     with pytest.raises(EmbeddingMalformedResponse, match="too large"):
         await embed(StubBgeM3Server(body=padded), ["vacation policy"])
+
+
+async def test_sparse_weights_come_from_the_pinned_model_in_order() -> None:
+    server = StubBgeM3Server()
+    model = local_embedding_model(server)
+
+    vectors = await model.encode_sparse(
+        ["VPN error", "відпустка"], request_id=REQUEST_ID, timeout_seconds=2.0
+    )
+
+    assert model.sparse_identity == SparseModelIdentity(
+        provider="local",
+        model=f"BAAI/bge-m3@{BGE_M3_REVISION}",
+        vocabulary_size=250_002,
+    )
+    assert [list(map(list, vector)) for vector in vectors] == [
+        word_weights("VPN error"),
+        word_weights("відпустка"),
+    ]
+    assert server.requests[0].url.path == "/v1/sparse"
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        StubBgeM3Server(revision="0" * 40),
+        StubBgeM3Server(model="BAAI/bge-m3-unsupervised"),
+        StubBgeM3Server(vocabulary_size=250_001),
+        StubBgeM3Server(vocabulary_size=250_002.0),
+    ],
+    ids=["other revision", "other model", "other vocabulary", "vocabulary as float"],
+)
+async def test_sparse_weights_from_another_model_are_refused(
+    server: StubBgeM3Server,
+) -> None:
+    model = local_embedding_model(server)
+
+    with pytest.raises(EmbeddingRequestRefused):
+        await model.encode_sparse(
+            ["vacation"], request_id=REQUEST_ID, timeout_seconds=2.0
+        )
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        [[7, -0.5]],
+        [[7, 0.0]],
+        [[7, 1]],
+        [[250_002, 0.5]],
+        [[True, 0.5]],
+        [[9, 0.5], [3, 0.5]],
+        [[3, 0.5], [3, 0.5]],
+        [[3, 0.5, 1.0]],
+        "weights",
+    ],
+    ids=[
+        "negative",
+        "zero",
+        "int weight",
+        "outside the vocabulary",
+        "bool token",
+        "out of order",
+        "repeated token",
+        "three values",
+        "not a list",
+    ],
+)
+async def test_malformed_sparse_weights_are_refused(weights: object) -> None:
+    model = local_embedding_model(StubBgeM3Server(sparse_weights=weights))
+
+    with pytest.raises(EmbeddingMalformedResponse):
+        await model.encode_sparse(
+            ["vacation"], request_id=REQUEST_ID, timeout_seconds=2.0
+        )
+
+
+async def test_a_sparse_failure_carries_no_text_in_its_chain_or_the_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    model = local_embedding_model(
+        StubBgeM3Server(error=httpx.ConnectError(f"refused {PLANTED}"))
+    )
+
+    with pytest.raises(EmbeddingUnavailable) as raised:
+        await model.encode_sparse([PLANTED], request_id=REQUEST_ID, timeout_seconds=2.0)
+
+    assert all(PLANTED not in repr(error) for error in chain(raised.value))
+    assert PLANTED not in caplog.text
+    (record,) = caplog.records
+    assert record.__dict__["embedding"]["operation"] == "sparse"
+
+
+async def test_more_sparse_weights_than_the_text_has_tokens_are_refused() -> None:
+    # "hi" holds at most a few tokens; thousands of pairs would swell the index.
+    weights = [[token, 0.5] for token in range(5_000)]
+    model = local_embedding_model(StubBgeM3Server(sparse_weights=weights))
+
+    with pytest.raises(EmbeddingMalformedResponse):
+        await model.encode_sparse(["hi"], request_id=REQUEST_ID, timeout_seconds=2.0)
+
+
+async def test_a_compressed_answer_is_refused_before_it_is_unpacked() -> None:
+    # 64 MB of zeros packs into about 64 KB; unpacked, it would pass the cap.
+    packed = gzip.compress(b"0" * (64 * 1024 * 1024))
+    server = StubBgeM3Server(body=packed, headers={"Content-Encoding": "gzip"})
+
+    with pytest.raises(EmbeddingMalformedResponse, match="encoded"):
+        await embed(server, ["vacation policy"])

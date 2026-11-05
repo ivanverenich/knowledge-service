@@ -50,6 +50,8 @@ class RetrievalBranch(StrEnum):
 
     DENSE = "dense"
     LEXICAL = "lexical"
+    # The M05-T10 prototype: BGE-M3 sparse term weights. No default uses it.
+    SPARSE = "sparse"
 
 
 class FusionError(Exception):

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import math
+import re
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -14,6 +15,11 @@ from knowledge_service.embeddings.port import (
     EmbeddingUsage,
     check_inputs,
     checked_batch,
+)
+from knowledge_service.embeddings.sparse import (
+    SparseModelIdentity,
+    SparseVector,
+    checked_sparse_vectors,
 )
 from knowledge_service.ingestion.sources import (
     SourceError,
@@ -208,3 +214,70 @@ class FakeEmbeddingModel:
         raw = [byte / 127.5 - 1.0 for byte in digest]
         norm = math.sqrt(sum(value * value for value in raw))
         return [value / norm for value in raw]
+
+
+# The BGE-M3 vocabulary size; fake token IDs stay inside it.
+FAKE_VOCABULARY = 250_002
+
+
+def word_weights(text: str) -> list[list[float]]:
+    """Fake sparse weights: one token per lowercased word, weighted by length.
+
+    A word's token ID is a hash of the word, so the same word always gets
+    the same ID, and texts sharing words share tokens, as real ones do.
+    Pairs come in token order, each token once, as the port requires.
+    """
+    weights: dict[int, float] = {}
+    for word in re.findall(r"\w+", text.lower()):
+        token = int.from_bytes(hashlib.sha256(word.encode()).digest()[:4]) % (
+            FAKE_VOCABULARY
+        )
+        weights[token] = max(weights.get(token, 0.0), len(word) / 10)
+    return [[token, weights[token]] for token in sorted(weights)]
+
+
+class FakeSparseModel:
+    """Deterministic SparseModel over `word_weights`; records every batch."""
+
+    def __init__(
+        self,
+        *,
+        limits: EmbeddingLimits | None = None,
+        error: EmbeddingError | None = None,
+    ) -> None:
+        self._identity = SparseModelIdentity(
+            provider="fake", model="fake-sparse", vocabulary_size=FAKE_VOCABULARY
+        )
+        self._limits = limits or EmbeddingLimits(
+            max_inputs=16, max_input_tokens=1_000, max_batch_tokens=4_000
+        )
+        self._error = error
+        self.batches: list[tuple[str, ...]] = []
+
+    @property
+    def sparse_identity(self) -> SparseModelIdentity:
+        return self._identity
+
+    @property
+    def limits(self) -> EmbeddingLimits:
+        return self._limits
+
+    def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
+    async def encode_sparse(
+        self,
+        texts: Sequence[str],
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> tuple[SparseVector, ...]:
+        check_inputs(texts, self._limits, self.count_tokens)
+        self.batches.append(tuple(texts))
+        if self._error is not None:
+            raise self._error
+        return checked_sparse_vectors(
+            [word_weights(text) for text in texts],
+            expected=len(texts),
+            vocabulary_size=FAKE_VOCABULARY,
+        )

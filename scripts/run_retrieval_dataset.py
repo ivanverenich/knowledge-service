@@ -19,6 +19,11 @@ run the pinned revision; start it with
 `uv run --project ml/bge_m3_server python ml/bge_m3_server/bge_m3_server.py`.
 The report goes to `artifacts/evaluations/bilingual-seed-local.md`, and no
 text leaves the machine.
+
+`--sparse` is the M05-T10 prototype. It asks the same local server for
+BGE-M3's sparse term weights, runs every case with PostgreSQL word search
+and with sparse search, and writes quality, cost, and latency to
+`artifacts/evaluations/bilingual-seed-sparse.md`.
 """
 
 import argparse
@@ -51,9 +56,11 @@ from knowledge_service.retrieval.evaluation_dataset import (
     DatasetError,
     EvaluationDataset,
     compare_branches,
+    compare_sparse,
     load_dataset,
     render_comparison,
     render_report,
+    render_sparse_comparison,
     run_dataset,
     verify_corpus,
 )
@@ -62,6 +69,7 @@ from knowledge_service.settings import Settings
 REPORT = Path("artifacts/evaluations/bilingual-seed.md")
 MANAGED_REPORT = Path("artifacts/evaluations/bilingual-seed-managed.md")
 LOCAL_REPORT = Path("artifacts/evaluations/bilingual-seed-local.md")
+SPARSE_REPORT = Path("artifacts/evaluations/bilingual-seed-sparse.md")
 SERVER_CHECK_SECONDS = 10.0
 
 type ModelSource = Callable[[], AbstractAsyncContextManager[EmbeddingModel]]
@@ -76,6 +84,7 @@ def main() -> int:
     embeddings = parser.add_mutually_exclusive_group()
     embeddings.add_argument("--managed-embeddings", action="store_true")
     embeddings.add_argument("--local-embeddings", action="store_true")
+    embeddings.add_argument("--sparse", action="store_true")
     arguments = parser.parse_args()
     corpus = arguments.dataset / CORPUS_DIRECTORY
     try:
@@ -99,7 +108,15 @@ def main() -> int:
         if arguments.local_embeddings:
             source, default = _local_model, LOCAL_REPORT
         runtime = create_database_runtime(settings)
-        rendered = asyncio.run(_run(runtime, dataset, corpus, arguments.limit, source))
+        if arguments.sparse:
+            default = SPARSE_REPORT
+            rendered = asyncio.run(
+                _run_sparse(runtime, dataset, corpus, arguments.limit)
+            )
+        else:
+            rendered = asyncio.run(
+                _run(runtime, dataset, corpus, arguments.limit, source)
+            )
     except DatasetError as error:
         sys.stderr.write(f"dataset run failed: {error}\n")
         return 1
@@ -141,6 +158,24 @@ async def _run(
         await runtime.dispose()
 
 
+async def _run_sparse(
+    runtime: DatabaseRuntime, dataset: EvaluationDataset, corpus: Path, limit: int
+) -> str:
+    try:
+        async with _local_model() as model:
+            comparison = await compare_sparse(
+                runtime,
+                dataset,
+                corpus,
+                observed_at=datetime.now(UTC),
+                model=model,
+                limit=limit,
+            )
+        return render_sparse_comparison(comparison)
+    finally:
+        await runtime.dispose()
+
+
 def _openai_model(api_key: SecretStr) -> ModelSource:
     @asynccontextmanager
     async def source() -> AsyncGenerator[EmbeddingModel]:
@@ -154,7 +189,7 @@ def _openai_model(api_key: SecretStr) -> ModelSource:
 
 
 @asynccontextmanager
-async def _local_model() -> AsyncGenerator[EmbeddingModel]:
+async def _local_model() -> AsyncGenerator[LocalEmbeddingModel]:
     # trust_env=False: a proxy set in the environment must never see the texts.
     async with httpx.AsyncClient(trust_env=False) as client:
         model = LocalEmbeddingModel(client, LocalEmbeddingSettings())
