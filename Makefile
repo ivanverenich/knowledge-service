@@ -8,7 +8,7 @@
 # Bare `make` shows the command menu.
 .DEFAULT_GOAL := do_good
 
-.PHONY: do_good setup format format-check lint typecheck test-unit test-integration check hooks-install hooks docs-check
+.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check check hooks-install hooks docs-check
 
 # ---------------------------------------------------------------------------
 # Command menu
@@ -92,6 +92,9 @@ test-integration: ## Run integration tests (needs services)
 		exit 1; \
 	fi; \
 	KNOWLEDGE_SERVICE_TEST_DATABASE_URL="$$url" uv run pytest -m "integration and not live"
+
+ml-check: ## Type-check and test the local BGE-M3 server (Python 3.12)
+	cd ml/bge_m3_server && uv run pyright && uv run pytest -q
 
 # ---------------------------------------------------------------------------
 # Combined checks and git hooks

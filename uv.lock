@@ -479,6 +479,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "markdown-it-py" },
     { name = "openai" },
     { name = "pgvector" },
@@ -491,7 +492,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "hypothesis" },
     { name = "pre-commit" },
     { name = "pyright" },
@@ -506,6 +506,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.20,<2" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "markdown-it-py", specifier = ">=4,<5" },
     { name = "openai", specifier = ">=3.19.2" },
     { name = "pgvector", specifier = ">=0.5.1,<0.6" },
@@ -518,7 +519,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "hypothesis", specifier = ">=6.170.5" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pyright" },

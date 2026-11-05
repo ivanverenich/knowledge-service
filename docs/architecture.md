@@ -60,12 +60,18 @@ Each module above has its own package under `src/knowledge_service/`
 |---|---|---|
 | `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document` |
 | `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
-| `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `publish_document_embeddings`, the migration workflow |
+| `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `OpenAIEmbeddingModel` (managed), `LocalEmbeddingModel` (BGE-M3 over HTTP, pinned revision), `publish_document_embeddings`, the migration workflow |
 | `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both), `search_english_chunks`, `search_ukrainian_chunks`, `Candidate` (the fields every branch returns), `fuse_ranked_candidates` (Reciprocal Rank Fusion of branch Candidates), `retrieve_hybrid` (both branches at once under one deadline, fused, with per-branch diagnostics), `MetadataCondition`, `load_dataset` / `verify_corpus` / `run_dataset` / `compare_branches` (the bilingual seed Evaluation Dataset in `datasets/bilingual-seed/`, run lexical, dense, and fused), `recall_at` / `reciprocal_rank` (Recall@k and MRR) |
 | `persistence` | PostgreSQL implementation | `schema` and one module per kind of record |
 
 Domain values, settings, the database runtime, and the HTTP application stay
 at the top level.
+
+Model runtimes that need their own Python live outside `src/`, each as its
+own uv project (ADR 0009).
+`ml/bge_m3_server/` serves BGE-M3 dense embeddings on Python 3.12, on
+127.0.0.1 only. The application reaches it through `LocalEmbeddingModel`,
+which refuses any answer that does not name the pinned model revision.
 
 The Evaluation module has no package yet. Code that measures retrieval
 alone, such as the vector benchmark and the bilingual seed Evaluation

@@ -1,0 +1,38 @@
+[project]
+name = "bge-m3-server"
+version = "0.1.0"
+description = "Local BGE-M3 embedding server for the knowledge service (ML runtime)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sentence-transformers>=5",
+    "torch>=2.6",
+]
+
+[dependency-groups]
+dev = ["httpx>=0.28", "pyright", "pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+# This runtime is Python 3.12 (ADR 0009); the application's 3.14 syntax is not allowed.
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["A", "ASYNC", "B", "C4", "E", "F", "I", "PTH", "PT", "RET", "RUF", "S", "SIM", "T20", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = ["S101"]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+addopts = ["--strict-markers"]
+markers = ["model: needs the pinned BGE-M3 files in the Hugging Face cache"]

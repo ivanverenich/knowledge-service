@@ -7,7 +7,7 @@ depends_on: ["M05-T08"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["BGE-M3 adapter","comparison report"]
-status: planned
+status: completed
 ---
 
 # M05-T09 — Add local BGE-M3 embeddings

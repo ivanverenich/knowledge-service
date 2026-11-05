@@ -22,6 +22,7 @@ from knowledge_service.embeddings.port import (
     EmbeddingRateLimited,
     RejectionReason,
 )
+from local_stubs import StubBgeM3Server, local_embedding_model
 from openai_stubs import StubEmbeddings, openai_embedding_model, status_error
 
 REQUEST_ID = UUID("00000000-0000-0000-0000-000000000022")
@@ -53,6 +54,10 @@ def openai_adapter(embeddings: StubEmbeddings) -> Adapter:
     return Adapter(model=model, sent=lambda: len(embeddings.calls))
 
 
+def local_adapter(server: StubBgeM3Server) -> Adapter:
+    return Adapter(model=local_embedding_model(server), sent=lambda: server.sent)
+
+
 CASES = (
     AdapterCase(
         name="fake",
@@ -67,6 +72,13 @@ CASES = (
         rate_limited=lambda: openai_adapter(StubEmbeddings(error=status_error(429))),
         wrong_dimensions=lambda: openai_adapter(StubEmbeddings(dimensions=3)),
         blocked=lambda: openai_adapter(StubEmbeddings(block=True)),
+    ),
+    AdapterCase(
+        name="local",
+        working=lambda: local_adapter(StubBgeM3Server()),
+        rate_limited=lambda: local_adapter(StubBgeM3Server(status=429)),
+        wrong_dimensions=lambda: local_adapter(StubBgeM3Server(vector_dimensions=3)),
+        blocked=lambda: local_adapter(StubBgeM3Server(block=True)),
     ),
 )
 IDS = [case.name for case in CASES]
