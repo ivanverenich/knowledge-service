@@ -22,10 +22,20 @@ What a caller can rely on:
   the corpus into an empty database, asks every Question as one ordinary
   employee, and records the rank of each relevant Chunk, or None when it is
   missing. A Question no branch can answer raises `CaseUnanswered`.
+- **Compared with embeddings.** `compare_branches` also embeds every
+  Chunk with one embedding model, then runs every case three times: words
+  only, meaning only, and both fused. A Chunk that cannot be embedded
+  raises `CorpusNotEmbedded` before any case runs. Every Chunk, restricted
+  ones included, is sent to the embedding model's provider.
+- **Scored per slice.** `score_slices` turns the ranks into Recall@k and
+  MRR for every language direction and query class (see
+  `retrieval.ranking_metrics`).
 - **Eligible.** A Candidate from `restricted/` raises
   `IneligibleChunkRetrieved` and stops the run, however relevant it is.
+- **Typed.** Any error a case raises becomes `CaseFailed`, naming the case
+  and the error types only.
 - **Quiet.** Reports and errors name cases by ID and give ranks only; they
-  never hold a Question or Document text.
+  never hold a Question or Document text, not even in a linked error.
 """
 
 import json
@@ -35,6 +45,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid5
@@ -44,7 +55,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.identifiers import SourceId, UserId
+from knowledge_service.embeddings.port import EmbeddingModel, EmbeddingModelIdentity
+from knowledge_service.embeddings.publication import (
+    EmbeddingPublicationStatus,
+    publish_document_embeddings,
+)
+from knowledge_service.identifiers import EmbeddingSpaceId, SourceId, UserId
 from knowledge_service.ingestion.chunking import chunk_by_structure
 from knowledge_service.ingestion.directory_source import DirectorySource
 from knowledge_service.ingestion.normalization import (
@@ -55,15 +71,24 @@ from knowledge_service.ingestion.normalization import (
 from knowledge_service.ingestion.sources import SourceAccess, SourceError
 from knowledge_service.ingestion.synchronization import synchronize_source
 from knowledge_service.language import Language
-from knowledge_service.persistence.schema import sources
-from knowledge_service.retrieval.fusion import RetrievalBranch
+from knowledge_service.persistence.documents import load_available_documents
+from knowledge_service.persistence.embeddings import insert_embedding_space
+from knowledge_service.persistence.schema import embedding_spaces, sources
+from knowledge_service.retrieval.fusion import DEFAULT_RRF_K, RetrievalBranch
 from knowledge_service.retrieval.hybrid import (
     BranchSearch,
+    HybridRetrieval,
     HybridRetrievalUnavailable,
+    dense_branch,
     lexical_branch,
     retrieve_hybrid,
 )
 from knowledge_service.retrieval.lexical_search import MAX_QUERY_CHARACTERS
+from knowledge_service.retrieval.ranking_metrics import (
+    mean,
+    recall_at,
+    reciprocal_rank,
+)
 from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 
 DATASET_DIRECTORY = Path("datasets/bilingual-seed")
@@ -75,6 +100,10 @@ MIN_CASES_PER_SLICE = 2
 DEFAULT_LIMIT = 10
 CASE_TIMEOUT_SECONDS = 30.0
 PAGE_SIZE = 100
+# Recall is reported at these cut-offs, as far as the run's limit allows.
+RECALL_CUTOFFS = (1, 3, 5, 10)
+EMBEDDING_CONCURRENCY = 2
+EMBEDDING_TIMEOUT_SECONDS = 60.0
 
 MAX_PATH_CHARACTERS = 200
 
@@ -108,6 +137,7 @@ SOURCE_IDS: Mapping[Folder, SourceId] = {
 }
 READER = AuthorizationContext(user_id=UserId(UUID(int=0x5EED_0003)))
 _REQUEST_IDS = UUID(int=0x5EED_0004)
+SPACE_ID = EmbeddingSpaceId(UUID(int=0x5EED_0005))
 
 
 class DatasetError(Exception):
@@ -128,6 +158,14 @@ class IneligibleChunkRetrieved(DatasetError):
 
 class CaseUnanswered(DatasetError):
     """No branch answered one case, so the run cannot score it."""
+
+
+class CaseFailed(DatasetError):
+    """A case raised an error no branch should raise; the run stopped."""
+
+
+class CorpusNotEmbedded(DatasetError):
+    """At least one Document of the corpus has no vectors, so no case ran."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +234,24 @@ class DatasetReport:
     limit: int
     branches: tuple[RetrievalBranch, ...]
     outcomes: tuple[CaseOutcome, ...]
+    # The model behind the dense branch; None when the run had no dense branch.
+    embedding: EmbeddingModelIdentity | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SliceScore:
+    """Recall@k and MRR over the cases of one slice.
+
+    `recall` pairs each cut-off with the mean Recall at it. A slice with no
+    cases has no scores: `recall` is empty and `mrr` is None.
+    """
+
+    name: str
+    cases: int
+    found: int
+    degraded: int
+    recall: tuple[tuple[int, Fraction], ...]
+    mrr: Fraction | None
 
 
 class _File(BaseModel):
@@ -320,42 +376,123 @@ async def run_dataset(
     )
     _check_branches(searches)
     await verify_corpus(dataset, corpus)
-    await _ingest(runtime, dataset, corpus, observed_at)
-    outcomes = [await _run_case(case, searches, limit) for case in dataset.cases]
-    return DatasetReport(
-        name=dataset.name,
-        version=dataset.version,
-        limit=limit,
-        branches=tuple(branch for branch in RetrievalBranch if branch in searches),
-        outcomes=tuple(outcomes),
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=None)
+    return await _run_cases(dataset, searches, limit, embedding=None)
+
+
+async def compare_branches(
+    runtime: DatabaseRuntime,
+    dataset: EvaluationDataset,
+    corpus: Path,
+    *,
+    observed_at: datetime,
+    model: EmbeddingModel,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[DatasetReport, ...]:
+    """Ingest and embed the corpus once, then run every case three ways.
+
+    Returns three reports in a fixed order: lexical only, dense only, and
+    both fused. Every Chunk, restricted ones included, is embedded with
+    `model` into one new current Embedding Space, because search must be
+    able to rank a restricted Chunk for the permission check to matter.
+    Raises like `run_dataset`; `DatasetRunRefused` also when the database
+    already holds an Embedding Space or `model` has no valid identity, and
+    `CorpusNotEmbedded` when any Document cannot be embedded. Questions are
+    embedded again in the fused run, so its dense ranks can differ slightly
+    from the dense-only run when the provider is not exactly repeatable.
+    """
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise DatasetRunRefused(f"limit must be an int from 1 to {MAX_CANDIDATES}")
+    identity = _identity(model)
+    await verify_corpus(dataset, corpus)
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=identity)
+    await _embed_corpus(runtime, model, observed_at)
+    lexical = lexical_branch(runtime)
+    dense = dense_branch(runtime, model)
+    setups: tuple[Mapping[RetrievalBranch, BranchSearch], ...] = (
+        {RetrievalBranch.LEXICAL: lexical},
+        {RetrievalBranch.DENSE: dense},
+        {RetrievalBranch.DENSE: dense, RetrievalBranch.LEXICAL: lexical},
     )
+    return tuple(
+        [
+            await _run_cases(dataset, searches, limit, embedding=identity)
+            for searches in setups
+        ]
+    )
+
+
+def score_slices(report: DatasetReport) -> tuple[SliceScore, ...]:
+    """Score every case together, then each direction, then each query class."""
+    cutoffs = tuple(k for k in RECALL_CUTOFFS if k <= report.limit)
+    groups: list[tuple[str, list[CaseOutcome]]] = [("all", list(report.outcomes))]
+    groups += [
+        (direction, [o for o in report.outcomes if o.direction == direction])
+        for direction in DIRECTIONS
+    ]
+    groups += [
+        (str(query_class), [o for o in report.outcomes if o.query_class is query_class])
+        for query_class in QueryClass
+    ]
+    return tuple(_score(name, outcomes, cutoffs) for name, outcomes in groups)
+
+
+def render_comparison(reports: tuple[DatasetReport, ...]) -> str:
+    """Return a side-by-side summary of several runs, then each full report."""
+    if not reports:
+        raise ValueError("at least one report is required")
+    first = reports[0]
+    scored = [score_slices(report) for report in reports]
+    cutoff = max(k for k in RECALL_CUTOFFS if k <= first.limit)
+    lines = [
+        f"# Retrieval comparison: {first.name} v{first.version}",
+        "",
+        *_configuration(reports),
+        "",
+        f"## Recall@{cutoff} and MRR by slice",
+        "",
+        "| Slice | Cases | "
+        + " | ".join(
+            f"{_label(report)} R@{cutoff} | {_label(report)} MRR" for report in reports
+        )
+        + " |",
+        "|---|---:|" + "---:|---:|" * len(reports),
+    ]
+    for index, first_score in enumerate(scored[0]):
+        cells = [f"{first_score.name} | {first_score.cases}"]
+        for scores in scored:
+            score = scores[index]
+            recall = dict(score.recall).get(cutoff)
+            cells.append(f"{_number(recall)} | {_number(score.mrr)}")
+        lines.append("| " + " | ".join(cells) + " |")
+    body = "\n".join(lines) + "\n"
+    return body + "".join("\n" + render_report(report) for report in reports)
 
 
 def render_report(report: DatasetReport) -> str:
     """Return the report as Markdown: found counts per slice, then every case."""
-    branches = ", ".join(report.branches)
+    scores = score_slices(report)
+    cutoffs = [k for k, _ in scores[0].recall]
     lines = [
         f"# Retrieval dataset report: {report.name} v{report.version}",
         "",
-        f"Branches: {branches}. Each case keeps its top {report.limit} Candidates;"
-        " a rank is where a relevant Chunk appears among them.",
+        *_configuration((report,)),
         "",
         "## By slice",
         "",
-        "| Slice | Cases | Found |",
-        "|---|---:|---:|",
+        "| Slice | Cases | Found | "
+        + "".join(f"Recall@{k} | " for k in cutoffs)
+        + "MRR | Degraded |",
+        "|---|---:|---:|" + "---:|" * len(cutoffs) + "---:|---:|",
     ]
-    slices: list[tuple[str, list[CaseOutcome]]] = [
-        (direction, [o for o in report.outcomes if o.direction == direction])
-        for direction in DIRECTIONS
-    ]
-    slices += [
-        (str(query_class), [o for o in report.outcomes if o.query_class is query_class])
-        for query_class in QueryClass
-    ]
-    for name, outcomes in slices:
-        found = sum(outcome.found for outcome in outcomes)
-        lines.append(f"| {name} | {len(outcomes)} | {found} |")
+    for score in scores:
+        recall = "".join(f"{_number(value)} | " for _, value in score.recall)
+        if score.cases == 0:
+            recall = "n/a | " * len(cutoffs)
+        lines.append(
+            f"| {score.name} | {score.cases} | {score.found} | {recall}"
+            f"{_number(score.mrr)} | {score.degraded} |"
+        )
     lines += [
         "",
         "## By case",
@@ -373,6 +510,71 @@ def render_report(report: DatasetReport) -> str:
             f" | {ranks} | {degraded} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _configuration(reports: tuple[DatasetReport, ...]) -> list[str]:
+    first = reports[0]
+    if len(reports) == 1:
+        runs = f"- Branches: {', '.join(first.branches)}."
+    else:
+        runs = f"- Runs: {'; '.join(_label(report) for report in reports)}."
+    lines = [
+        runs,
+        f"- Each case keeps its top {first.limit} Candidates; a rank is where"
+        " a relevant Chunk appears among them.",
+    ]
+    model = next((r.embedding for r in reports if r.embedding is not None), None)
+    if model is not None:
+        lines.append(
+            f"- Embedding model: {model.provider} {model.model},"
+            f" {model.dimensions} dimensions."
+        )
+    if any(len(report.branches) > 1 for report in reports):
+        lines.append(f"- Fusion: Reciprocal Rank Fusion, k = {DEFAULT_RRF_K}.")
+    return lines
+
+
+def _label(report: DatasetReport) -> str:
+    return " + ".join(report.branches)
+
+
+def _number(value: Fraction | None) -> str:
+    return "n/a" if value is None else f"{float(value):.3f}"
+
+
+def _score(
+    name: str, outcomes: list[CaseOutcome], cutoffs: tuple[int, ...]
+) -> SliceScore:
+    found = sum(outcome.found for outcome in outcomes)
+    degraded = sum(outcome.degraded for outcome in outcomes)
+    if not outcomes:
+        return SliceScore(name, 0, 0, 0, recall=(), mrr=None)
+    recall = tuple(
+        (k, mean([recall_at(outcome.ranks, k) for outcome in outcomes]))
+        for k in cutoffs
+    )
+    mrr = mean([reciprocal_rank(outcome.ranks) for outcome in outcomes])
+    return SliceScore(name, len(outcomes), found, degraded, recall=recall, mrr=mrr)
+
+
+def _error_names(error: BaseException) -> str:
+    """Name an error by its type; a group by the types inside it."""
+    if isinstance(error, BaseExceptionGroup):
+        inner = cast(BaseExceptionGroup[BaseException], error).exceptions
+        return ", ".join(sorted({_error_names(item) for item in inner}))
+    return type(error).__name__
+
+
+def _identity(model: EmbeddingModel) -> EmbeddingModelIdentity:
+    # Read once here, so a model that cannot name itself is refused before
+    # anything is written.
+    try:
+        identity = model.identity
+    except Exception:
+        identity = None
+    if type(identity) is not EmbeddingModelIdentity:
+        raise DatasetRunRefused("the model must have an EmbeddingModelIdentity")
+    return identity
 
 
 def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -533,6 +735,8 @@ async def _ingest(
     dataset: EvaluationDataset,
     corpus: Path,
     observed_at: datetime,
+    *,
+    embedding: EmbeddingModelIdentity | None,
 ) -> None:
     async with runtime.transaction() as connection:
         # Held until commit, so a second run started at the same moment
@@ -542,6 +746,20 @@ async def _ingest(
         )
         if await connection.scalar(sa.select(sa.exists().select_from(sources))):
             raise DatasetRunRefused("the dataset runs only on an empty database")
+        # Another space would hold vectors this run did not make, or be the
+        # current one and turn every dense search away.
+        if embedding is not None and await connection.scalar(
+            sa.select(sa.exists().select_from(embedding_spaces))
+        ):
+            raise DatasetRunRefused("the dataset runs only on an empty database")
+        if embedding is not None:
+            await insert_embedding_space(
+                connection,
+                space_id=SPACE_ID,
+                identity=embedding,
+                is_current=True,
+                created_at=observed_at,
+            )
         for folder, source_id in SOURCE_IDS.items():
             await connection.execute(
                 sa.insert(sources).values(
@@ -567,11 +785,64 @@ async def _ingest(
             raise InvalidDataset(f"a Document in {folder}/ could not be ingested")
 
 
+async def _embed_corpus(
+    runtime: DatabaseRuntime, model: EmbeddingModel, observed_at: datetime
+) -> None:
+    async with runtime.transaction() as connection:
+        stored = [
+            document
+            for source_id in SOURCE_IDS.values()
+            for document in await load_available_documents(
+                connection, source_id=source_id
+            )
+        ]
+    for document in stored:
+        failure: str
+        try:
+            publication = await publish_document_embeddings(
+                runtime,
+                model,
+                document_id=document.document_id,
+                concurrency=EMBEDDING_CONCURRENCY,
+                request_id=uuid5(_REQUEST_IDS, f"embed {document.document_id.value}"),
+                timeout_seconds=EMBEDDING_TIMEOUT_SECONDS,
+                now=observed_at,
+            )
+            failure = str(publication.status)
+        except Exception as error:
+            # Any error, not only an EmbeddingError: the model is outside
+            # code. Its type only, because its message may quote Chunk text.
+            failure = _error_names(error)
+        # Raised outside the `except`, so no linked error carries the text.
+        if failure != EmbeddingPublicationStatus.PUBLISHED:
+            raise CorpusNotEmbedded(f"the corpus could not be embedded: {failure}")
+
+
+async def _run_cases(
+    dataset: EvaluationDataset,
+    searches: Mapping[RetrievalBranch, BranchSearch],
+    limit: int,
+    *,
+    embedding: EmbeddingModelIdentity | None,
+) -> DatasetReport:
+    outcomes = [await _run_case(case, searches, limit) for case in dataset.cases]
+    return DatasetReport(
+        name=dataset.name,
+        version=dataset.version,
+        limit=limit,
+        branches=tuple(branch for branch in RetrievalBranch if branch in searches),
+        outcomes=tuple(outcomes),
+        embedding=embedding if RetrievalBranch.DENSE in searches else None,
+    )
+
+
 async def _run_case(
     case: EvaluationCase,
     searches: Mapping[RetrievalBranch, BranchSearch],
     limit: int,
 ) -> CaseOutcome:
+    result: HybridRetrieval | None = None
+    unexpected = "no result"
     try:
         result = await retrieve_hybrid(
             case.question,
@@ -589,6 +860,13 @@ async def _run_case(
         raise CaseUnanswered(
             f"case {case.case_id}: no branch answered ({failures})"
         ) from None
+    except Exception as error:
+        # A bug in a branch arrives in an ExceptionGroup whose message may
+        # repeat the Question. Only the error types leave this function.
+        unexpected = _error_names(error)
+    # Raised outside the `except`, so no linked error carries the Question.
+    if result is None:
+        raise CaseFailed(f"case {case.case_id}: the search raised {unexpected}")
     ranks: dict[tuple[str, str | None], int] = {}
     for candidate in result.candidates:
         if candidate.source_id != SOURCE_IDS[Folder.PUBLIC]:

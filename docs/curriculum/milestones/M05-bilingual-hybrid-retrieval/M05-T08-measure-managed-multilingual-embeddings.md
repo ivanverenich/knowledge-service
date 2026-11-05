@@ -7,7 +7,7 @@ depends_on: ["M05-T07"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["managed embedding report"]
-status: planned
+status: completed
 ---
 
 # M05-T08 — Measure managed multilingual embeddings

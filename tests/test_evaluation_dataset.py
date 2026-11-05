@@ -3,9 +3,12 @@
 import json
 import os
 import shutil
+import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +17,9 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from pydantic import SecretStr
 
+from fakes import FakeEmbeddingModel
 from knowledge_service.database import create_database_runtime
+from knowledge_service.embeddings.port import EmbeddingModel, EmbeddingModelIdentity
 from knowledge_service.retrieval import evaluation_dataset
 from knowledge_service.retrieval.evaluation_dataset import (
     CASES_FILE,
@@ -27,9 +32,12 @@ from knowledge_service.retrieval.evaluation_dataset import (
     DatasetRunRefused,
     InvalidDataset,
     QueryClass,
+    compare_branches,
     load_dataset,
+    render_comparison,
     render_report,
     run_dataset,
+    score_slices,
     verify_corpus,
 )
 from knowledge_service.retrieval.fusion import RetrievalBranch
@@ -472,3 +480,135 @@ def test_the_report_counts_slices_and_shows_ranks_only() -> None:
     assert "| plain | 2 | 2 |" in rendered
     assert "| c | uk->en | plain | missed, 3 | yes |" in rendered
     assert rendered.startswith("# Retrieval dataset report: bilingual-seed v1\n")
+
+
+SCORED = DatasetReport(
+    name="bilingual-seed",
+    version=1,
+    limit=5,
+    branches=(RetrievalBranch.DENSE, RetrievalBranch.LEXICAL),
+    outcomes=(
+        CaseOutcome("a", "en->en", QueryClass.PLAIN, (1,), degraded=False),
+        CaseOutcome("b", "en->en", QueryClass.IDENTIFIER, (4,), degraded=False),
+        CaseOutcome("c", "en->en", QueryClass.PLAIN, (None,), degraded=True),
+        CaseOutcome("d", "uk->en", QueryClass.PLAIN, (None, 3), degraded=False),
+    ),
+    embedding=EmbeddingModelIdentity(
+        provider="openai", model="text-embedding-3-small", dimensions=1536
+    ),
+)
+
+
+def test_slices_get_exact_recall_and_mrr() -> None:
+    scores = {score.name: score for score in score_slices(SCORED)}
+
+    en_en = scores["en->en"]
+    assert (en_en.cases, en_en.found, en_en.degraded) == (3, 2, 1)
+    # Cut-offs above the run's limit of 5 are left out.
+    assert en_en.recall == (
+        (1, Fraction(1, 3)),
+        (3, Fraction(1, 3)),
+        (5, Fraction(2, 3)),
+    )
+    assert en_en.mrr == Fraction(5, 12)
+    # Two relevant Chunks, one found at rank 3: half of them, best rank 3.
+    assert scores["uk->en"].recall[-1] == (5, Fraction(1, 2))
+    assert scores["uk->en"].mrr == Fraction(1, 3)
+    assert scores["all"].cases == 4
+    assert scores["uk->uk"].recall == ()
+    assert scores["uk->uk"].mrr is None
+
+
+def test_the_report_shows_the_configuration_and_the_scores() -> None:
+    rendered = render_report(SCORED)
+
+    assert "- Branches: dense, lexical." in rendered
+    assert "- Embedding model: openai text-embedding-3-small, 1536 dimensions." in (
+        rendered
+    )
+    assert "- Fusion: Reciprocal Rank Fusion, k = 60." in rendered
+    assert "| Slice | Cases | Found | Recall@1 | Recall@3 | Recall@5 | MRR |" in (
+        rendered
+    )
+    assert "| en->en | 3 | 2 | 0.333 | 0.333 | 0.667 | 0.417 | 1 |" in rendered
+    assert "| uk->uk | 0 | 0 | n/a | n/a | n/a | n/a | 0 |" in rendered
+
+
+def test_the_comparison_puts_every_run_side_by_side() -> None:
+    lexical = DatasetReport(
+        name="bilingual-seed",
+        version=1,
+        limit=5,
+        branches=(RetrievalBranch.LEXICAL,),
+        outcomes=tuple(
+            CaseOutcome(
+                o.case_id,
+                o.direction,
+                o.query_class,
+                (None,) * len(o.ranks),
+                degraded=False,
+            )
+            for o in SCORED.outcomes
+        ),
+    )
+
+    rendered = render_comparison((lexical, SCORED))
+
+    assert rendered.startswith("# Retrieval comparison: bilingual-seed v1\n")
+    assert "- Runs: lexical; dense + lexical." in rendered
+    assert "- Embedding model: openai text-embedding-3-small" in rendered
+    assert (
+        "| Slice | Cases | lexical R@5 | lexical MRR"
+        " | dense + lexical R@5 | dense + lexical MRR |"
+    ) in rendered
+    assert "| en->en | 3 | 0.000 | 0.000 | 0.667 | 0.417 |" in rendered
+    assert rendered.count("# Retrieval dataset report:") == 2
+
+
+class NamelessModel(FakeEmbeddingModel):
+    @property
+    def identity(self) -> EmbeddingModelIdentity:
+        raise RuntimeError("no identity")
+
+
+@pytest.mark.parametrize(
+    ("limit", "model", "message"),
+    [
+        (0, FakeEmbeddingModel(), "limit"),
+        (True, FakeEmbeddingModel(), "limit"),
+        (10, NamelessModel(), "EmbeddingModelIdentity"),
+    ],
+)
+async def test_a_wrong_comparison_setting_is_refused_before_any_work(
+    limit: int, model: EmbeddingModel, message: str
+) -> None:
+    runtime = create_database_runtime(
+        Settings(database_url=SecretStr("postgresql+psycopg://u:p@localhost:1/x"))
+    )
+    dataset = load_dataset(DATASET_DIRECTORY / CASES_FILE)
+
+    with pytest.raises(DatasetRunRefused, match=message):
+        await compare_branches(
+            runtime,
+            dataset,
+            DATASET_DIRECTORY / CORPUS_DIRECTORY,
+            observed_at=datetime(2026, 11, 4, tzinfo=UTC),
+            model=model,
+            limit=limit,
+        )
+    await runtime.dispose()
+
+
+def test_verify_only_needs_no_settings() -> None:
+    # Only a run reads the settings, so a bad one cannot stop the check.
+    finished = subprocess.run(
+        [sys.executable, "scripts/run_retrieval_dataset.py", "--verify-only"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "KNOWLEDGE_SERVICE_LOG_LEVEL": "not-a-level"},
+        timeout=60,
+    )
+
+    assert finished.returncode == 0, finished.stderr
+    assert finished.stdout == "16 cases verified\n"
