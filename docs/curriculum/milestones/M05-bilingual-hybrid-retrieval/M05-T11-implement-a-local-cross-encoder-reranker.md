@@ -7,7 +7,7 @@ depends_on: ["M05-T10"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["Reranker port","local reranker adapter"]
-status: planned
+status: completed
 ---
 
 # M05-T11 — Implement a local cross-encoder reranker

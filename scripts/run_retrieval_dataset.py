@@ -24,6 +24,14 @@ text leaves the machine.
 BGE-M3's sparse term weights, runs every case with PostgreSQL word search
 and with sparse search, and writes quality, cost, and latency to
 `artifacts/evaluations/bilingual-seed-sparse.md`.
+
+`--rerank` runs every case with dense and lexical search fused, using the
+local BGE-M3 server, then reranks each case's Candidates with the local
+reranker server (`LOCAL_RERANKER_URL`, default `http://127.0.0.1:8767`),
+which must already run the pinned revision; start it with
+`uv run --project ml/bge_m3_server python ml/bge_m3_server/reranker_server.py`.
+It writes the ranking delta and the latency on the reranker's device to
+`artifacts/evaluations/bilingual-seed-rerank.md`.
 """
 
 import argparse
@@ -56,20 +64,28 @@ from knowledge_service.retrieval.evaluation_dataset import (
     DatasetError,
     EvaluationDataset,
     compare_branches,
+    compare_reranking,
     compare_sparse,
     load_dataset,
     render_comparison,
     render_report,
+    render_rerank_comparison,
     render_sparse_comparison,
     run_dataset,
     verify_corpus,
 )
+from knowledge_service.retrieval.local_reranker import (
+    LocalReranker,
+    LocalRerankerSettings,
+)
+from knowledge_service.retrieval.reranking import RerankerError
 from knowledge_service.settings import Settings
 
 REPORT = Path("artifacts/evaluations/bilingual-seed.md")
 MANAGED_REPORT = Path("artifacts/evaluations/bilingual-seed-managed.md")
 LOCAL_REPORT = Path("artifacts/evaluations/bilingual-seed-local.md")
 SPARSE_REPORT = Path("artifacts/evaluations/bilingual-seed-sparse.md")
+RERANK_REPORT = Path("artifacts/evaluations/bilingual-seed-rerank.md")
 SERVER_CHECK_SECONDS = 10.0
 
 type ModelSource = Callable[[], AbstractAsyncContextManager[EmbeddingModel]]
@@ -85,6 +101,7 @@ def main() -> int:
     embeddings.add_argument("--managed-embeddings", action="store_true")
     embeddings.add_argument("--local-embeddings", action="store_true")
     embeddings.add_argument("--sparse", action="store_true")
+    embeddings.add_argument("--rerank", action="store_true")
     arguments = parser.parse_args()
     corpus = arguments.dataset / CORPUS_DIRECTORY
     try:
@@ -113,6 +130,11 @@ def main() -> int:
             rendered = asyncio.run(
                 _run_sparse(runtime, dataset, corpus, arguments.limit)
             )
+        elif arguments.rerank:
+            default = RERANK_REPORT
+            rendered = asyncio.run(
+                _run_rerank(runtime, dataset, corpus, arguments.limit)
+            )
         else:
             rendered = asyncio.run(
                 _run(runtime, dataset, corpus, arguments.limit, source)
@@ -122,6 +144,9 @@ def main() -> int:
         return 1
     except EmbeddingError as error:
         sys.stderr.write(f"the embedding model is not ready: {error!r}\n")
+        return 1
+    except RerankerError as error:
+        sys.stderr.write(f"the reranker is not ready: {error!r}\n")
         return 1
     output: Path = arguments.output or default
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +197,32 @@ async def _run_sparse(
                 limit=limit,
             )
         return render_sparse_comparison(comparison)
+    finally:
+        await runtime.dispose()
+
+
+async def _run_rerank(
+    runtime: DatabaseRuntime, dataset: EvaluationDataset, corpus: Path, limit: int
+) -> str:
+    try:
+        async with (
+            _local_model() as model,
+            httpx.AsyncClient(trust_env=False) as client,
+        ):
+            reranker = LocalReranker(client, LocalRerankerSettings())
+            # Before anything is written, so a stopped server leaves it empty.
+            device = await reranker.verify_server(timeout_seconds=SERVER_CHECK_SECONDS)
+            comparison = await compare_reranking(
+                runtime,
+                dataset,
+                corpus,
+                observed_at=datetime.now(UTC),
+                model=model,
+                reranker=reranker,
+                device=device,
+                limit=limit,
+            )
+        return render_rerank_comparison(comparison)
     finally:
         await runtime.dispose()
 

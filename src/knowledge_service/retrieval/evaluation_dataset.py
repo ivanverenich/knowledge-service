@@ -33,6 +33,12 @@ What a caller can rely on:
   It also returns what the index costs and how long each case took, which
   `render_sparse_comparison` adds to the report. This is the M05-T10
   prototype; nothing in production uses it.
+- **Compared with reranking.** `compare_reranking` embeds every Chunk like
+  `compare_branches`, runs every case with both branches fused, then
+  reranks each case's fused Candidates with a Reranker (see
+  `retrieval.reranking`). Only Candidates that passed the permission check
+  reach the reranker. `render_rerank_comparison` reports the ranking delta
+  per case and the reranking time on the reranker's device.
 - **Scored per slice.** `score_slices` turns the ranks into Recall@k and
   MRR for every language direction and query class (see
   `retrieval.ranking_metrics`).
@@ -49,7 +55,7 @@ import re
 import statistics
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -83,6 +89,7 @@ from knowledge_service.language import Language
 from knowledge_service.persistence.documents import load_available_documents
 from knowledge_service.persistence.embeddings import insert_embedding_space
 from knowledge_service.persistence.schema import embedding_spaces, sources
+from knowledge_service.retrieval.candidates import Candidate
 from knowledge_service.retrieval.fusion import DEFAULT_RRF_K, RetrievalBranch
 from knowledge_service.retrieval.hybrid import (
     BranchSearch,
@@ -97,6 +104,12 @@ from knowledge_service.retrieval.ranking_metrics import (
     mean,
     recall_at,
     reciprocal_rank,
+)
+from knowledge_service.retrieval.reranking import (
+    Reranker,
+    RerankerIdentity,
+    RerankResult,
+    rerank_candidates,
 )
 from knowledge_service.retrieval.sparse_search import (
     build_sparse_index,
@@ -117,6 +130,7 @@ PAGE_SIZE = 100
 RECALL_CUTOFFS = (1, 3, 5, 10)
 EMBEDDING_CONCURRENCY = 2
 EMBEDDING_TIMEOUT_SECONDS = 60.0
+RERANK_TIMEOUT_SECONDS = 60.0
 
 MAX_PATH_CHARACTERS = 200
 
@@ -253,6 +267,8 @@ class DatasetReport:
     embedding: EmbeddingModelIdentity | None = None
     # The model behind the sparse branch; None when the run had none.
     sparse: SparseModelIdentity | None = None
+    # The reranker that reordered each case's Candidates; None when none did.
+    reranker: RerankerIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +284,22 @@ class SparseComparison:
     chunks: int
     weights: int
     index_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class RerankComparison:
+    """Fused retrieval before and after reranking, and where the scores ran.
+
+    `retrieved` and `reranked` hold the same cases; a reranked outcome's
+    `elapsed_seconds` is the reranking time alone. `device` is where the
+    reranker scored, such as `cpu` or `mps`, and `requests` counts the
+    requests sent to it over all cases.
+    """
+
+    retrieved: DatasetReport
+    reranked: DatasetReport
+    device: str
+    requests: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,6 +545,70 @@ async def compare_sparse(
     )
 
 
+async def compare_reranking(
+    runtime: DatabaseRuntime,
+    dataset: EvaluationDataset,
+    corpus: Path,
+    *,
+    observed_at: datetime,
+    model: EmbeddingModel,
+    reranker: Reranker,
+    device: str,
+    limit: int = DEFAULT_LIMIT,
+) -> RerankComparison:
+    """Ingest and embed the corpus once, run every case fused, then rerank it.
+
+    Each case runs dense and lexical search fused, as `compare_branches`
+    does, and sends that case's fused Candidates, and nothing else, to
+    `reranker`. Raises like `compare_branches`; `DatasetRunRefused` also
+    when `reranker` has no valid identity, and `CaseFailed` when reranking
+    a case fails, naming the case and the error type only.
+    """
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise DatasetRunRefused(f"limit must be an int from 1 to {MAX_CANDIDATES}")
+    identity = _identity(model)
+    reranker_identity = _reranker_identity(reranker)
+    await verify_corpus(dataset, corpus)
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=identity)
+    await _embed_corpus(runtime, model, observed_at)
+    searches: Mapping[RetrievalBranch, BranchSearch] = {
+        RetrievalBranch.DENSE: dense_branch(runtime, model),
+        RetrievalBranch.LEXICAL: lexical_branch(runtime),
+    }
+    retrieved: list[CaseOutcome] = []
+    reranked: list[CaseOutcome] = []
+    requests = 0
+    for case in dataset.cases:
+        result, elapsed = await _search_case(case, searches, limit)
+        retrieved.append(_outcome(case, result.candidates, result.degraded, elapsed))
+        started = time.perf_counter()
+        ordered = await _rerank_case(case, reranker, result, reranker_identity)
+        took = time.perf_counter() - started
+        requests += ordered.requests
+        reranked.append(_outcome(case, ordered.candidates, result.degraded, took))
+    branches = tuple(branch for branch in RetrievalBranch if branch in searches)
+
+    def report(
+        outcomes: list[CaseOutcome], by: RerankerIdentity | None
+    ) -> DatasetReport:
+        return DatasetReport(
+            name=dataset.name,
+            version=dataset.version,
+            limit=limit,
+            branches=branches,
+            outcomes=tuple(outcomes),
+            embedding=identity,
+            reranker=by,
+        )
+
+    return RerankComparison(
+        retrieved=report(retrieved, None),
+        reranked=report(reranked, reranker_identity),
+        device=device,
+        requests=requests,
+    )
+
+
 def score_slices(report: DatasetReport) -> tuple[SliceScore, ...]:
     """Score every case together, then each direction, then each query class."""
     cutoffs = tuple(k for k in RECALL_CUTOFFS if k <= report.limit)
@@ -601,6 +697,56 @@ def render_sparse_comparison(comparison: SparseComparison) -> str:
     return render_comparison(reports) + "\n".join(lines) + "\n"
 
 
+def render_rerank_comparison(comparison: RerankComparison) -> str:
+    """Return the side-by-side report, then each case's move, then timing.
+
+    Everything above "## Latency" depends only on the data and the models,
+    so two runs on one device can be compared with `diff`; the latency
+    section changes from run to run.
+    """
+    before, after = comparison.retrieved, comparison.reranked
+    moves = Counter[str]()
+    lines = [
+        "",
+        "## Ranking delta",
+        "",
+        "Where each case's relevant Chunks ranked before and after reranking.",
+        "",
+        "| Case | Direction | Class | Before | After | Move |",
+        "|---|---|---|---|---|---|",
+    ]
+    for old, new in zip(before.outcomes, after.outcomes, strict=True):
+        change = reciprocal_rank(new.ranks) - reciprocal_rank(old.ranks)
+        move = "up" if change > 0 else "down" if change < 0 else "same"
+        moves[move] += 1
+        lines.append(
+            f"| {old.case_id} | {old.direction} | {old.query_class}"
+            f" | {_ranks(old.ranks)} | {_ranks(new.ranks)} | {move} |"
+        )
+    lines += [
+        "",
+        f"- Moved up: {moves['up']}; moved down: {moves['down']};"
+        f" unchanged: {moves['same']}.",
+        "",
+        "## Latency",
+        "",
+        "Wall time per case. It changes from run to run.",
+        "",
+        f"- Reranker device: {comparison.device}.",
+        f"- Requests to the reranker: {comparison.requests}"
+        f" for {len(after.outcomes)} cases.",
+        "",
+        "| Step | Median ms | Slowest ms |",
+        "|---|---:|---:|",
+    ]
+    for name, report in (("retrieval", before), ("reranking", after)):
+        times = [outcome.elapsed_seconds * 1000 for outcome in report.outcomes]
+        median = statistics.median(times) if times else 0.0
+        slowest = max(times, default=0.0)
+        lines.append(f"| {name} | {median:.1f} | {slowest:.1f} |")
+    return render_comparison((before, after)) + "\n".join(lines) + "\n"
+
+
 def render_report(report: DatasetReport) -> str:
     """Return the report as Markdown: found counts per slice, then every case."""
     scores = score_slices(report)
@@ -633,13 +779,10 @@ def render_report(report: DatasetReport) -> str:
         "|---|---|---|---|---|",
     ]
     for outcome in report.outcomes:
-        ranks = ", ".join(
-            "missed" if rank is None else str(rank) for rank in outcome.ranks
-        )
         degraded = "yes" if outcome.degraded else "no"
         lines.append(
             f"| {outcome.case_id} | {outcome.direction} | {outcome.query_class}"
-            f" | {ranks} | {degraded} |"
+            f" | {_ranks(outcome.ranks)} | {degraded} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -669,11 +812,19 @@ def _configuration(reports: tuple[DatasetReport, ...]) -> list[str]:
         )
     if any(len(report.branches) > 1 for report in reports):
         lines.append(f"- Fusion: Reciprocal Rank Fusion, k = {DEFAULT_RRF_K}.")
+    reranker = next((r.reranker for r in reports if r.reranker is not None), None)
+    if reranker is not None:
+        lines.append(f"- Reranker: {reranker.provider} {reranker.model}.")
     return lines
 
 
 def _label(report: DatasetReport) -> str:
-    return " + ".join(report.branches)
+    label = " + ".join(report.branches)
+    return label if report.reranker is None else f"{label}, reranked"
+
+
+def _ranks(ranks: tuple[int | None, ...]) -> str:
+    return ", ".join("missed" if rank is None else str(rank) for rank in ranks)
 
 
 def _number(value: Fraction | None) -> str:
@@ -712,6 +863,18 @@ def _identity(model: EmbeddingModel) -> EmbeddingModelIdentity:
         identity = None
     if type(identity) is not EmbeddingModelIdentity:
         raise DatasetRunRefused("the model must have an EmbeddingModelIdentity")
+    return identity
+
+
+def _reranker_identity(reranker: Reranker) -> RerankerIdentity:
+    # Read once here, so a reranker that cannot name itself is refused before
+    # anything is written.
+    try:
+        identity = reranker.identity
+    except Exception:
+        identity = None
+    if type(identity) is not RerankerIdentity:
+        raise DatasetRunRefused("the reranker must have a RerankerIdentity")
     return identity
 
 
@@ -981,6 +1144,16 @@ async def _run_case(
     searches: Mapping[RetrievalBranch, BranchSearch],
     limit: int,
 ) -> CaseOutcome:
+    result, elapsed = await _search_case(case, searches, limit)
+    return _outcome(case, result.candidates, result.degraded, elapsed)
+
+
+async def _search_case(
+    case: EvaluationCase,
+    searches: Mapping[RetrievalBranch, BranchSearch],
+    limit: int,
+) -> tuple[HybridRetrieval, float]:
+    """Run one case's search; return the result and its wall time in seconds."""
     result: HybridRetrieval | None = None
     unexpected = "no result"
     started = time.perf_counter()
@@ -1009,8 +1182,47 @@ async def _run_case(
     # Raised outside the `except`, so no linked error carries the Question.
     if result is None:
         raise CaseFailed(f"case {case.case_id}: the search raised {unexpected}")
+    return result, elapsed
+
+
+async def _rerank_case(
+    case: EvaluationCase,
+    reranker: Reranker,
+    result: HybridRetrieval,
+    identity: RerankerIdentity,
+) -> RerankResult:
+    """Rerank one case's fused Candidates, and only those, with one model."""
+    reranked: RerankResult | None = None
+    failure = "no result"
+    try:
+        reranked = await rerank_candidates(
+            reranker,
+            case.question,
+            result.candidates,
+            request_id=uuid5(_REQUEST_IDS, f"rerank {case.case_id}"),
+            timeout_seconds=RERANK_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        # The reranker is outside code, and its message may quote a text.
+        failure = _error_names(error)
+    # Raised outside the `except`, so no linked error carries a text.
+    if reranked is None:
+        raise CaseFailed(f"case {case.case_id}: reranking raised {failure}")
+    # The report names one reranker; scores of another must not mix in.
+    if reranked.identity != identity:
+        raise CaseFailed(f"case {case.case_id}: the reranker changed its identity")
+    return reranked
+
+
+def _outcome(
+    case: EvaluationCase,
+    candidates: Sequence[Candidate],
+    degraded: bool,
+    elapsed: float,
+) -> CaseOutcome:
+    """Record where each relevant Chunk ranked; refuse any restricted one."""
     ranks: dict[tuple[str, str | None], int] = {}
-    for candidate in result.candidates:
+    for candidate in candidates:
         if candidate.source_id != SOURCE_IDS[Folder.PUBLIC]:
             raise IneligibleChunkRetrieved(
                 f"case {case.case_id} returned a Chunk the reader may not see"
@@ -1023,6 +1235,6 @@ async def _run_case(
         direction=case.direction,
         query_class=case.query_class,
         ranks=tuple(ranks.get((ref.external_id, ref.heading)) for ref in case.relevant),
-        degraded=result.degraded,
+        degraded=degraded,
         elapsed_seconds=elapsed,
     )

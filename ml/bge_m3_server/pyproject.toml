@@ -1,13 +1,14 @@
 [project]
 name = "bge-m3-server"
 version = "0.1.0"
-description = "Local BGE-M3 embedding server for the knowledge service (ML runtime)"
+description = "Local BGE-M3 embedding and reranker servers for the knowledge service (ML runtime)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "sentence-transformers>=5",
     "torch>=2.6",
+    "transformers>=5",
 ]
 
 [dependency-groups]
@@ -35,4 +36,4 @@ venv = ".venv"
 
 [tool.pytest.ini_options]
 addopts = ["--strict-markers"]
-markers = ["model: needs the pinned BGE-M3 files in the Hugging Face cache"]
+markers = ["model: needs the pinned model files in the Hugging Face cache"]

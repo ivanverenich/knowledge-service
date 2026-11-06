@@ -28,6 +28,14 @@ from knowledge_service.ingestion.sources import (
     SourceUnavailable,
 )
 from knowledge_service.model import ChatModelUnavailable
+from knowledge_service.retrieval.reranking import (
+    RerankerError,
+    RerankerIdentity,
+    RerankerTimeout,
+    RerankLimits,
+    check_rerank_inputs,
+    checked_scores,
+)
 
 
 class FakeChatModel:
@@ -280,4 +288,76 @@ class FakeSparseModel:
             [word_weights(text) for text in texts],
             expected=len(texts),
             vocabulary_size=FAKE_VOCABULARY,
+        )
+
+
+def shared_words(query: str, passage: str) -> float:
+    """Fake relevance: how many distinct lowercased words the two texts share."""
+    words = set(re.findall(r"\w+", query.lower()))
+    return float(len(words & set(re.findall(r"\w+", passage.lower()))))
+
+
+class FakeReranker:
+    """Deterministic Reranker over `shared_words`; records every call.
+
+    `delay_seconds` makes each call that long, within its own timeout.
+    `extra_scores` adds that many scores to every answer, to test a
+    malformed one.
+    """
+
+    def __init__(
+        self,
+        *,
+        limits: RerankLimits | None = None,
+        error: RerankerError | None = None,
+        delay_seconds: float = 0.0,
+        extra_scores: int = 0,
+    ) -> None:
+        self._identity = RerankerIdentity(provider="fake", model="fake-reranker")
+        self._limits = limits or RerankLimits(
+            max_passages=16, max_pair_tokens=1_000, max_request_tokens=4_000
+        )
+        self._error = error
+        self._delay_seconds = delay_seconds
+        self._extra_scores = extra_scores
+        self.calls: list[tuple[str, ...]] = []
+        self.timeouts: list[float] = []
+
+    @property
+    def identity(self) -> RerankerIdentity:
+        return self._identity
+
+    @property
+    def limits(self) -> RerankLimits:
+        return self._limits
+
+    def count_pair_tokens(self, query: str, passage: str) -> int:
+        return len(query.split()) + len(passage.split()) + 4
+
+    async def score(
+        self,
+        query: str,
+        passages: Sequence[str],
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> tuple[float, ...]:
+        if math.isnan(timeout_seconds):
+            raise ValueError("timeout_seconds must be a number")
+        check_rerank_inputs(query, passages, self._limits, self.count_pair_tokens)
+        if not passages:
+            return ()
+        self.calls.append(tuple(passages))
+        self.timeouts.append(timeout_seconds)
+        if self._delay_seconds:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    await asyncio.sleep(self._delay_seconds)
+            except TimeoutError:
+                raise RerankerTimeout() from None
+        if self._error is not None:
+            raise self._error
+        scores = [shared_words(query, passage) for passage in passages]
+        return checked_scores(
+            scores + [0.0] * self._extra_scores, expected=len(passages)
         )
