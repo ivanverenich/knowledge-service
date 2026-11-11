@@ -45,6 +45,14 @@ What a caller can rely on:
   rejected ranking keeps retrieval's order for that case and is counted,
   not raised. `render_llm_rerank_comparison` adds the fallbacks, the
   billed tokens, and the estimated cost.
+- **Compared across strategies.** `compare_reranking_strategies` searches
+  every case once, then gives the same Candidates to a cross-encoder and
+  to a RankingModel, so the strategies differ only in their order. Every
+  case is cross-encoded before any case is sent to the language model,
+  so a failing cross-encoder stops the run before anything is billed.
+  `render_strategy_comparison` puts no reranker, the cross-encoder, and
+  the language model side by side: quality, moves, fallbacks, latency,
+  and cost.
 - **Scored per slice.** `score_slices` turns the ranks into Recall@k and
   MRR for every language direction and query class (see
   `retrieval.ranking_metrics`).
@@ -334,6 +342,30 @@ class LLMRerankComparison:
     fallbacks: tuple[tuple[str, str], ...]
     usages: tuple[Usage, ...]
     cost_usd: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyComparison:
+    """No reranker, a cross-encoder, and a language model on the same Candidates.
+
+    `retrieved`, `cross_encoder`, and `llm` hold the same cases in the same
+    order; a reranked outcome's `elapsed_seconds` is that reranker's time
+    alone. `device` and `requests` describe the cross-encoder, as in
+    `RerankComparison`; `fallbacks`, `usages`, and `cost_usd` describe the
+    language model, as in `LLMRerankComparison`. `partial` lists, per case
+    the language model ranked without falling back, how many Candidates
+    fit its budget out of how many retrieval returned, when not all did.
+    """
+
+    retrieved: DatasetReport
+    cross_encoder: DatasetReport
+    llm: DatasetReport
+    device: str
+    requests: int
+    fallbacks: tuple[tuple[str, str], ...]
+    usages: tuple[Usage, ...]
+    cost_usd: Decimal | None
+    partial: tuple[tuple[str, int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -712,6 +744,107 @@ async def compare_llm_reranking(
     )
 
 
+async def compare_reranking_strategies(
+    runtime: DatabaseRuntime,
+    dataset: EvaluationDataset,
+    corpus: Path,
+    *,
+    observed_at: datetime,
+    model: EmbeddingModel,
+    reranker: Reranker,
+    device: str,
+    ranker: RankingModel,
+    budget: RankingBudget,
+    price: ModelPrice | None,
+    limit: int = DEFAULT_LIMIT,
+) -> StrategyComparison:
+    """Search every case once, then rerank the same Candidates two ways.
+
+    Each case runs dense and lexical search fused, as `compare_reranking`
+    does. Its Candidates, and nothing else, go to `reranker`, and once
+    every case is reranked, to `ranker` within `budget`, so the three
+    strategies differ only in their order. A cross-encoder failure stops
+    the run with `CaseFailed` before any case reaches the language model;
+    a failed ranking keeps retrieval's order and is listed in `fallbacks`.
+    Raises like `compare_llm_reranking`; `DatasetRunRefused` also when
+    both rerankers name the same identity, or when `limit` is above the
+    number of Candidates `budget` lets the language model see.
+    """
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise DatasetRunRefused(f"limit must be an int from 1 to {MAX_CANDIDATES}")
+    if limit > budget.max_candidates:
+        raise DatasetRunRefused("limit must not exceed the budget's max_candidates")
+    identity = _identity(model)
+    cross_identity = _reranker_identity(reranker)
+    llm_identity = _reranker_identity(ranker)
+    # The report tells the strategies apart by these names.
+    if cross_identity == llm_identity:
+        raise DatasetRunRefused("the two rerankers must have different identities")
+    await verify_corpus(dataset, corpus)
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=identity)
+    await _embed_corpus(runtime, model, observed_at)
+    searches: Mapping[RetrievalBranch, BranchSearch] = {
+        RetrievalBranch.DENSE: dense_branch(runtime, model),
+        RetrievalBranch.LEXICAL: lexical_branch(runtime),
+    }
+    results: list[HybridRetrieval] = []
+    retrieved: list[CaseOutcome] = []
+    cross: list[CaseOutcome] = []
+    requests = 0
+    for case in dataset.cases:
+        result, elapsed = await _search_case(case, searches, limit)
+        results.append(result)
+        retrieved.append(_outcome(case, result.candidates, result.degraded, elapsed))
+        started = time.perf_counter()
+        scored = await _rerank_case(case, reranker, result, cross_identity)
+        took = time.perf_counter() - started
+        requests += scored.requests
+        cross.append(_outcome(case, scored.candidates, result.degraded, took))
+    # Only now, so a cross-encoder failure leaves nothing billed.
+    llm: list[CaseOutcome] = []
+    fallbacks: list[tuple[str, str]] = []
+    usages: list[Usage] = []
+    partial: list[tuple[str, int, int]] = []
+    for case, result in zip(dataset.cases, results, strict=True):
+        started = time.perf_counter()
+        ranked = await _llm_rerank_case(case, ranker, result, budget, llm_identity)
+        took = time.perf_counter() - started
+        given = len(result.candidates)
+        if ranked.fallback is not None:
+            fallbacks.append((case.case_id, ranked.fallback))
+        elif ranked.ranked < given:
+            partial.append((case.case_id, ranked.ranked, given))
+        if ranked.usage is not None:
+            usages.append(ranked.usage)
+        llm.append(_outcome(case, ranked.candidates, result.degraded, took))
+    branches = tuple(branch for branch in RetrievalBranch if branch in searches)
+
+    def report(
+        outcomes: list[CaseOutcome], by: RerankerIdentity | None
+    ) -> DatasetReport:
+        return DatasetReport(
+            name=dataset.name,
+            version=dataset.version,
+            limit=limit,
+            branches=branches,
+            outcomes=tuple(outcomes),
+            embedding=identity,
+            reranker=by,
+        )
+
+    return StrategyComparison(
+        retrieved=report(retrieved, None),
+        cross_encoder=report(cross, cross_identity),
+        llm=report(llm, llm_identity),
+        device=device,
+        requests=requests,
+        fallbacks=tuple(fallbacks),
+        usages=tuple(usages),
+        cost_usd=_cost(usages, price),
+        partial=tuple(partial),
+    )
+
+
 def score_slices(report: DatasetReport) -> tuple[SliceScore, ...]:
     """Score every case together, then each direction, then each query class."""
     cutoffs = tuple(k for k in RECALL_CUTOFFS if k <= report.limit)
@@ -867,6 +1000,183 @@ def render_llm_rerank_comparison(comparison: LLMRerankComparison) -> str:
     return render_comparison((before, after)) + "\n".join(lines) + "\n"
 
 
+def render_strategy_comparison(comparison: StrategyComparison) -> str:
+    """Return no reranker, the cross-encoder, and the language model side by side.
+
+    Every strategy only reorders the same Candidates, so Recall at the
+    run's limit cannot change; quality is shown as Recall@1 and MRR.
+    Everything above "## Latency and cost" depends only on the data and the
+    models, although the language model may order differently between
+    runs and a timeout fallback depends on the run; that last section
+    changes from run to run. Raises `ValueError` when the three reports do
+    not describe the same cases in the same order, with no reranker, the
+    cross-encoder, and the language model in that order.
+    """
+    _check_strategies(comparison)
+    retrieved = comparison.retrieved
+    runs = (
+        ("none", retrieved),
+        ("cross-encoder", comparison.cross_encoder),
+        ("LLM", comparison.llm),
+    )
+    lines = [
+        f"# Reranking strategies: {retrieved.name} v{retrieved.version}",
+        "",
+        *_configuration((retrieved,)),
+        f"- Cross-encoder: {_reranker_name(comparison.cross_encoder)}.",
+        f"- Language model: {_reranker_name(comparison.llm)}.",
+        "- Both rerankers get the same Candidates of each case; the language"
+        " model orders those that fit its budget.",
+        "",
+        *_strategy_quality(runs),
+        "",
+        *_strategy_cases(runs),
+        "",
+        "## Fallbacks",
+        "",
+        "Cases where the language model's ranking was not used, and why.",
+        "",
+    ]
+    if comparison.fallbacks:
+        lines += ["| Case | Reason |", "|---|---|"]
+        lines += [f"| {case} | {reason} |" for case, reason in comparison.fallbacks]
+    else:
+        lines.append("- None.")
+    lines += [
+        "",
+        "Cases where only some Candidates fit the language model's budget:",
+        "",
+    ]
+    lines += [
+        f"- {case}: {ranked} of {given} ordered; the rest kept retrieval's order."
+        for case, ranked, given in comparison.partial
+    ] or ["- None."]
+    return "\n".join([*lines, "", *_strategy_costs(comparison)]) + "\n"
+
+
+def _check_strategies(comparison: StrategyComparison) -> None:
+    """Refuse three reports that do not line up case by case."""
+    runs = (comparison.retrieved, comparison.cross_encoder, comparison.llm)
+    first = runs[0]
+    for report in runs:
+        same = (report.name, report.version, report.limit, report.branches)
+        if same != (first.name, first.version, first.limit, first.branches):
+            raise ValueError("the three reports must come from one run")
+        cases = [o.case_id for o in report.outcomes]
+        if cases != [o.case_id for o in first.outcomes]:
+            raise ValueError("the three reports must hold the same cases in order")
+    cross, llm = comparison.cross_encoder.reranker, comparison.llm.reranker
+    if first.reranker is not None or cross is None or llm is None or cross == llm:
+        raise ValueError(
+            "expected no reranker, then two different rerankers, in that order"
+        )
+
+
+def _strategy_quality(runs: tuple[tuple[str, DatasetReport], ...]) -> list[str]:
+    """Recall@1 and MRR per slice, one pair of columns per strategy."""
+    lines = [
+        "## Quality by slice",
+        "",
+        "| Slice | Cases | "
+        + " | ".join(f"{name} R@1 | {name} MRR" for name, _ in runs)
+        + " |",
+        "|---|---:|" + "---:|---:|" * len(runs),
+    ]
+    scored = [score_slices(report) for _, report in runs]
+    for row in zip(*scored, strict=True):
+        cells = [f"{row[0].name} | {row[0].cases}"]
+        cells += [
+            f"{_number(dict(score.recall).get(1))} | {_number(score.mrr)}"
+            for score in row
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
+def _strategy_cases(runs: tuple[tuple[str, DatasetReport], ...]) -> list[str]:
+    """Each case's ranks per strategy, the moves, and where rerankers differ."""
+    lines = [
+        "## By case",
+        "",
+        "Where each case's relevant Chunks ranked under each strategy.",
+        "",
+        "| Case | Direction | Class | " + " | ".join(n for n, _ in runs) + " |",
+        "|---|---|---|" + "---|" * len(runs),
+    ]
+    rows = list(zip(*(report.outcomes for _, report in runs), strict=True))
+    for row in rows:
+        first = row[0]
+        lines.append(
+            f"| {first.case_id} | {first.direction} | {first.query_class} | "
+            + " | ".join(_ranks(outcome.ranks) for outcome in row)
+            + " |"
+        )
+    lines.append("")
+    for index, (name, _) in enumerate(runs[1:], start=1):
+        moves = Counter(_move(row[0], row[index]) for row in rows)
+        lines.append(
+            f"- {name} against none: up {moves['up']}, down {moves['down']},"
+            f" same {moves['same']}."
+        )
+    differ = [row[0].case_id for row in rows if len({o.ranks for o in row[1:]}) > 1]
+    lines.append(
+        f"- The rerankers rank differently in {len(differ)} of {len(rows)} cases"
+        + (": " + ", ".join(differ) + "." if differ else ".")
+    )
+    return lines
+
+
+def _strategy_costs(comparison: StrategyComparison) -> list[str]:
+    """What each step adds per case in time and money."""
+    cases = len(comparison.retrieved.outcomes)
+    usages, cost = comparison.usages, comparison.cost_usd
+    per_case = "unknown" if cost is None else f"{cost / max(cases, 1):.6f}"
+    lines = [
+        "## Latency and cost",
+        "",
+        "Per case. Times and tokens change from run to run.",
+        "",
+        f"- Cross-encoder device: {comparison.device}.",
+        "",
+        "| Step | Median ms | Slowest ms | Requests | USD per case |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    steps = (
+        ("retrieval", comparison.retrieved, cases, "0"),
+        ("cross-encoder", comparison.cross_encoder, comparison.requests, "0"),
+        ("LLM", comparison.llm, len(usages), per_case),
+    )
+    for name, report, requests, usd in steps:
+        median, slowest = _times(report)
+        lines.append(f"| {name} | {median:.1f} | {slowest:.1f} | {requests} | {usd} |")
+    lines += [
+        "",
+        "- The cross-encoder runs on a local server; it has no bill per request.",
+        f"- LLM tokens: {sum(u.input_tokens for u in usages)} in,"
+        f" {sum(u.output_tokens for u in usages)} out; estimated cost: "
+        + ("unknown" if cost is None else f"{cost:.6f} USD")
+        + ", at the configured list price.",
+    ]
+    return lines
+
+
+def _reranker_name(report: DatasetReport) -> str:
+    reranker = report.reranker
+    return "none" if reranker is None else f"{reranker.provider} {reranker.model}"
+
+
+def _move(old: CaseOutcome, new: CaseOutcome) -> str:
+    """Whether a case's best relevant rank got better, worse, or stayed."""
+    change = reciprocal_rank(new.ranks) - reciprocal_rank(old.ranks)
+    return "up" if change > 0 else "down" if change < 0 else "same"
+
+
+def _times(report: DatasetReport) -> tuple[float, float]:
+    """The median and slowest wall time per case, in milliseconds."""
+    times = [outcome.elapsed_seconds * 1000 for outcome in report.outcomes]
+    return statistics.median(times) if times else 0.0, max(times, default=0.0)
+
+
 def _delta_lines(before: DatasetReport, after: DatasetReport) -> list[str]:
     """Each case's ranks before and after reranking, and the moves counted."""
     moves = Counter[str]()
@@ -880,8 +1190,7 @@ def _delta_lines(before: DatasetReport, after: DatasetReport) -> list[str]:
         "|---|---|---|---|---|---|",
     ]
     for old, new in zip(before.outcomes, after.outcomes, strict=True):
-        change = reciprocal_rank(new.ranks) - reciprocal_rank(old.ranks)
-        move = "up" if change > 0 else "down" if change < 0 else "same"
+        move = _move(old, new)
         moves[move] += 1
         lines.append(
             f"| {old.case_id} | {old.direction} | {old.query_class}"
@@ -899,9 +1208,7 @@ def _latency_lines(before: DatasetReport, after: DatasetReport) -> list[str]:
     """Median and slowest wall time per case, for retrieval and reranking."""
     lines = ["| Step | Median ms | Slowest ms |", "|---|---:|---:|"]
     for name, report in (("retrieval", before), ("reranking", after)):
-        times = [outcome.elapsed_seconds * 1000 for outcome in report.outcomes]
-        median = statistics.median(times) if times else 0.0
-        slowest = max(times, default=0.0)
+        median, slowest = _times(report)
         lines.append(f"| {name} | {median:.1f} | {slowest:.1f} |")
     return lines
 

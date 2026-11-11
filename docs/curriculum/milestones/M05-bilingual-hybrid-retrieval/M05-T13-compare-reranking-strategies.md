@@ -7,7 +7,7 @@ depends_on: ["M05-T12"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["reranking comparison"]
-status: planned
+status: completed
 ---
 
 # M05-T13 — Compare reranking strategies
