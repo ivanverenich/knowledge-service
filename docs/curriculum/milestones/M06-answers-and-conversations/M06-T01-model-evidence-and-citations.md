@@ -7,7 +7,7 @@ depends_on: ["M05-T16"]
 estimate: 75m
 topics: ["generation","citations","sse"]
 deliverables: ["Evidence model","Citation model"]
-status: planned
+status: completed
 ---
 
 # M06-T01 — Model Evidence and Citations

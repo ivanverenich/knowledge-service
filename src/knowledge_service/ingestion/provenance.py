@@ -105,6 +105,20 @@ def chunk_sources(
     return tuple(_describe(parsed, text, starts, chunk, location) for chunk in chunks)
 
 
+def display_text(value: str) -> str:
+    """Return `value` cleaned for display as above, without cutting it."""
+    return _display_text(value)
+
+
+def display_excerpt(text: str) -> str:
+    """Return a Chunk text's first words, cleaned for display as above.
+
+    At most `EXCERPT_CHARACTERS` long, cut between words, with an ellipsis
+    when anything was cut.
+    """
+    return _excerpt(text)
+
+
 def display_url(url: str) -> str | None:
     """Return `url` safe to show, or None when it is not a web address."""
     if any(
