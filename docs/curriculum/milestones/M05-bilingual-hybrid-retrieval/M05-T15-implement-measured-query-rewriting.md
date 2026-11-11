@@ -7,7 +7,7 @@ depends_on: ["M05-T14"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["query-rewrite module","rewrite evaluation"]
-status: planned
+status: completed
 ---
 
 # M05-T15 — Implement measured query rewriting

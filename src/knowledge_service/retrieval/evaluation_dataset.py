@@ -53,6 +53,13 @@ What a caller can rely on:
   `render_strategy_comparison` puts no reranker, the cross-encoder, and
   the language model side by side: quality, moves, fallbacks, latency,
   and cost.
+- **Compared with query rewriting.** `load_rewrite_dataset` joins the
+  labelled rewrite cases (see `retrieval.rewrite_cases`) with the Chunks
+  that answer them, and `compare_rewriting` searches every case as typed
+  and, where its class may be rewritten, again with the checked rewrite
+  (see `retrieval.query_rewriting`). Only the Question and its earlier
+  Questions are sent to the rewriter. `retrieval.rewrite_evaluation`
+  scores the gain per class and decides which classes may be rolled out.
 - **Scored per slice.** `score_slices` turns the ranks into Recall@k and
   MRR for every language direction and query class (see
   `retrieval.ranking_metrics`).
@@ -70,7 +77,7 @@ import statistics
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -123,6 +130,14 @@ from knowledge_service.retrieval.llm_reranking import (
     RankingModel,
     rerank_with_llm,
 )
+from knowledge_service.retrieval.query_rewriting import (
+    RewriteModel,
+    RewriteOutcome,
+    RewritePolicy,
+    RewriteResult,
+    RewriterIdentity,
+    rewrite_question,
+)
 from knowledge_service.retrieval.ranking_metrics import (
     mean,
     recall_at,
@@ -134,6 +149,8 @@ from knowledge_service.retrieval.reranking import (
     RerankResult,
     rerank_candidates,
 )
+from knowledge_service.retrieval.rewrite_cases import RewriteCase, RewriteCaseSet
+from knowledge_service.retrieval.rewrite_classes import REWRITABLE, RewriteClass
 from knowledge_service.retrieval.sparse_search import (
     build_sparse_index,
     sparse_branch,
@@ -142,6 +159,7 @@ from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 
 DATASET_DIRECTORY = Path("datasets/bilingual-seed")
 CASES_FILE = "cases.json"
+REWRITE_RETRIEVAL_FILE = "rewrite-retrieval.json"
 CORPUS_DIRECTORY = "corpus"
 MAX_FILE_BYTES = 1_000_000
 MAX_NAME_CHARACTERS = 64
@@ -155,6 +173,7 @@ EMBEDDING_CONCURRENCY = 2
 EMBEDDING_TIMEOUT_SECONDS = 60.0
 RERANK_TIMEOUT_SECONDS = 60.0
 LLM_RERANK_TIMEOUT_SECONDS = 30.0
+REWRITE_TIMEOUT_SECONDS = 30.0
 
 MAX_PATH_CHARACTERS = 200
 
@@ -369,6 +388,48 @@ class StrategyComparison:
 
 
 @dataclass(frozen=True, slots=True)
+class RewriteDataset:
+    """Labelled rewrite cases and the Chunks that answer them, in one order.
+
+    `dataset.cases[i]` and `labelled[i]` are the same case: the first holds
+    the Chunks, the second the earlier Questions and the label.
+    """
+
+    dataset: EvaluationDataset
+    labelled: tuple[RewriteCase, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RewriteCaseOutcome:
+    """One case searched as typed and, if it was rewritten, as rewritten.
+
+    `after` equals `before` when the case was not rewritten. `fallback`
+    names the error type when a rewrite was asked for and not used.
+    """
+
+    case_id: str
+    rewrite_class: RewriteClass
+    outcome: RewriteOutcome
+    fallback: str | None
+    before: CaseOutcome
+    after: CaseOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class RewriteComparison:
+    """Every case as typed and as rewritten, and what the rewrites cost."""
+
+    name: str
+    version: int
+    limit: int
+    embedding: EmbeddingModelIdentity
+    rewriter: RewriterIdentity
+    cases: tuple[RewriteCaseOutcome, ...]
+    usages: tuple[Usage, ...]
+    cost_usd: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class SliceScore:
     """Recall@k and MRR over the cases of one slice.
 
@@ -409,8 +470,73 @@ class _DatasetFile(_File):
     cases: list[_CaseFile] = Field(min_length=1)
 
 
+class _RewriteCaseFile(_File):
+    id: str
+    evidence_language: Literal["en", "uk"]
+    query_class: Literal["plain", "identifier", "morphology"]
+    relevant: list[_ReferenceFile] = Field(min_length=1)
+    ineligible: list[_ReferenceFile] = Field(default_factory=list[_ReferenceFile])
+
+
+class _RewriteDatasetFile(_File):
+    name: str
+    version: int = Field(ge=1)
+    cases: list[_RewriteCaseFile] = Field(min_length=1)
+
+
 def load_dataset(path: Path) -> EvaluationDataset:
     """Read and check a cases file; raise `InvalidDataset` if it breaks a rule."""
+    try:
+        parsed = _DatasetFile.model_validate(_read_json(path))
+    except ValidationError as error:
+        raise InvalidDataset(_describe(error)) from None
+    return _dataset(parsed)
+
+
+def load_rewrite_dataset(path: Path, labelled: RewriteCaseSet) -> RewriteDataset:
+    """Join each labelled rewrite case with the Chunks that answer it.
+
+    Raises `InvalidDataset` for a file that breaks a rule of `load_dataset`,
+    for an ID used twice or with no labelled case, or for a case whose
+    Question word search would refuse.
+    """
+    try:
+        parsed = _RewriteDatasetFile.model_validate(_read_json(path))
+    except ValidationError as error:
+        raise InvalidDataset(_describe(error)) from None
+    if not _is_name(parsed.name):
+        raise InvalidDataset("name must be lowercase words joined by hyphens")
+    labels = {case.case_id: case for case in labelled.cases}
+    cases: list[EvaluationCase] = []
+    joined: list[RewriteCase] = []
+    for index, item in enumerate(parsed.cases):
+        label = labels.pop(item.id, None)
+        if label is None:
+            raise InvalidDataset(
+                f"cases.{index}.id names no labelled case, or one used twice"
+            )
+        joined.append(label)
+        cases.append(
+            _case(
+                _CaseFile(
+                    id=item.id,
+                    question=label.question,
+                    question_language=cast(Literal["en", "uk"], str(label.language)),
+                    evidence_language=item.evidence_language,
+                    query_class=item.query_class,
+                    relevant=item.relevant,
+                    ineligible=item.ineligible,
+                )
+            )
+        )
+    dataset = EvaluationDataset(
+        name=parsed.name, version=parsed.version, cases=tuple(cases)
+    )
+    return RewriteDataset(dataset=dataset, labelled=tuple(joined))
+
+
+def _read_json(path: Path) -> object:
+    """Read a small, strict JSON file; raise `InvalidDataset` if it is not one."""
     # A pipe or a device would block the read, or never end.
     if not path.is_file():
         raise InvalidDataset("the cases file is missing or not a regular file")
@@ -424,7 +550,7 @@ def load_dataset(path: Path) -> EvaluationDataset:
     if len(raw) > MAX_FILE_BYTES:
         raise InvalidDataset(f"the cases file is larger than {MAX_FILE_BYTES} bytes")
     try:
-        content = json.loads(
+        return json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_unique_keys,
             parse_constant=_no_constant,
@@ -432,11 +558,6 @@ def load_dataset(path: Path) -> EvaluationDataset:
     except ValueError, RecursionError:
         # UnicodeDecodeError and JSONDecodeError are both ValueErrors.
         raise InvalidDataset("the cases file is not valid UTF-8 JSON") from None
-    try:
-        parsed = _DatasetFile.model_validate(content)
-    except ValidationError as error:
-        raise InvalidDataset(_describe(error)) from None
-    return _dataset(parsed)
 
 
 async def verify_corpus(dataset: EvaluationDataset, corpus: Path) -> None:
@@ -842,6 +963,81 @@ async def compare_reranking_strategies(
         usages=tuple(usages),
         cost_usd=_cost(usages, price),
         partial=tuple(partial),
+    )
+
+
+async def compare_rewriting(
+    runtime: DatabaseRuntime,
+    rewrite: RewriteDataset,
+    corpus: Path,
+    *,
+    observed_at: datetime,
+    model: EmbeddingModel,
+    rewriter: RewriteModel,
+    price: ModelPrice | None,
+    limit: int = DEFAULT_LIMIT,
+) -> RewriteComparison:
+    """Ingest and embed the corpus once, then search each case as typed and rewritten.
+
+    Every rewritable class is switched on, so the run measures what each
+    class would gain. Each case runs dense and lexical search fused with
+    the Question as typed. If its rewrite is used, the case runs again with
+    the rewrite; otherwise its ranks stay the same. Only the Question and
+    its earlier Questions reach `rewriter`, never a Chunk. Raises like
+    `compare_branches`; a rewriter that raises an error outside its port,
+    or changes its identity, raises `CaseFailed`.
+    """
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise DatasetRunRefused(f"limit must be an int from 1 to {MAX_CANDIDATES}")
+    # Both searches and the rewriter must see one Question per case.
+    if type(rewrite) is not RewriteDataset or [
+        (case.case_id, case.question, case.question_language)
+        for case in rewrite.dataset.cases
+    ] != [(case.case_id, case.question, case.language) for case in rewrite.labelled]:
+        raise DatasetRunRefused("the rewrite dataset must come from its loader")
+    identity = _identity(model)
+    rewriter_identity = _rewriter_identity(rewriter)
+    dataset = rewrite.dataset
+    await verify_corpus(dataset, corpus)
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=identity)
+    await _embed_corpus(runtime, model, observed_at)
+    searches: Mapping[RetrievalBranch, BranchSearch] = {
+        RetrievalBranch.DENSE: dense_branch(runtime, model),
+        RetrievalBranch.LEXICAL: lexical_branch(runtime),
+    }
+    policy = RewritePolicy(REWRITABLE)
+    outcomes: list[RewriteCaseOutcome] = []
+    usages: list[Usage] = []
+    for case, label in zip(dataset.cases, rewrite.labelled, strict=True):
+        result, elapsed = await _search_case(case, searches, limit)
+        before = _outcome(case, result.candidates, result.degraded, elapsed)
+        rewritten = await _rewrite_case(label, rewriter, policy, rewriter_identity)
+        after = before
+        if rewritten.outcome is RewriteOutcome.REWRITTEN:
+            searched = replace(case, question=rewritten.search_text)
+            result, elapsed = await _search_case(searched, searches, limit)
+            after = _outcome(searched, result.candidates, result.degraded, elapsed)
+        if rewritten.usage is not None:
+            usages.append(rewritten.usage)
+        outcomes.append(
+            RewriteCaseOutcome(
+                case_id=case.case_id,
+                rewrite_class=rewritten.plan.rewrite_class,
+                outcome=rewritten.outcome,
+                fallback=rewritten.fallback,
+                before=before,
+                after=after,
+            )
+        )
+    return RewriteComparison(
+        name=dataset.name,
+        version=dataset.version,
+        limit=limit,
+        embedding=identity,
+        rewriter=rewriter_identity,
+        cases=tuple(outcomes),
+        usages=tuple(usages),
+        cost_usd=_cost(usages, price),
     )
 
 
@@ -1344,6 +1540,20 @@ def _reranker_identity(reranker: Reranker | RankingModel) -> RerankerIdentity:
     return identity
 
 
+def _rewriter_identity(rewriter: RewriteModel) -> RewriterIdentity:
+    # Read once here, so a rewriter that cannot name itself is refused
+    # before anything is written.
+    try:
+        identity = rewriter.identity
+    except Exception as error:
+        raise DatasetRunRefused(
+            f"the rewriter has no identity: {type(error).__name__}"
+        ) from None
+    if type(identity) is not RewriterIdentity:
+        raise DatasetRunRefused("the rewriter has no identity")
+    return identity
+
+
 def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     keys = [key for key, _ in pairs]
     if len(set(keys)) != len(keys):
@@ -1358,7 +1568,13 @@ def _no_constant(name: str) -> None:
 
 _FIELDS = frozenset(
     name
-    for model in (_DatasetFile, _CaseFile, _ReferenceFile)
+    for model in (
+        _DatasetFile,
+        _CaseFile,
+        _ReferenceFile,
+        _RewriteDatasetFile,
+        _RewriteCaseFile,
+    )
     for name in model.model_fields
 )
 
@@ -1708,6 +1924,36 @@ async def _llm_rerank_case(
     if ranked.identity != identity:
         raise CaseFailed(f"case {case.case_id}: the reranker changed its identity")
     return ranked
+
+
+async def _rewrite_case(
+    label: RewriteCase,
+    rewriter: RewriteModel,
+    policy: RewritePolicy,
+    identity: RewriterIdentity,
+) -> RewriteResult:
+    """Rewrite one case's Question, and only its conversation, with one model."""
+    rewritten: RewriteResult | None = None
+    failure = "no result"
+    try:
+        rewritten = await rewrite_question(
+            rewriter,
+            label.question,
+            language=label.language,
+            history=label.history,
+            policy=policy,
+            request_id=uuid5(_REQUEST_IDS, f"rewrite {label.case_id}"),
+            timeout_seconds=REWRITE_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        # Only a bug or a broken request gets here; its message may quote text.
+        failure = _error_names(error)
+    # Raised outside the `except`, so no linked error carries a text.
+    if rewritten is None:
+        raise CaseFailed(f"case {label.case_id}: rewriting raised {failure}")
+    if rewritten.identity != identity:
+        raise CaseFailed(f"case {label.case_id}: the rewriter changed its identity")
+    return rewritten
 
 
 def _cost(usages: Sequence[Usage], price: ModelPrice | None) -> Decimal | None:

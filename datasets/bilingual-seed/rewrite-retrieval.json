@@ -1,0 +1,204 @@
+{
+  "name": "bilingual-rewrite-retrieval",
+  "version": 1,
+  "cases": [
+    {
+      "id": "en-en-annual-leave-days",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/annual-leave.md", "heading": "Annual leave policy > Days per year"}
+      ],
+      "ineligible": [
+        {"document": "restricted/executive-leave.md", "heading": "Executive annual leave > Executive days per year"}
+      ]
+    },
+    {
+      "id": "en-en-expense-deadline",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Submission deadline"}
+      ]
+    },
+    {
+      "id": "en-en-vpn-first-connection",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Connecting for the first time"}
+      ]
+    },
+    {
+      "id": "en-en-error-exp-2041",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Error code EXP-2041"}
+      ]
+    },
+    {
+      "id": "en-en-error-vpn-4031",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Error VPN-4031"}
+      ]
+    },
+    {
+      "id": "en-en-renewed-certificate",
+      "evidence_language": "en",
+      "query_class": "morphology",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Error VPN-4031"}
+      ]
+    },
+    {
+      "id": "uk-uk-sick-first-day",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Перший день хвороби"}
+      ]
+    },
+    {
+      "id": "uk-uk-per-diem-abroad",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    },
+    {
+      "id": "uk-uk-form-it-0457",
+      "evidence_language": "uk",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/obladnannia.md", "heading": "Робоче обладнання > Замовлення ноутбука"}
+      ]
+    },
+    {
+      "id": "uk-uk-who-pays-sick-leaves",
+      "evidence_language": "uk",
+      "query_class": "morphology",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Оплата лікарняного"}
+      ]
+    },
+    {
+      "id": "uk-uk-order-laptops",
+      "evidence_language": "uk",
+      "query_class": "morphology",
+      "relevant": [
+        {"document": "public/obladnannia.md", "heading": "Робоче обладнання > Замовлення ноутбука"}
+      ]
+    },
+    {
+      "id": "en-uk-per-diem-abroad",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    },
+    {
+      "id": "en-uk-who-pays-sick-leave",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Оплата лікарняного"}
+      ]
+    },
+    {
+      "id": "uk-en-annual-leave-days",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/annual-leave.md", "heading": "Annual leave policy > Days per year"}
+      ],
+      "ineligible": [
+        {"document": "restricted/executive-leave.md", "heading": "Executive annual leave > Executive days per year"}
+      ]
+    },
+    {
+      "id": "uk-en-error-vpn-4031",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Error VPN-4031"}
+      ]
+    },
+    {
+      "id": "uk-en-lost-receipt",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Error code EXP-2041"}
+      ]
+    },
+    {
+      "id": "en-follow-up-abroad",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    },
+    {
+      "id": "uk-follow-up-abroad",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    },
+    {
+      "id": "uk-follow-up-his",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/likarnianyi.md", "heading": "Лікарняний > Оплата лікарняного"}
+      ]
+    },
+    {
+      "id": "en-follow-up-keeps-identifier",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Error code EXP-2041"}
+      ]
+    },
+    {
+      "id": "en-follow-up-number",
+      "evidence_language": "en",
+      "query_class": "identifier",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Error code EXP-2041"}
+      ]
+    },
+    {
+      "id": "en-new-topic-after-history",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/expense-reports.md", "heading": "Expense reports > Submission deadline"}
+      ]
+    },
+    {
+      "id": "uk-acronym-vpn",
+      "evidence_language": "en",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vpn-access.md", "heading": "Remote access with the VPN > Connecting for the first time"}
+      ]
+    },
+    {
+      "id": "uk-cross-language-per-diem",
+      "evidence_language": "uk",
+      "query_class": "plain",
+      "relevant": [
+        {"document": "public/vidriadzhennia.md", "heading": "Службові відрядження > Добові"}
+      ]
+    }
+  ]
+}

@@ -47,6 +47,17 @@ reranker server, and `KNOWLEDGE_SERVICE_MODEL_API_KEY`. It writes no
 reranker, the cross-encoder, and the language model side by side, with
 quality, moves, fallbacks, latency, and cost, to
 `artifacts/evaluations/bilingual-seed-reranking-strategies.md`.
+
+`--compare-rewriting` loads the labelled rewrite cases joined with the
+Chunks that answer them (`rewrite-retrieval.json`), runs the same fused
+search with each Question as typed, then asks an OpenAI model
+(`QUERY_REWRITE_MODEL`) to rewrite every Question whose class may be
+rewritten, and searches again with each checked rewrite. It needs the
+BGE-M3 server and `KNOWLEDGE_SERVICE_MODEL_API_KEY`; only the Questions and
+their earlier Questions are sent. It writes the gain per class and the
+rollout decision to `artifacts/evaluations/bilingual-seed-rewriting.md`,
+and exits 1 when `QUERY_REWRITE_CLASSES` switches on a class the run did
+not allow.
 """
 
 import argparse
@@ -59,7 +70,7 @@ from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
 from knowledge_service.embeddings.local_adapter import (
@@ -76,14 +87,18 @@ from knowledge_service.retrieval.evaluation_dataset import (
     CORPUS_DIRECTORY,
     DATASET_DIRECTORY,
     DEFAULT_LIMIT,
+    REWRITE_RETRIEVAL_FILE,
     DatasetError,
     EvaluationDataset,
+    RewriteDataset,
     compare_branches,
     compare_llm_reranking,
     compare_reranking,
     compare_reranking_strategies,
+    compare_rewriting,
     compare_sparse,
     load_dataset,
+    load_rewrite_dataset,
     render_comparison,
     render_llm_rerank_comparison,
     render_report,
@@ -102,7 +117,22 @@ from knowledge_service.retrieval.openai_ranking import (
     OpenAIRankingModel,
     OpenAIRankingSettings,
 )
+from knowledge_service.retrieval.openai_rewriting import (
+    OpenAIRewriteModel,
+    QueryRewriteSettings,
+)
 from knowledge_service.retrieval.reranking import RerankerError
+from knowledge_service.retrieval.rewrite_cases import (
+    REWRITE_CASES_FILE,
+    InvalidRewriteCases,
+    load_rewrite_cases,
+)
+from knowledge_service.retrieval.rewrite_evaluation import (
+    RolloutRefused,
+    check_rollout,
+    render_rewrite_comparison,
+    score_rewriting,
+)
 from knowledge_service.settings import Settings
 
 REPORT = Path("artifacts/evaluations/bilingual-seed.md")
@@ -112,6 +142,7 @@ SPARSE_REPORT = Path("artifacts/evaluations/bilingual-seed-sparse.md")
 RERANK_REPORT = Path("artifacts/evaluations/bilingual-seed-rerank.md")
 LLM_RERANK_REPORT = Path("artifacts/evaluations/bilingual-seed-llm-rerank.md")
 STRATEGIES_REPORT = Path("artifacts/evaluations/bilingual-seed-reranking-strategies.md")
+REWRITING_REPORT = Path("artifacts/evaluations/bilingual-seed-rewriting.md")
 SERVER_CHECK_SECONDS = 10.0
 
 type ModelSource = Callable[[], AbstractAsyncContextManager[EmbeddingModel]]
@@ -130,7 +161,9 @@ def main() -> int:
     embeddings.add_argument("--rerank", action="store_true")
     embeddings.add_argument("--llm-rerank", action="store_true")
     embeddings.add_argument("--compare-rerankers", action="store_true")
+    embeddings.add_argument("--compare-rewriting", action="store_true")
     arguments = parser.parse_args()
+    refusal: str | None = None
     corpus = arguments.dataset / CORPUS_DIRECTORY
     try:
         dataset = load_dataset(arguments.dataset / CASES_FILE)
@@ -149,6 +182,9 @@ def main() -> int:
         ranks = arguments.llm_rerank or arguments.compare_rerankers
         if ranks and api_key is None:
             sys.stderr.write("set KNOWLEDGE_SERVICE_MODEL_API_KEY to rank with\n")
+            return 1
+        if arguments.compare_rewriting and api_key is None:
+            sys.stderr.write("set KNOWLEDGE_SERVICE_MODEL_API_KEY to rewrite with\n")
             return 1
         source: ModelSource | None = None
         default = REPORT
@@ -177,12 +213,30 @@ def main() -> int:
             rendered = asyncio.run(
                 _run_strategies(runtime, dataset, corpus, arguments.limit, api_key)
             )
+        elif arguments.compare_rewriting and api_key is not None:
+            default = REWRITING_REPORT
+            # Read before the run, so a bad flag stops it before anything is sent.
+            rewrite_settings = QueryRewriteSettings()
+            rewrite = load_rewrite_dataset(
+                arguments.dataset / REWRITE_RETRIEVAL_FILE,
+                load_rewrite_cases(REWRITE_CASES_FILE),
+            )
+            rendered, refusal = asyncio.run(
+                _run_rewriting(
+                    runtime, rewrite, corpus, arguments.limit, api_key, rewrite_settings
+                )
+            )
         else:
             rendered = asyncio.run(
                 _run(runtime, dataset, corpus, arguments.limit, source)
             )
-    except DatasetError as error:
+    except (DatasetError, InvalidRewriteCases) as error:
         sys.stderr.write(f"dataset run failed: {error}\n")
+        return 1
+    except ValidationError as error:
+        # Field names only: a value may be a secret.
+        fields = sorted({str(item["loc"][0]) for item in error.errors() if item["loc"]})
+        sys.stderr.write(f"a setting is invalid: {', '.join(fields)}\n")
         return 1
     except EmbeddingError as error:
         sys.stderr.write(f"the embedding model is not ready: {error!r}\n")
@@ -194,6 +248,9 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(rendered, encoding="utf-8")
     sys.stdout.write(f"{rendered}\nFull report: {output}\n")
+    if refusal is not None:
+        sys.stderr.write(f"rollout refused: {refusal}\n")
+        return 1
     return 0
 
 
@@ -340,6 +397,41 @@ async def _run_strategies(
         return render_strategy_comparison(comparison)
     finally:
         await runtime.dispose()
+
+
+async def _run_rewriting(
+    runtime: DatabaseRuntime,
+    rewrite: RewriteDataset,
+    corpus: Path,
+    limit: int,
+    api_key: SecretStr,
+    settings: QueryRewriteSettings,
+) -> tuple[str, str | None]:
+    """Run the comparison; return the report and why the policy is refused."""
+    try:
+        async with (
+            _local_model() as model,
+            AsyncOpenAI(api_key=api_key.get_secret_value()) as openai,
+        ):
+            rewriter = OpenAIRewriteModel(openai, settings)
+            comparison = await compare_rewriting(
+                runtime,
+                rewrite,
+                corpus,
+                observed_at=datetime.now(UTC),
+                model=model,
+                rewriter=rewriter,
+                price=rewriter.price,
+                limit=limit,
+            )
+    finally:
+        await runtime.dispose()
+    gains = score_rewriting(comparison)
+    try:
+        check_rollout(settings.policy, gains)
+    except RolloutRefused as error:
+        return render_rewrite_comparison(comparison, gains), str(error)
+    return render_rewrite_comparison(comparison, gains), None
 
 
 def _openai_model(api_key: SecretStr) -> ModelSource:
