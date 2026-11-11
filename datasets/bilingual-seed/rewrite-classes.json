@@ -1,0 +1,286 @@
+{
+  "name": "bilingual-rewrite-classes",
+  "version": 1,
+  "cases": [
+    {
+      "id": "en-en-annual-leave-days",
+      "question": "How many days of annual leave does an employee get per year?",
+      "question_language": "en",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "en-en-expense-deadline",
+      "question": "What is the deadline for submitting an expense report?",
+      "question_language": "en",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "en-en-vpn-first-connection",
+      "question": "How do I connect to the VPN for the first time?",
+      "question_language": "en",
+      "rewrite_class": "acronym",
+      "preserve": [
+        "VPN"
+      ]
+    },
+    {
+      "id": "en-en-error-exp-2041",
+      "question": "What does error EXP-2041 mean?",
+      "question_language": "en",
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "EXP-2041"
+      ]
+    },
+    {
+      "id": "en-en-error-vpn-4031",
+      "question": "VPN-4031",
+      "question_language": "en",
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "VPN-4031"
+      ]
+    },
+    {
+      "id": "en-en-renewed-certificate",
+      "question": "How is an expired device certificate renewed?",
+      "question_language": "en",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "uk-uk-sick-first-day",
+      "question": "Що робити в перший день хвороби?",
+      "question_language": "uk",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "uk-uk-per-diem-abroad",
+      "question": "Які добові за кордоном?",
+      "question_language": "uk",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "uk-uk-form-it-0457",
+      "question": "Як заповнити форму ІТ-0457?",
+      "question_language": "uk",
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "ІТ-0457"
+      ]
+    },
+    {
+      "id": "uk-uk-who-pays-sick-leaves",
+      "question": "Хто оплачує лікарняні?",
+      "question_language": "uk",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "uk-uk-order-laptops",
+      "question": "Як замовити ноутбуки?",
+      "question_language": "uk",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "en-uk-per-diem-abroad",
+      "question": "How much is the daily allowance for business trips abroad?",
+      "question_language": "en",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "en-uk-who-pays-sick-leave",
+      "question": "Who pays for sick leave?",
+      "question_language": "en",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "uk-en-annual-leave-days",
+      "question": "Скільки днів щорічної відпустки має працівник?",
+      "question_language": "uk",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "uk-en-error-vpn-4031",
+      "question": "Що означає помилка VPN-4031?",
+      "question_language": "uk",
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "VPN-4031"
+      ]
+    },
+    {
+      "id": "uk-en-lost-receipt",
+      "question": "Що робити, якщо загубився чек?",
+      "question_language": "uk",
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "en-follow-up-abroad",
+      "question": "And abroad?",
+      "question_language": "en",
+      "history": [
+        "How much is the daily allowance for business trips?"
+      ],
+      "rewrite_class": "follow_up"
+    },
+    {
+      "id": "en-follow-up-it",
+      "question": "How long does it take to arrive?",
+      "question_language": "en",
+      "history": [
+        "How do I renew a device certificate?"
+      ],
+      "rewrite_class": "follow_up"
+    },
+    {
+      "id": "uk-follow-up-abroad",
+      "question": "А за кордоном?",
+      "question_language": "uk",
+      "history": [
+        "Які добові у відрядженні по Україні?"
+      ],
+      "rewrite_class": "follow_up"
+    },
+    {
+      "id": "uk-follow-up-his",
+      "question": "Скільки днів його оплачують?",
+      "question_language": "uk",
+      "history": [
+        "Хто оплачує лікарняний?"
+      ],
+      "rewrite_class": "follow_up"
+    },
+    {
+      "id": "en-follow-up-keeps-identifier",
+      "question": "How do I fix it for EXP-2041?",
+      "question_language": "en",
+      "history": [
+        "What does error EXP-2041 mean?"
+      ],
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "EXP-2041"
+      ]
+    },
+    {
+      "id": "en-follow-up-number",
+      "question": "And error 2041?",
+      "question_language": "en",
+      "history": [
+        "What does error EXP-2041 mean?"
+      ],
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "2041"
+      ]
+    },
+    {
+      "id": "en-follow-up-error-code",
+      "question": "And ERR_TIMEOUT?",
+      "question_language": "en",
+      "history": [
+        "What does error EXP-2041 mean?"
+      ],
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "ERR_TIMEOUT"
+      ]
+    },
+    {
+      "id": "en-follow-up-address",
+      "question": "What about hr@example.com?",
+      "question_language": "en",
+      "history": [
+        "Who answers questions about annual leave?"
+      ],
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "hr@example.com"
+      ]
+    },
+    {
+      "id": "uk-path-in-question",
+      "question": "Як змінити файл /etc/hosts?",
+      "question_language": "uk",
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        "/etc/hosts"
+      ]
+    },
+    {
+      "id": "en-follow-up-dotfile",
+      "question": "And .env?",
+      "question_language": "en",
+      "history": [
+        "Where do I keep the database password?"
+      ],
+      "rewrite_class": "exact_identifier",
+      "preserve": [
+        ".env"
+      ]
+    },
+    {
+      "id": "en-new-topic-after-history",
+      "question": "What is the deadline for submitting an expense report?",
+      "question_language": "en",
+      "history": [
+        "How many days of annual leave do I get?"
+      ],
+      "rewrite_class": "self_contained"
+    },
+    {
+      "id": "en-acronym-sso",
+      "question": "Where do I reset my SSO password?",
+      "question_language": "en",
+      "rewrite_class": "acronym",
+      "preserve": [
+        "SSO"
+      ]
+    },
+    {
+      "id": "uk-acronym-pdfo",
+      "question": "Який ПДФО з добових?",
+      "question_language": "uk",
+      "rewrite_class": "acronym",
+      "preserve": [
+        "ПДФО"
+      ]
+    },
+    {
+      "id": "uk-acronym-vpn",
+      "question": "Як підключитися до VPN з дому?",
+      "question_language": "uk",
+      "rewrite_class": "acronym",
+      "preserve": [
+        "VPN"
+      ]
+    },
+    {
+      "id": "uk-cross-language-outlook",
+      "question": "Як налаштувати пошту в Outlook?",
+      "question_language": "uk",
+      "rewrite_class": "cross_language",
+      "preserve": [
+        "Outlook"
+      ]
+    },
+    {
+      "id": "en-cross-language-likarnianyi",
+      "question": "Who approves a лікарняний?",
+      "question_language": "en",
+      "rewrite_class": "cross_language",
+      "preserve": [
+        "лікарняний"
+      ]
+    },
+    {
+      "id": "uk-cross-language-per-diem",
+      "question": "Скільки становить per diem у відрядженні?",
+      "question_language": "uk",
+      "rewrite_class": "cross_language",
+      "preserve": [
+        "per",
+        "diem"
+      ]
+    }
+  ]
+}

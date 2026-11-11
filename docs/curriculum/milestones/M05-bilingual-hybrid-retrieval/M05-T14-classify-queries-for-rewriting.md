@@ -7,7 +7,7 @@ depends_on: ["M05-T13"]
 estimate: 60m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["query-class taxonomy"]
-status: planned
+status: completed
 ---
 
 # M05-T14 — Classify queries for rewriting
