@@ -32,6 +32,14 @@ which must already run the pinned revision; start it with
 `uv run --project ml/bge_m3_server python ml/bge_m3_server/reranker_server.py`.
 It writes the ranking delta and the latency on the reranker's device to
 `artifacts/evaluations/bilingual-seed-rerank.md`.
+
+`--llm-rerank` runs the same fused search, then asks an OpenAI model
+(`LLM_RERANK_MODEL`, default `gpt-5.4-mini-2026-03-17`) to order each
+case's top Candidates, using `KNOWLEDGE_SERVICE_MODEL_API_KEY`. Only the
+question and the text of Candidates the reader may see are sent, under
+random IDs. It writes the ranking delta, the fallbacks, the timing, and
+the billed tokens with their estimated cost to
+`artifacts/evaluations/bilingual-seed-llm-rerank.md`.
 """
 
 import argparse
@@ -64,19 +72,26 @@ from knowledge_service.retrieval.evaluation_dataset import (
     DatasetError,
     EvaluationDataset,
     compare_branches,
+    compare_llm_reranking,
     compare_reranking,
     compare_sparse,
     load_dataset,
     render_comparison,
+    render_llm_rerank_comparison,
     render_report,
     render_rerank_comparison,
     render_sparse_comparison,
     run_dataset,
     verify_corpus,
 )
+from knowledge_service.retrieval.llm_reranking import RankingBudget
 from knowledge_service.retrieval.local_reranker import (
     LocalReranker,
     LocalRerankerSettings,
+)
+from knowledge_service.retrieval.openai_ranking import (
+    OpenAIRankingModel,
+    OpenAIRankingSettings,
 )
 from knowledge_service.retrieval.reranking import RerankerError
 from knowledge_service.settings import Settings
@@ -86,6 +101,7 @@ MANAGED_REPORT = Path("artifacts/evaluations/bilingual-seed-managed.md")
 LOCAL_REPORT = Path("artifacts/evaluations/bilingual-seed-local.md")
 SPARSE_REPORT = Path("artifacts/evaluations/bilingual-seed-sparse.md")
 RERANK_REPORT = Path("artifacts/evaluations/bilingual-seed-rerank.md")
+LLM_RERANK_REPORT = Path("artifacts/evaluations/bilingual-seed-llm-rerank.md")
 SERVER_CHECK_SECONDS = 10.0
 
 type ModelSource = Callable[[], AbstractAsyncContextManager[EmbeddingModel]]
@@ -102,6 +118,7 @@ def main() -> int:
     embeddings.add_argument("--local-embeddings", action="store_true")
     embeddings.add_argument("--sparse", action="store_true")
     embeddings.add_argument("--rerank", action="store_true")
+    embeddings.add_argument("--llm-rerank", action="store_true")
     arguments = parser.parse_args()
     corpus = arguments.dataset / CORPUS_DIRECTORY
     try:
@@ -117,6 +134,9 @@ def main() -> int:
             sys.stderr.write(
                 "set KNOWLEDGE_SERVICE_MODEL_API_KEY to embed the corpus\n"
             )
+            return 1
+        if arguments.llm_rerank and api_key is None:
+            sys.stderr.write("set KNOWLEDGE_SERVICE_MODEL_API_KEY to rank with\n")
             return 1
         source: ModelSource | None = None
         default = REPORT
@@ -134,6 +154,11 @@ def main() -> int:
             default = RERANK_REPORT
             rendered = asyncio.run(
                 _run_rerank(runtime, dataset, corpus, arguments.limit)
+            )
+        elif arguments.llm_rerank and api_key is not None:
+            default = LLM_RERANK_REPORT
+            rendered = asyncio.run(
+                _run_llm_rerank(runtime, dataset, corpus, arguments.limit, api_key)
             )
         else:
             rendered = asyncio.run(
@@ -224,6 +249,39 @@ async def _run_rerank(
             )
         return render_rerank_comparison(comparison)
     finally:
+        await runtime.dispose()
+
+
+async def _run_llm_rerank(
+    runtime: DatabaseRuntime,
+    dataset: EvaluationDataset,
+    corpus: Path,
+    limit: int,
+    api_key: SecretStr,
+) -> str:
+    settings = OpenAIRankingSettings()
+    budget = RankingBudget(
+        max_candidates=settings.max_candidates,
+        max_input_tokens=settings.max_input_tokens,
+    )
+    client = AsyncOpenAI(api_key=api_key.get_secret_value())
+    try:
+        async with _local_model() as model:
+            ranker = OpenAIRankingModel(client, settings)
+            comparison = await compare_llm_reranking(
+                runtime,
+                dataset,
+                corpus,
+                observed_at=datetime.now(UTC),
+                model=model,
+                ranker=ranker,
+                budget=budget,
+                price=ranker.price,
+                limit=limit,
+            )
+        return render_llm_rerank_comparison(comparison)
+    finally:
+        await client.close()
         await runtime.dispose()
 
 

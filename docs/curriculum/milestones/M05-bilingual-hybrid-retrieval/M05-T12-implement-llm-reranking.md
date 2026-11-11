@@ -7,7 +7,7 @@ depends_on: ["M05-T11"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["LLM reranker adapter"]
-status: planned
+status: completed
 ---
 
 # M05-T12 — Implement LLM reranking

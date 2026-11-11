@@ -39,6 +39,12 @@ What a caller can rely on:
   `retrieval.reranking`). Only Candidates that passed the permission check
   reach the reranker. `render_rerank_comparison` reports the ranking delta
   per case and the reranking time on the reranker's device.
+- **Compared with LLM reranking.** `compare_llm_reranking` does the same
+  with a RankingModel (see `retrieval.llm_reranking`), which orders each
+  case's top Candidates in one request under a strict budget. A failed or
+  rejected ranking keeps retrieval's order for that case and is counted,
+  not raised. `render_llm_rerank_comparison` adds the fallbacks, the
+  billed tokens, and the estimated cost.
 - **Scored per slice.** `score_slices` turns the ranks into Recall@k and
   MRR for every language direction and query class (see
   `retrieval.ranking_metrics`).
@@ -58,6 +64,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
 from pathlib import Path
@@ -68,6 +75,7 @@ import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from knowledge_service.access import AuthorizationContext
+from knowledge_service.contracts import Usage
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.embeddings.port import EmbeddingModel, EmbeddingModelIdentity
 from knowledge_service.embeddings.publication import (
@@ -89,6 +97,7 @@ from knowledge_service.language import Language
 from knowledge_service.persistence.documents import load_available_documents
 from knowledge_service.persistence.embeddings import insert_embedding_space
 from knowledge_service.persistence.schema import embedding_spaces, sources
+from knowledge_service.pricing import ModelPrice, estimate_cost
 from knowledge_service.retrieval.candidates import Candidate
 from knowledge_service.retrieval.fusion import DEFAULT_RRF_K, RetrievalBranch
 from knowledge_service.retrieval.hybrid import (
@@ -100,6 +109,12 @@ from knowledge_service.retrieval.hybrid import (
     retrieve_hybrid,
 )
 from knowledge_service.retrieval.lexical_search import MAX_QUERY_CHARACTERS
+from knowledge_service.retrieval.llm_reranking import (
+    LLMRerankResult,
+    RankingBudget,
+    RankingModel,
+    rerank_with_llm,
+)
 from knowledge_service.retrieval.ranking_metrics import (
     mean,
     recall_at,
@@ -131,6 +146,7 @@ RECALL_CUTOFFS = (1, 3, 5, 10)
 EMBEDDING_CONCURRENCY = 2
 EMBEDDING_TIMEOUT_SECONDS = 60.0
 RERANK_TIMEOUT_SECONDS = 60.0
+LLM_RERANK_TIMEOUT_SECONDS = 30.0
 
 MAX_PATH_CHARACTERS = 200
 
@@ -300,6 +316,24 @@ class RerankComparison:
     reranked: DatasetReport
     device: str
     requests: int
+
+
+@dataclass(frozen=True, slots=True)
+class LLMRerankComparison:
+    """Fused retrieval before and after LLM reranking, and what it cost.
+
+    `retrieved` and `reranked` hold the same cases; a reranked outcome's
+    `elapsed_seconds` is the ranking time alone. `fallbacks` names, per
+    case that kept retrieval's order, the error type. `usages` holds every
+    billed answer, and `cost_usd` their estimated cost, or None when no
+    price is known for one of them.
+    """
+
+    retrieved: DatasetReport
+    reranked: DatasetReport
+    fallbacks: tuple[tuple[str, str], ...]
+    usages: tuple[Usage, ...]
+    cost_usd: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +643,75 @@ async def compare_reranking(
     )
 
 
+async def compare_llm_reranking(
+    runtime: DatabaseRuntime,
+    dataset: EvaluationDataset,
+    corpus: Path,
+    *,
+    observed_at: datetime,
+    model: EmbeddingModel,
+    ranker: RankingModel,
+    budget: RankingBudget,
+    price: ModelPrice | None,
+    limit: int = DEFAULT_LIMIT,
+) -> LLMRerankComparison:
+    """Ingest and embed the corpus once, run every case fused, then LLM-rerank it.
+
+    Each case runs dense and lexical search fused, as `compare_reranking`
+    does, and sends that case's top fused Candidates, and nothing else, to
+    `ranker` within `budget`. A case whose ranking fails keeps retrieval's
+    order and is listed in `fallbacks`. Raises like `compare_reranking`.
+    """
+    if type(limit) is not int or not 1 <= limit <= MAX_CANDIDATES:
+        raise DatasetRunRefused(f"limit must be an int from 1 to {MAX_CANDIDATES}")
+    identity = _identity(model)
+    ranker_identity = _reranker_identity(ranker)
+    await verify_corpus(dataset, corpus)
+    await _ingest(runtime, dataset, corpus, observed_at, embedding=identity)
+    await _embed_corpus(runtime, model, observed_at)
+    searches: Mapping[RetrievalBranch, BranchSearch] = {
+        RetrievalBranch.DENSE: dense_branch(runtime, model),
+        RetrievalBranch.LEXICAL: lexical_branch(runtime),
+    }
+    retrieved: list[CaseOutcome] = []
+    reranked: list[CaseOutcome] = []
+    fallbacks: list[tuple[str, str]] = []
+    usages: list[Usage] = []
+    for case in dataset.cases:
+        result, elapsed = await _search_case(case, searches, limit)
+        retrieved.append(_outcome(case, result.candidates, result.degraded, elapsed))
+        started = time.perf_counter()
+        ordered = await _llm_rerank_case(case, ranker, result, budget, ranker_identity)
+        took = time.perf_counter() - started
+        if ordered.fallback is not None:
+            fallbacks.append((case.case_id, ordered.fallback))
+        if ordered.usage is not None:
+            usages.append(ordered.usage)
+        reranked.append(_outcome(case, ordered.candidates, result.degraded, took))
+    branches = tuple(branch for branch in RetrievalBranch if branch in searches)
+
+    def report(
+        outcomes: list[CaseOutcome], by: RerankerIdentity | None
+    ) -> DatasetReport:
+        return DatasetReport(
+            name=dataset.name,
+            version=dataset.version,
+            limit=limit,
+            branches=branches,
+            outcomes=tuple(outcomes),
+            embedding=identity,
+            reranker=by,
+        )
+
+    return LLMRerankComparison(
+        retrieved=report(retrieved, None),
+        reranked=report(reranked, ranker_identity),
+        fallbacks=tuple(fallbacks),
+        usages=tuple(usages),
+        cost_usd=_cost(usages, price),
+    )
+
+
 def score_slices(report: DatasetReport) -> tuple[SliceScore, ...]:
     """Score every case together, then each direction, then each query class."""
     cutoffs = tuple(k for k in RECALL_CUTOFFS if k <= report.limit)
@@ -705,6 +808,67 @@ def render_rerank_comparison(comparison: RerankComparison) -> str:
     section changes from run to run.
     """
     before, after = comparison.retrieved, comparison.reranked
+    lines = [
+        *_delta_lines(before, after),
+        "",
+        "## Latency",
+        "",
+        "Wall time per case. It changes from run to run.",
+        "",
+        f"- Reranker device: {comparison.device}.",
+        f"- Requests to the reranker: {comparison.requests}"
+        f" for {len(after.outcomes)} cases.",
+        "",
+        *_latency_lines(before, after),
+    ]
+    return render_comparison((before, after)) + "\n".join(lines) + "\n"
+
+
+def render_llm_rerank_comparison(comparison: LLMRerankComparison) -> str:
+    """Return the side-by-side report, each case's move, fallbacks, timing, cost.
+
+    A language model may order the same Candidates differently on two runs,
+    so unlike the cross-encoder report, two runs may differ above
+    "## Latency"; compare them case by case.
+    """
+    before, after = comparison.retrieved, comparison.reranked
+    lines = [
+        *_delta_lines(before, after),
+        "",
+        "## Fallbacks",
+        "",
+        "Cases that kept retrieval's order, and why.",
+        "",
+    ]
+    if comparison.fallbacks:
+        lines += ["| Case | Reason |", "|---|---|"]
+        lines += [f"| {case} | {reason} |" for case, reason in comparison.fallbacks]
+    else:
+        lines.append("- None.")
+    usages = comparison.usages
+    cost = comparison.cost_usd
+    lines += [
+        "",
+        "## Latency",
+        "",
+        "Wall time per case. It changes from run to run.",
+        "",
+        *_latency_lines(before, after),
+        "",
+        "## Cost",
+        "",
+        f"- Billed answers: {len(usages)} for {len(after.outcomes)} cases.",
+        f"- Input tokens: {sum(u.input_tokens for u in usages)};"
+        f" output tokens: {sum(u.output_tokens for u in usages)}.",
+        "- Estimated cost: "
+        + ("unknown" if cost is None else f"{cost:.6f} USD")
+        + ", at the configured list price.",
+    ]
+    return render_comparison((before, after)) + "\n".join(lines) + "\n"
+
+
+def _delta_lines(before: DatasetReport, after: DatasetReport) -> list[str]:
+    """Each case's ranks before and after reranking, and the moves counted."""
     moves = Counter[str]()
     lines = [
         "",
@@ -727,24 +891,19 @@ def render_rerank_comparison(comparison: RerankComparison) -> str:
         "",
         f"- Moved up: {moves['up']}; moved down: {moves['down']};"
         f" unchanged: {moves['same']}.",
-        "",
-        "## Latency",
-        "",
-        "Wall time per case. It changes from run to run.",
-        "",
-        f"- Reranker device: {comparison.device}.",
-        f"- Requests to the reranker: {comparison.requests}"
-        f" for {len(after.outcomes)} cases.",
-        "",
-        "| Step | Median ms | Slowest ms |",
-        "|---|---:|---:|",
     ]
+    return lines
+
+
+def _latency_lines(before: DatasetReport, after: DatasetReport) -> list[str]:
+    """Median and slowest wall time per case, for retrieval and reranking."""
+    lines = ["| Step | Median ms | Slowest ms |", "|---|---:|---:|"]
     for name, report in (("retrieval", before), ("reranking", after)):
         times = [outcome.elapsed_seconds * 1000 for outcome in report.outcomes]
         median = statistics.median(times) if times else 0.0
         slowest = max(times, default=0.0)
         lines.append(f"| {name} | {median:.1f} | {slowest:.1f} |")
-    return render_comparison((before, after)) + "\n".join(lines) + "\n"
+    return lines
 
 
 def render_report(report: DatasetReport) -> str:
@@ -866,7 +1025,7 @@ def _identity(model: EmbeddingModel) -> EmbeddingModelIdentity:
     return identity
 
 
-def _reranker_identity(reranker: Reranker) -> RerankerIdentity:
+def _reranker_identity(reranker: Reranker | RankingModel) -> RerankerIdentity:
     # Read once here, so a reranker that cannot name itself is refused before
     # anything is written.
     try:
@@ -1212,6 +1371,50 @@ async def _rerank_case(
     if reranked.identity != identity:
         raise CaseFailed(f"case {case.case_id}: the reranker changed its identity")
     return reranked
+
+
+async def _llm_rerank_case(
+    case: EvaluationCase,
+    ranker: RankingModel,
+    result: HybridRetrieval,
+    budget: RankingBudget,
+    identity: RerankerIdentity,
+) -> LLMRerankResult:
+    """Rank one case's fused Candidates, and only those, with one model."""
+    ranked: LLMRerankResult | None = None
+    failure = "no result"
+    try:
+        ranked = await rerank_with_llm(
+            ranker,
+            case.question,
+            result.candidates,
+            budget=budget,
+            request_id=uuid5(_REQUEST_IDS, f"llm rerank {case.case_id}"),
+            timeout_seconds=LLM_RERANK_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        # Only a bug or a broken request gets here; its message may quote text.
+        failure = _error_names(error)
+    # Raised outside the `except`, so no linked error carries a text.
+    if ranked is None:
+        raise CaseFailed(f"case {case.case_id}: LLM reranking raised {failure}")
+    if ranked.identity != identity:
+        raise CaseFailed(f"case {case.case_id}: the reranker changed its identity")
+    return ranked
+
+
+def _cost(usages: Sequence[Usage], price: ModelPrice | None) -> Decimal | None:
+    """Sum the estimated cost of every billed answer; None if any is unknown."""
+    if price is None:
+        return None
+    prices = {price.price_id: price}
+    total = Decimal(0)
+    for usage in usages:
+        cost = estimate_cost(usage, prices)
+        if cost is None:
+            return None
+        total += cost
+    return total
 
 
 def _outcome(

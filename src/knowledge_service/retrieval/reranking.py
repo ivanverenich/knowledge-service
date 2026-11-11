@@ -275,7 +275,7 @@ async def rerank_candidates(
 ) -> RerankResult:
     """Score every Candidate against the question and return them in the new order."""
     loop = asyncio.get_running_loop()
-    given = _snapshot(question, candidates, timeout_seconds)
+    given = read_candidates(question, candidates, timeout_seconds)
     deadline = loop.time() + timeout_seconds
     identity = reranker.identity
     texts = [cast(str, item.text) for item in given]
@@ -307,17 +307,22 @@ async def rerank_candidates(
     return RerankResult(
         identity=identity,
         candidates=tuple(
-            _reranked(rank, given[index], scores[index])
+            reranked_candidate(rank, given[index], scores[index])
             for rank, index in enumerate(order, start=1)
         ),
         requests=len(batches),
     )
 
 
-def _snapshot(
+def read_candidates(
     question: str, candidates: Sequence[Candidate], timeout_seconds: float
 ) -> tuple[_Given, ...]:
-    """Check the request and read every Candidate once; raise if any is wrong."""
+    """Check the request and read every Candidate once; raise if any is wrong.
+
+    Every reranker reads its Candidates here, so a list changed later
+    changes nothing, and a Candidate that cannot be read is refused
+    without its text.
+    """
     if type(question) is not str or not question.strip():
         raise InvalidRerankRequest("the question must be a non-empty string")
     if (
@@ -448,7 +453,8 @@ def _number(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _reranked(rank: int, given: _Given, score: float) -> RerankedCandidate:
+def reranked_candidate(rank: int, given: _Given, score: float) -> RerankedCandidate:
+    """Return one Candidate read by `read_candidates` at its new rank."""
     return RerankedCandidate(
         rank=rank,
         chunk_id=cast(ChunkId, given.chunk_id),

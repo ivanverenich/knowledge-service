@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import math
 import re
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from uuid import UUID
 
 from knowledge_service.contracts import Answer, Question, Usage
@@ -28,6 +29,7 @@ from knowledge_service.ingestion.sources import (
     SourceUnavailable,
 )
 from knowledge_service.model import ChatModelUnavailable
+from knowledge_service.retrieval.llm_reranking import RankingAnswer, RankingPassage
 from knowledge_service.retrieval.reranking import (
     RerankerError,
     RerankerIdentity,
@@ -360,4 +362,79 @@ class FakeReranker:
         scores = [shared_words(query, passage) for passage in passages]
         return checked_scores(
             scores + [0.0] * self._extra_scores, expected=len(passages)
+        )
+
+
+class FakeRankingModel:
+    """Deterministic RankingModel over `shared_words`; records every call.
+
+    It orders the passages by `shared_words`, ties in the order sent, and
+    bills one input token per word and three output tokens per passage.
+    `answer` turns the IDs in that order into the ranking it returns, to
+    test a malformed or manipulated one. `error` is raised instead of an
+    answer. `delay_seconds` waits that long within the call's own timeout;
+    `block_seconds` blocks the event loop that long, ignoring it.
+    """
+
+    def __init__(
+        self,
+        *,
+        answer: Callable[[list[str]], object] | None = None,
+        error: BaseException | None = None,
+        delay_seconds: float = 0.0,
+        block_seconds: float = 0.0,
+    ) -> None:
+        self._identity = RerankerIdentity(provider="fake", model="fake-ranker")
+        self._answer = answer
+        self._error = error
+        self._delay_seconds = delay_seconds
+        self._block_seconds = block_seconds
+        self.calls: list[tuple[str, tuple[RankingPassage, ...]]] = []
+
+    @property
+    def identity(self) -> RerankerIdentity:
+        return self._identity
+
+    def count_request_tokens(
+        self, question: str, passages: Sequence[RankingPassage]
+    ) -> int:
+        words = len(question.split()) + sum(len(p.text.split()) for p in passages)
+        return words + 10
+
+    async def rank(
+        self,
+        question: str,
+        passages: Sequence[RankingPassage],
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> RankingAnswer:
+        self.calls.append((question, tuple(passages)))
+        if self._delay_seconds:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    await asyncio.sleep(self._delay_seconds)
+            except TimeoutError:
+                raise RerankerTimeout() from None
+        if self._block_seconds:
+            time.sleep(self._block_seconds)  # noqa: ASYNC251 - blocks on purpose
+        if self._error is not None:
+            raise self._error
+        order = sorted(
+            range(len(passages)),
+            key=lambda index: (-shared_words(question, passages[index].text), index),
+        )
+        ids = [passages[index].id for index in order]
+        return RankingAnswer(
+            ranking=ids if self._answer is None else self._answer(ids),
+            usage=Usage(
+                provider="fake",
+                model="fake-ranker",
+                price_id="fake-ranker",
+                latency_ms=0,
+                input_tokens=self.count_request_tokens(question, passages),
+                output_tokens=3 * len(passages),
+                total_tokens=self.count_request_tokens(question, passages)
+                + 3 * len(passages),
+            ),
         )
