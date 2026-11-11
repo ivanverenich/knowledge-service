@@ -7,7 +7,7 @@ depends_on: ["M05-T15"]
 estimate: 90m
 topics: ["hybrid-search","ukrainian","reranking"]
 deliverables: ["M05 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M05-T16 — Pass the hybrid-retrieval understanding gate

@@ -61,7 +61,7 @@ Each module above has its own package under `src/knowledge_service/`
 | `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document` |
 | `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
 | `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `OpenAIEmbeddingModel` (managed), `LocalEmbeddingModel` (BGE-M3 over HTTP, pinned revision), `SparseModel` (`sparse`, the port for sparse term weights; M05-T10 prototype only), `publish_document_embeddings`, the migration workflow |
-| `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both), `search_english_chunks`, `search_ukrainian_chunks`, `Candidate` (the fields every branch returns), `fuse_ranked_candidates` (Reciprocal Rank Fusion of branch Candidates), `retrieve_hybrid` (both branches at once under one deadline, fused, with per-branch diagnostics), `MetadataCondition`, `load_dataset` / `verify_corpus` / `run_dataset` / `compare_branches` (the bilingual seed Evaluation Dataset in `datasets/bilingual-seed/`, run lexical, dense, and fused), `recall_at` / `reciprocal_rank` (Recall@k and MRR), `compare_sparse` with `search_sparse_chunks` (M05-T10 prototype: BGE-M3 sparse weights against PostgreSQL word search; no default uses it), `Reranker` (`reranking`, the port for cross-encoder scores) with `rerank_candidates` (reorders eligible Candidates within the reranker's limits under one deadline) and `LocalReranker` (`local_reranker`, bge-reranker-v2-m3 over HTTP, pinned revision), `compare_reranking` (fused retrieval before and after reranking; no default reranks yet), `RankingModel` (`llm_reranking`, the port for a language model that returns a ranking) with `rerank_with_llm` (orders the top eligible Candidates under opaque IDs within a candidate and token budget, checks the ranking, keeps retrieval's order on any failure, and returns the billed usage) and `OpenAIRankingModel` (`openai_ranking`, a pinned model over the Responses API with Structured Outputs), `compare_llm_reranking` (the same comparison with fallbacks and cost), `compare_reranking_strategies` (no reranker, the cross-encoder, and the language model on the same Candidates of each case, with quality, latency, and cost per case), `classify_question` (`rewrite_classes`, one rewrite class per Question and the words any rewrite must keep; any word with a digit, or with `_`, `@`, `/`, `.`, `:`, or a backslash inside it, is `exact_identifier` and never rewritten) with `load_rewrite_cases` / `score_rewrite_cases` (`rewrite_cases`, the verified labels in `datasets/bilingual-seed/rewrite-classes.json` and how often the rules agree), `rewrite_question` (`query_rewriting`, the `RewriteModel` port: a Question is sent only when its class is switched on in a `RewritePolicy`, and its rewrite is used only when it keeps every word to keep, every typed identifier, and the stated language, and adds no search operator; otherwise the Question is searched as typed) with `OpenAIRewriteModel` (`openai_rewriting`, a pinned model over the Responses API; `QUERY_REWRITE_CLASSES` is the policy flag, empty by default), and `compare_rewriting` with `score_rewriting` / `check_rollout` (`rewrite_evaluation`, the gain per class on `datasets/bilingual-seed/rewrite-retrieval.json`; a class that harms a case, was not fully measured, or does not gain is not rolled out) |
+| `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both; `simple` reads a Question's topic words, without Ukrainian stop words, and needs two of them), `search_english_chunks`, `search_ukrainian_chunks`, `Candidate` (the fields every branch returns), `fuse_ranked_candidates` (Reciprocal Rank Fusion of branch Candidates), `retrieve_hybrid` (both branches at once under one deadline, fused, with per-branch diagnostics), `MetadataCondition`, `load_dataset` / `verify_corpus` / `run_dataset` / `compare_branches` (the bilingual seed Evaluation Dataset in `datasets/bilingual-seed/`, run lexical, dense, and fused), `recall_at` / `reciprocal_rank` (Recall@k and MRR), `compare_sparse` with `search_sparse_chunks` (M05-T10 prototype: BGE-M3 sparse weights against PostgreSQL word search; no default uses it), `Reranker` (`reranking`, the port for cross-encoder scores) with `rerank_candidates` (reorders eligible Candidates within the reranker's limits under one deadline) and `LocalReranker` (`local_reranker`, bge-reranker-v2-m3 over HTTP, pinned revision), `compare_reranking` (fused retrieval before and after reranking; no default reranks yet), `RankingModel` (`llm_reranking`, the port for a language model that returns a ranking) with `rerank_with_llm` (orders the top eligible Candidates under opaque IDs within a candidate and token budget, checks the ranking, keeps retrieval's order on any failure, and returns the billed usage) and `OpenAIRankingModel` (`openai_ranking`, a pinned model over the Responses API with Structured Outputs), `compare_llm_reranking` (the same comparison with fallbacks and cost), `compare_reranking_strategies` (no reranker, the cross-encoder, and the language model on the same Candidates of each case, with quality, latency, and cost per case), `classify_question` (`rewrite_classes`, one rewrite class per Question and the words any rewrite must keep; any word with a digit, or with `_`, `@`, `/`, `.`, `:`, or a backslash inside it, is `exact_identifier` and never rewritten) with `load_rewrite_cases` / `score_rewrite_cases` (`rewrite_cases`, the verified labels in `datasets/bilingual-seed/rewrite-classes.json` and how often the rules agree), `rewrite_question` (`query_rewriting`, the `RewriteModel` port: a Question is sent only when its class is switched on in a `RewritePolicy`, and its rewrite is used only when it keeps every word to keep, every typed identifier, and the stated language, and adds no search operator; otherwise the Question is searched as typed) with `OpenAIRewriteModel` (`openai_rewriting`, a pinned model over the Responses API; `QUERY_REWRITE_CLASSES` is the policy flag, empty by default), and `compare_rewriting` with `score_rewriting` / `check_rollout` (`rewrite_evaluation`, the gain per class on `datasets/bilingual-seed/rewrite-retrieval.json`; a class that harms a case, was not fully measured, or does not gain is not rolled out) |
 | `persistence` | PostgreSQL implementation | `schema` and one module per kind of record |
 
 Domain values, settings, the database runtime, and the HTTP application stay
@@ -314,6 +314,60 @@ While `dual_writing`, publication writes to both spaces and search reads the
 source; from `switched` on, both happen in the target only. Publication
 refuses to write into any space that is neither current nor the target of a
 `dual_writing` migration.
+
+#### Hybrid retrieval as built in M05
+
+`retrieve_hybrid` asks two branches at once, under one deadline, and fuses
+what they return. Each branch applies the reader's permission check in its
+own SQL statement, so fusion only reorders eligible Chunks.
+
+- **Words.** `search_lexical_chunks` routes each Question by its alphabet
+  and stated language to `english` (stems, English stop words, every word
+  must match), to `simple` (exact lowercased words), or to both. A
+  Ukrainian Question read with `simple` keeps only its topic words, without
+  Ukrainian stop words, and a Chunk must hold two of them. Without stemming,
+  every word of a Ukrainian Question rarely appears in one Chunk.
+- **Meaning.** `search_similar_chunks` embeds the Question with the current
+  model and reads only the current Embedding Space; it finds the right
+  Chunk across languages, where words cannot.
+- **Fusion.** Reciprocal Rank Fusion adds `1 / (60 + rank)` for each branch
+  that found a Chunk. Ranks near the top differ little, so a Chunk both
+  branches found outranks one only a single branch found a place higher.
+- **Off by default.** Reranking (M05-T11 to T13) and query rewriting
+  (M05-T15) are measured, but no default search uses them.
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Hybrid as retrieve_hybrid
+    participant Words as lexical branch
+    participant Meaning as dense branch
+    participant Model as EmbeddingModel
+    participant DB as PostgreSQL
+    Caller->>Hybrid: Question, Authorization Context, stated language, limit, timeout
+    Hybrid->>Hybrid: refuse a bad Question, reader, language, limit, or timeout
+    par one deadline for both branches
+        Hybrid->>Words: Question, stated language
+        Words->>Words: route: english, simple (topic words, any two), or both
+        Words->>DB: one SELECT: words match AND an Access Grant, ORDER BY ts_rank, LIMIT
+        DB-->>Words: eligible Chunks by words
+    and
+        Hybrid->>Meaning: Question
+        Meaning->>Model: embed the Question
+        Model-->>Meaning: query vector
+        Meaning->>DB: one SELECT in the current Embedding Space AND an Access Grant, ORDER BY distance, LIMIT
+        DB-->>Meaning: eligible Chunks by meaning
+    end
+    alt a branch failed or missed the deadline
+        Hybrid->>Hybrid: leave it out and mark the result degraded
+    end
+    alt no branch answered
+        Hybrid-->>Caller: HybridRetrievalUnavailable
+    else at least one branch answered
+        Hybrid->>Hybrid: fuse: sum of 1 / (60 + rank) per branch, ties by Chunk ID
+        Hybrid-->>Caller: HybridRetrieval: up to limit fused Candidates and per-branch diagnostics
+    end
+```
 
 ### Answering
 

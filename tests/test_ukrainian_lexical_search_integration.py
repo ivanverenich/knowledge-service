@@ -34,6 +34,10 @@ from knowledge_service.ingestion.sources import (
     SourceRecord,
 )
 from knowledge_service.persistence.access import eligible_chunks_predicate
+from knowledge_service.retrieval.evaluation_dataset import (
+    CORPUS_DIRECTORY,
+    DATASET_DIRECTORY,
+)
 from knowledge_service.retrieval.lexical_search import (
     InvalidLexicalQuery,
     LexicalCandidate,
@@ -106,11 +110,7 @@ FIXTURE_REPORT: list[tuple[str, list[str], str]] = [
     ("leave", ["leave.txt"], "any language matches in its exact form"),
     ("leaves", [], "miss: no English stemming either"),
     ("every", ["leave.txt"], "no stop words: English every is kept"),
-    (
-        "на",
-        ["likarnyanyi.md", "vidpustka.txt"],
-        "noise: no stop words, so на matches every Chunk with it",
-    ),
+    ("на", [], "stop word: dropped from the query, which is then empty"),
 ]
 
 
@@ -200,6 +200,96 @@ async def test_the_fixture_report_shows_exact_matches_and_known_misses(
     report = [(query, await names(runtime, query)) for query, _, _ in FIXTURE_REPORT]
 
     assert report == [(query, found) for query, found, _ in FIXTURE_REPORT]
+
+
+@pytest.mark.integration
+async def test_a_question_finds_the_section_headed_by_its_topic_words(
+    runtime: DatabaseRuntime,
+) -> None:
+    # The seed corpus page this miss was found on, cut to two parts.
+    await a_document(
+        runtime,
+        "likarnianyi.md",
+        title="Лікарняний",
+        text=(DATASET_DIRECTORY / CORPUS_DIRECTORY / "public" / "likarnianyi.md")
+        .read_text(encoding="utf-8")
+        .split("## Оплата лікарняного")[0],
+    )
+
+    matches = await search(runtime, "Що робити в перший день хвороби?")
+
+    # The section lacks "робити" and "в", and still ranks first:
+    # its heading holds three topic words, the opening only its text.
+    assert [match.heading_path for match in matches] == [
+        "Лікарняний > Перший день хвороби",
+        "Лікарняний",
+    ]
+
+
+@pytest.mark.integration
+async def test_one_shared_topic_word_is_not_a_match(
+    runtime: DatabaseRuntime,
+) -> None:
+    await a_document(
+        runtime, "one.txt", title="Ноутбук", text="Ремонт триває п'ять днів."
+    )
+    await a_document(
+        runtime, "two.txt", title="Відпустка", text="Скільки днів відпустки?"
+    )
+
+    found = await names(runtime, "Скільки днів щорічної відпустки?")
+
+    assert found == ["two.txt"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("query", "found"),
+    [
+        ("відпустка ?", ["holiday.txt", "sick.txt"]),
+        ("відпустка відпустка лікарняний", ["sick.txt"]),
+        ("відпустка лікарняний", ["sick.txt"]),
+        ("відпустка (-лікарняний)", ["holiday.txt"]),
+    ],
+    ids=["punctuation", "typed-twice", "two-words", "exclusion"],
+)
+async def test_each_topic_word_counts_once_and_an_exclusion_still_excludes(
+    runtime: DatabaseRuntime, query: str, found: list[str]
+) -> None:
+    await a_document(
+        runtime, "holiday.txt", title="Відпустка", text="Щорічна відпустка триває."
+    )
+    await a_document(
+        runtime, "sick.txt", title="Лікарняний", text="Відпустка і лікарняний."
+    )
+
+    assert sorted(await names(runtime, query)) == sorted(found)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "query",
+    [
+        "ставка 1.5",
+        "умови 01.09.2026",
+        "hr@company.ua ставка",
+        "умови form.pdf",
+        "ставка ²",
+        "Умови, УМОВИ?",
+    ],
+    ids=["decimal", "date", "address", "file", "no-word-symbol", "typed-twice"],
+)
+async def test_a_number_a_date_or_an_address_stays_one_word(
+    runtime: DatabaseRuntime, query: str
+) -> None:
+    await a_document(
+        runtime,
+        "terms.txt",
+        title="Умови",
+        text="Ставка 1.5 діє з 01.09.2026; бланк form.pdf, питання на hr@company.ua.",
+    )
+
+    assert await names(runtime, query) == ["terms.txt"]
 
 
 @pytest.mark.integration

@@ -61,8 +61,8 @@ What a caller can rely on:
   Questions are sent to the rewriter. `retrieval.rewrite_evaluation`
   scores the gain per class and decides which classes may be rolled out.
 - **Scored per slice.** `score_slices` turns the ranks into Recall@k and
-  MRR for every language direction and query class (see
-  `retrieval.ranking_metrics`).
+  MRR for every language direction, every question language (`en->*`,
+  `uk->*`), and every query class (see `retrieval.ranking_metrics`).
 - **Eligible.** A Candidate from `restricted/` raises
   `IneligibleChunkRetrieved` and stops the run, however relevant it is.
 - **Typed.** Any error a case raises becomes `CaseFailed`, naming the case
@@ -199,6 +199,8 @@ class QueryClass(StrEnum):
 
 _LANGUAGES = (Language.ENGLISH, Language.UKRAINIAN)
 DIRECTIONS = tuple(f"{asked}->{found}" for asked in _LANGUAGES for found in _LANGUAGES)
+# The language a Question is asked in, whatever the evidence's language.
+QUESTION_LANGUAGES = tuple(f"{asked}->*" for asked in _LANGUAGES)
 
 # Fixed, so two runs of the same dataset store the same Sources and reader.
 SOURCE_IDS: Mapping[Folder, SourceId] = {
@@ -1042,12 +1044,22 @@ async def compare_rewriting(
 
 
 def score_slices(report: DatasetReport) -> tuple[SliceScore, ...]:
-    """Score every case together, then each direction, then each query class."""
+    """Score every case together, then each direction, each question language,
+    then each query class.
+
+    A question-language slice such as `uk->*` holds every case asked in that
+    language, `uk->uk` and `uk->en` together: what a change to how
+    Questions are read, such as Ukrainian word search, moves first.
+    """
     cutoffs = tuple(k for k in RECALL_CUTOFFS if k <= report.limit)
     groups: list[tuple[str, list[CaseOutcome]]] = [("all", list(report.outcomes))]
     groups += [
         (direction, [o for o in report.outcomes if o.direction == direction])
         for direction in DIRECTIONS
+    ]
+    groups += [
+        (asked, [o for o in report.outcomes if o.direction.startswith(asked[:-1])])
+        for asked in QUESTION_LANGUAGES
     ]
     groups += [
         (str(query_class), [o for o in report.outcomes if o.query_class is query_class])

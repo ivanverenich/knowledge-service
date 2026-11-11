@@ -519,6 +519,25 @@ def test_slices_get_exact_recall_and_mrr() -> None:
     assert scores["uk->uk"].mrr is None
 
 
+def test_each_question_language_is_a_slice_of_its_own() -> None:
+    scores = score_slices(SCORED)
+    by_name = {score.name: score for score in scores}
+
+    # Directions first, then the language asked in, then query classes.
+    assert [score.name for score in scores][:7] == [
+        "all",
+        "en->en",
+        "en->uk",
+        "uk->en",
+        "uk->uk",
+        "en->*",
+        "uk->*",
+    ]
+    assert (by_name["en->*"].cases, by_name["en->*"].mrr) == (3, Fraction(5, 12))
+    # Asked in Ukrainian: uk->en and uk->uk together; here only "d".
+    assert (by_name["uk->*"].cases, by_name["uk->*"].mrr) == (1, Fraction(1, 3))
+
+
 def test_the_report_shows_the_configuration_and_the_scores() -> None:
     rendered = render_report(SCORED)
 

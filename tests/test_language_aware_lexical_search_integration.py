@@ -242,11 +242,14 @@ async def test_a_mixed_question_keeps_english_stemming_for_its_english_words(
             {"leave.txt", "vidpustka.txt", "deploy.txt"},
         ),
         ("error E-1042", QuestionScript.LATIN, ENGLISH, {"leave.txt"}),
+        # `simple` reads topic words, two of them; PostgreSQL splits
+        # E-1042 into "e" and "-1042", so the English page with the code
+        # holds two and is found too (M05-T16).
         (
             "помилка E-1042",
             QuestionScript.CYRILLIC,
             SIMPLE,
-            {"vidpustka.txt", "deploy.txt"},
+            {"vidpustka.txt", "deploy.txt", "leave.txt"},
         ),
     ],
 )

@@ -1,4 +1,5 @@
 """Checks on full-text search that need no database."""
+# ruff: noqa: RUF001
 
 from collections.abc import Awaitable, Callable
 from typing import cast
@@ -15,12 +16,15 @@ from knowledge_service.language import Language
 from knowledge_service.retrieval.lexical_routing import LexicalConfiguration
 from knowledge_service.retrieval.lexical_search import (
     MAX_QUERY_CHARACTERS,
+    MAX_SIMPLE_WORDS,
+    UKRAINIAN_STOP_WORDS,
     InvalidLexicalQuery,
     english_search_statement,
     lexical_search_statement,
     search_english_chunks,
     search_lexical_chunks,
     search_ukrainian_chunks,
+    simple_query,
     ukrainian_search_statement,
 )
 from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
@@ -119,7 +123,7 @@ async def test_a_stated_language_that_is_not_a_language_is_refused(
         )
 
 
-def test_both_configurations_share_one_bound_parameter() -> None:
+def test_each_configuration_reads_the_text_as_a_bound_parameter() -> None:
     statement = lexical_search_statement(
         (LexicalConfiguration.ENGLISH, LexicalConfiguration.SIMPLE),
         text=f"{MARKER}' OR true --",
@@ -137,6 +141,77 @@ def test_both_configurations_share_one_bound_parameter() -> None:
     assert " OR " in sql
     # A rank counts only where its own configuration matches.
     assert "greatest(CASE WHEN" in sql
+
+
+@pytest.mark.parametrize(
+    ("text", "as_typed"),
+    [
+        ("Що робити в перший день хвороби?", False),
+        ("Де форма ІТ-0457?", False),
+        ("Скільки п'ять днів?", False),
+        ("ставка 1.5 з 01.09.2026", False),
+        ("робота-відпочинок", False),
+        ("Що це?", False),
+        ('"в перший день" хвороби', True),
+        ("-лікарняний відпустка", True),
+        ("відпустка -в", True),
+        ("відпустка (-лікарняний)", True),
+        ("Відпустка - це що", True),
+        ("VPN or в", True),
+        ("VPN (or) в", True),
+    ],
+    ids=[
+        "topic",
+        "identifier",
+        "apostrophe",
+        "decimal-and-date",
+        "hyphenated",
+        "stop-words",
+        "phrase",
+        "exclude-first",
+        "exclude",
+        "exclude-after-bracket",
+        "dash-before-a-space",
+        "or",
+        "or-in-brackets",
+    ],
+)
+def test_simple_reads_the_topic_words_unless_the_text_uses_search_syntax(
+    text: str, as_typed: bool
+) -> None:
+    simple = simple_query(text)
+
+    assert simple.as_typed is as_typed
+    # The Question is kept out of the repr.
+    assert text not in repr(simple)
+
+
+def test_the_topic_words_are_found_by_postgresql_from_bound_parameters() -> None:
+    statement = ukrainian_search_statement(
+        text=f"{MARKER}' першого дня", eligibility=sa.true(), limit=5
+    )
+
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+
+    assert MARKER not in sql
+    assert compiled.params["query_text"] == f"{MARKER}' першого дня"
+    assert compiled.params["simple_stop_words"] == sorted(UKRAINIAN_STOP_WORDS)
+    assert MAX_SIMPLE_WORDS in compiled.params.values()
+    # The same parser as the stored terms, and the Chunk's own words only.
+    assert "ts_debug('simple'::regconfig" in sql
+    assert "tsvector_to_array(chunks.search_simple)" in sql
+
+
+def test_text_with_search_syntax_is_read_as_typed() -> None:
+    statement = ukrainian_search_statement(
+        text="відпустка (-лікарняний)", eligibility=sa.true(), limit=5
+    )
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "websearch_to_tsquery('simple'::regconfig" in sql
+    assert "ts_debug" not in sql
 
 
 def test_only_the_ranked_and_limited_rows_are_highlighted() -> None:

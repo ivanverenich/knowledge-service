@@ -9,9 +9,22 @@ Every Chunk stores two sets of search terms, each from the Document's title
 - `chunks.search_simple`, built with the `simple` configuration: every word
   lowercased, with no stemming and no stop words. `search_ukrainian_chunks`
   reads it. This is only a baseline for Ukrainian: "відпустка" matches
-  "Відпустка" but not "відпустку" or "відпустки", an apostrophe splits
-  "сім'я" into "сім" and "я", and a common word such as "на" matches almost
-  every Chunk.
+  "Відпустка" but not "відпустку" or "відпустки", and an apostrophe splits
+  "сім'я" into "сім" and "я".
+
+Without stemming, asking for every word of a Ukrainian Question finds
+almost nothing: "Що робити в перший день хвороби?" misses the section
+headed "Перший день хвороби", which lacks "робити" and "в". So
+`simple` reads a Question as its topic words, without the Ukrainian
+function words in `UKRAINIAN_STOP_WORDS`, and a Chunk matches when it
+holds at least two of them, or the only one there is. One shared word is
+not enough: "днів" alone would match a sick-leave page for a question
+about annual leave. PostgreSQL finds the topic words with the same
+parser as the stored terms, so a date, a decimal, or an address stays one
+word, and `ts_rank` then puts the Chunks with the most and best-placed
+words first. A Question that uses web-search syntax is read as typed; see
+`simple_query`. The stored terms keep every word, so the list can change
+without rebuilding them.
 
 The query goes through the same configuration as the terms it searches.
 `search_lexical_chunks` chooses the configuration for each Question with
@@ -25,7 +38,9 @@ same guarantees as vector search; see `retrieval.candidates`. What a caller
 can rely on besides:
 
 - **Syntax.** The query is web-search text, read by `websearch_to_tsquery`:
-  words must all match, `"quoted words"` must appear next to each other in
+  with `english`, words must all match; with `simple`, two of its topic
+  words must match, as above, unless the text itself uses the syntax
+  below, which is then read as typed: `"quoted words"` must appear next to each other in
   that order, `or` between words accepts either, and `-word` excludes a word.
   Any other punctuation is ignored, so no text a user types can raise a
   syntax error. A query of only stop words or punctuation matches nothing.
@@ -44,6 +59,7 @@ can rely on besides:
   `InvalidLexicalQuery` before the database is used.
 """
 
+import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -52,7 +68,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import RowMapping
-from sqlalchemy.dialects.postgresql import REGCONFIG
+from sqlalchemy.dialects.postgresql import ARRAY, REGCONFIG
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -71,6 +87,116 @@ from knowledge_service.retrieval.vector_search import MAX_CANDIDATES
 
 # Long enough for any question, short enough to bound the work per query.
 MAX_QUERY_CHARACTERS = 1_000
+
+# A `simple` match must hold this many topic words of the Question, or all
+# of them when it has fewer. At most `MAX_SIMPLE_WORDS` are read, in the
+# order typed, which bounds the work for each matching Chunk.
+MIN_SIMPLE_WORDS = 2
+MAX_SIMPLE_WORDS = 16
+# PostgreSQL's web-search "or": a word with no letter or digit next to it.
+_OR = re.compile(r"or", re.IGNORECASE)
+# The parts of a hyphenated word, which PostgreSQL also stores whole.
+_WORD_PARTS = "hword%part"
+
+# Ukrainian function words: prepositions, conjunctions, particles, pronouns,
+# question words, and forms of "to be". Lowercase and in NFC, the form the
+# query is matched in. They carry no topic, and as an "or" query word each
+# would match nearly every Ukrainian Chunk.
+UKRAINIAN_STOP_WORDS = frozenset(
+    {
+        # Prepositions.
+        "в",
+        "у",  # noqa: RUF001 - a Ukrainian word
+        "на",
+        "до",
+        "з",
+        "із",
+        "зі",
+        "від",
+        "для",
+        "по",
+        "про",
+        "при",
+        "за",
+        "над",
+        "під",
+        "між",
+        "через",
+        "без",
+        "біля",
+        "після",
+        "перед",
+        "серед",
+        "щодо",
+        # Conjunctions and particles.
+        "і",  # noqa: RUF001 - a Ukrainian word
+        "й",
+        "та",
+        "а",  # noqa: RUF001 - a Ukrainian word
+        "але",
+        "або",  # noqa: RUF001 - a Ukrainian word
+        "чи",
+        "що",
+        "щоб",
+        "як",
+        "якщо",
+        "бо",  # noqa: RUF001 - a Ukrainian word
+        "не",
+        "ні",
+        "же",
+        "ж",
+        "б",  # noqa: RUF001 - a Ukrainian word
+        "би",
+        "лише",
+        "тільки",
+        "ще",
+        "вже",
+        # Pronouns and question words.
+        "я",
+        "ти",
+        "він",
+        "вона",
+        "воно",
+        "ми",
+        "ви",
+        "вони",
+        "мене",
+        "мені",
+        "мій",
+        "моя",
+        "моє",
+        "мої",
+        "наш",
+        "ваш",
+        "його",
+        "її",
+        "їх",
+        "це",
+        "цей",
+        "ця",
+        "ці",
+        "той",
+        "те",
+        "ті",
+        "хто",
+        "де",
+        "куди",
+        "коли",
+        "чому",
+        "який",
+        "яка",
+        "яке",
+        "які",
+        # Forms of "to be".
+        "є",
+        "бути",
+        "був",
+        "була",
+        "було",
+        "були",
+        "буде",
+    }
+)
 
 # Named, not taken from the server's `default_text_search_config`, and the
 # same configurations the stored vectors were built with.
@@ -219,10 +345,13 @@ async def search_ukrainian_chunks(
     context: AuthorizationContext,
     limit: int,
 ) -> tuple[LexicalCandidate, ...]:
-    """Return up to `limit` eligible Chunks containing the exact words of `text`.
+    """Return up to `limit` eligible Chunks matching Ukrainian `text`, best first.
 
-    Words match after lowercasing only, in the form they were typed. Raises
-    `InvalidLexicalQuery` like `search_english_chunks`.
+    Words match after lowercasing only, in the form they were typed. The
+    Question is read by its topic words: Ukrainian stop words are dropped,
+    and a Chunk must hold two of the rest, or the only one. Text that uses
+    web-search syntax is read as typed, every word required; see
+    `simple_query`. Raises `InvalidLexicalQuery` like `search_english_chunks`.
     """
     candidates, _ = await _search(
         connection,
@@ -297,17 +426,25 @@ def lexical_search_statement(
         raise InvalidLexicalQuery(
             "configurations must be distinct LexicalConfiguration values"
         )
-    # The text is one bound parameter, read with the configuration the
-    # stored terms were built with.
+    # The text is a bound parameter, read with the configuration the stored
+    # terms were built with; `simple` reads its topic words (see
+    # `simple_query`).
     query_text = sa.bindparam("query_text", text, type_=sa.Text())
     queries: list[tuple[sa.ColumnElement[Any], sa.ColumnElement[Any]]] = []
     conditions: list[sa.ColumnElement[bool]] = []
     ranks: list[sa.ColumnElement[Any]] = []
     for configuration in configurations:
         terms, regconfig = _TERMS[configuration]
-        query = sa.func.websearch_to_tsquery(regconfig, query_text)
+        if (
+            configuration is LexicalConfiguration.SIMPLE
+            and not simple_query(text).as_typed
+        ):
+            query, condition = _topic_match(terms, query_text)
+        else:
+            query = sa.func.websearch_to_tsquery(regconfig, query_text)
+            condition = terms.bool_op("@@")(query)
         queries.append((regconfig, query))
-        conditions.append(terms.bool_op("@@")(query))
+        conditions.append(condition)
         ranks.append(sa.func.ts_rank(terms, query))
     if len(configurations) == 1:
         matched, score = conditions[0], ranks[0]
@@ -370,6 +507,106 @@ def lexical_search_statement(
         ranked.c.text,
         *marked,
     ).order_by(ranked.c.score.desc(), ranked.c.chunk_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SimpleQuery:
+    """How `simple` reads one Question: by its topic words, or as typed."""
+
+    text: str = field(repr=False)
+    as_typed: bool
+
+
+def simple_query(text: str) -> SimpleQuery:
+    """Return how `simple` reads `text`.
+
+    Text that uses web-search syntax the way PostgreSQL reads it, a quote,
+    a `-` at the start or after anything but a letter or digit, or an "or"
+    with no letter or digit on either side, is read as typed: every word
+    must match, so a phrase or an exclusion keeps its meaning. Any other
+    text is read by its topic words (see `_topic_match`).
+    """
+    return SimpleQuery(text=text, as_typed=_uses_syntax(text))
+
+
+def _uses_syntax(text: str) -> bool:
+    """True when web-search syntax would read part of `text` as an operator."""
+    if '"' in text:
+        return True
+    for index, character in enumerate(text):
+        # PostgreSQL reads such a `-` as "without", even before a space.
+        if character == "-" and (index == 0 or not text[index - 1].isalnum()):
+            return True
+    for match in _OR.finditer(text):
+        before = text[match.start() - 1] if match.start() > 0 else " "
+        after = text[match.end()] if match.end() < len(text) else " "
+        if not before.isalnum() and not after.isalnum():
+            return True
+    return False
+
+
+def _topic_match(
+    terms: sa.ColumnElement[Any], query_text: sa.BindParameter[str]
+) -> tuple[sa.ColumnElement[Any], sa.ColumnElement[bool]]:
+    """Return the "or" query of the topic words, and the two-word condition.
+
+    PostgreSQL splits the Question with the same parser as the stored terms
+    (`ts_debug`), so a date, a decimal, an address, or a file name stays one
+    word, and "?" or "²" is none. The parts of a hyphenated word are left
+    out, since the whole word is kept; stop words are dropped; each word
+    counts once, and the first `MAX_SIMPLE_WORDS` in typed order are read.
+    A Chunk matches when its stored words hold `MIN_SIMPLE_WORDS` of them,
+    or all when there are fewer. With no topic word the query is NULL,
+    which matches nothing.
+    """
+    # Every column `ts_debug` returns, in its order, then the token's place.
+    parsed = (
+        sa.func.ts_debug(SIMPLE, query_text)
+        .table_valued(
+            "alias",
+            "description",
+            "token",
+            "dictionaries",
+            "dictionary",
+            "lexemes",
+            with_ordinality="position",
+        )
+        .render_derived()
+    )
+    word = sa.type_coerce(parsed.c.lexemes, ARRAY(sa.Text()))[1]
+    stop_words = sa.bindparam(
+        "simple_stop_words", sorted(UKRAINIAN_STOP_WORDS), type_=ARRAY(sa.Text())
+    )
+    topic = (
+        sa.select(word.label("word"))
+        .where(
+            sa.func.cardinality(parsed.c.lexemes) > 0,
+            sa.not_(parsed.c.alias.like(_WORD_PARTS)),
+            word != sa.func.all(stop_words),
+        )
+        .group_by(word)
+        .order_by(sa.func.min(parsed.c.position))
+        .limit(MAX_SIMPLE_WORDS)
+        .subquery("topic_words")
+    )
+    # Uncorrelated, so PostgreSQL computes each once per statement, not per row.
+    words = sa.select(sa.func.array_agg(topic.c.word)).scalar_subquery()
+    query = sa.select(
+        sa.func.to_tsquery(
+            SIMPLE, sa.func.string_agg(sa.func.quote_literal(topic.c.word), " | ")
+        )
+    ).scalar_subquery()
+    needed = sa.func.least(MIN_SIMPLE_WORDS, sa.func.cardinality(words))
+    # The Chunk's own stored words, read from the outer row, never a table scan.
+    stored = sa.select(sa.func.unnest(sa.func.tsvector_to_array(terms))).correlate(
+        chunks
+    )
+    held = sa.func.cardinality(
+        sa.func.array(
+            stored.intersect(sa.select(sa.func.unnest(words))).scalar_subquery()
+        )
+    )
+    return query, sa.and_(terms.bool_op("@@")(query), held >= needed)
 
 
 async def _search(
