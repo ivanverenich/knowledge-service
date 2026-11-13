@@ -7,7 +7,7 @@ depends_on: ["M06-T01"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["prompt builder"]
-status: planned
+status: completed
 ---
 
 # M06-T02 — Build the Evidence prompt

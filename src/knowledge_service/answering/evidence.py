@@ -1,10 +1,11 @@
 """Evidence: the Chunks an Answer may use, each under an opaque ID.
 
 Retrieval returns Candidates the reader may see. `build_evidence` turns
-them into an `EvidenceSet` for one request, and the model that writes the
-Answer sees only each Evidence's opaque ID and text. Where a Chunk came
-from, its Document, title, heading, and link, stays on the server, so the
-model can point at Evidence but can never name a source of its own.
+them into an `EvidenceSet` for one request. The model that writes the
+Answer sees each Evidence's opaque ID, title, heading path, and text (see
+`answering.prompt`). Its source link and its Chunk, Document, and Source
+IDs stay on the server, so the model can point at Evidence but can never
+name a source of its own.
 
 What an `EvidenceSet` promises:
 
