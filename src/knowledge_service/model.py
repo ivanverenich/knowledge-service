@@ -27,6 +27,10 @@ class ChatModelRateLimited(ChatModelError):
     """The selected model has reachted request limit"""
 
 
+class ChatModelRequestRefused(ChatModelError):
+    """The provider refused the request, such as for a bad key; do not retry."""
+
+
 class ChatModelRefused(ChatModelError):
     """The model declined to provide an answer."""
 

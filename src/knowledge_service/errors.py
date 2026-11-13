@@ -8,7 +8,11 @@ from knowledge_service.embeddings.port import (
     EmbeddingRateLimited,
     EmbeddingRequestRefused,
 )
-from knowledge_service.model import ChatModelError, ChatModelRateLimited
+from knowledge_service.model import (
+    ChatModelError,
+    ChatModelRateLimited,
+    ChatModelRequestRefused,
+)
 
 
 class FailureKind(StrEnum):
@@ -105,7 +109,7 @@ def classify_failure(error: BaseException) -> FailureKind:
         return FailureKind.AUTHORIZATION
     if isinstance(error, EmbeddingInputRejected):
         return FailureKind.VALIDATION
-    if isinstance(error, EmbeddingRequestRefused):
+    if isinstance(error, (ChatModelRequestRefused, EmbeddingRequestRefused)):
         return FailureKind.INTERNAL
     if isinstance(error, (ChatModelRateLimited, EmbeddingRateLimited)):
         return FailureKind.CAPACITY

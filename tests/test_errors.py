@@ -22,6 +22,7 @@ from knowledge_service.errors import (
 from knowledge_service.model import (
     ChatModelMalformedResponse,
     ChatModelRateLimited,
+    ChatModelRequestRefused,
     ChatModelTimeout,
     ChatModelUnavailable,
 )
@@ -36,6 +37,7 @@ from knowledge_service.model import (
         (ChatModelTimeout(), FailureKind.DEPENDENCY),
         (AnswerDeadlineExceeded(), FailureKind.DEPENDENCY),
         (ChatModelRateLimited(), FailureKind.CAPACITY),
+        (ChatModelRequestRefused("bad key"), FailureKind.INTERNAL),
         (EmbeddingUnavailable(), FailureKind.DEPENDENCY),
         (EmbeddingMalformedResponse("bad vectors"), FailureKind.DEPENDENCY),
         (EmbeddingRateLimited(), FailureKind.CAPACITY),

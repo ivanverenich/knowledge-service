@@ -169,8 +169,13 @@ def _check_question(question: object) -> None:
         )
     if not _valid(question):
         raise InvalidPrompt("the question must be valid Unicode text")
-    if not any(_visible(character) for character in question):
+    if not has_visible_text(question):
         raise InvalidPrompt("the question must be non-empty text")
+
+
+def has_visible_text(text: str) -> bool:
+    """True when `text` holds a character that shows on its own."""
+    return any(_visible(character) for character in text)
 
 
 def _valid(text: str) -> bool:

@@ -7,7 +7,7 @@ depends_on: ["M06-T03"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["answer-generation module"]
-status: planned
+status: completed
 ---
 
 # M06-T04 — Generate a structured Answer
