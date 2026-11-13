@@ -7,7 +7,7 @@ depends_on: ["M06-T02"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["context-budget policy"]
-status: planned
+status: completed
 ---
 
 # M06-T03 — Allocate the context budget
