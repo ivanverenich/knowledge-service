@@ -133,9 +133,18 @@ def render_prompt(question: str, evidence: EvidenceSet) -> EvidencePrompt:
     }
     return EvidencePrompt(
         instructions=INSTRUCTIONS,
-        input=_escaped(json.dumps(document, ensure_ascii=False, indent=2)),
+        input=render_document(document),
         schema=json.dumps(_schema(evidence), indent=2),
     )
+
+
+def render_document(document: object) -> str:
+    """One JSON input document, deterministic and escaped as described above.
+
+    Other prompts that carry Document text, such as the support check's
+    (see `answering.support`), render it the same way.
+    """
+    return _escaped(json.dumps(document, ensure_ascii=False, indent=2))
 
 
 def _schema(evidence: EvidenceSet) -> dict[str, object]:

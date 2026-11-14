@@ -7,7 +7,7 @@ depends_on: ["M06-T05"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["support-check module"]
-status: planned
+status: completed
 ---
 
 # M06-T06 — Check claim support

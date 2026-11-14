@@ -309,16 +309,20 @@ async def _ask(
         # Raised here, not in the except block, so it chains no error.
         _log_failure(request_id, model, ChatModelTimeout.__name__)
         raise ChatModelTimeout()
-    if not _well_formed(reply):
+    if not well_formed_reply(reply):
         raise ChatModelMalformedResponse("the model did not return a ModelReply")
     return cast(ModelReply, reply)
 
 
-def _well_formed(reply: object) -> bool:
+def well_formed_reply(reply: object) -> bool:
     """A ModelReply whose flag and token counts are exactly what they claim."""
     if type(reply) is not ModelReply or type(reply.refused) is not bool:
         return False
-    usage = cast(object, reply.usage)
+    return well_formed_usage(reply.usage)
+
+
+def well_formed_usage(usage: object) -> bool:
+    """A Usage whose token counts are plain integers, none below zero."""
     if type(usage) is not Usage:
         return False
     # model_construct skips validation, so the counts are checked again.
