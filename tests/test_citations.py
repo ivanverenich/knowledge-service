@@ -115,20 +115,32 @@ def test_malformed_references_are_refused_without_quoting_them(
     assert MARKER not in str(caught.value)
 
 
-def test_an_unknown_or_repeated_reference_rejects_the_whole_list() -> None:
+def test_an_unknown_reference_rejects_the_whole_list() -> None:
     evidence = evidence_set()
-    known = ids(evidence)
 
     with pytest.raises(InvalidCitation) as unknown:
-        resolve_citations(evidence, [known[0], absent(evidence)])
-    with pytest.raises(InvalidCitation) as repeated:
-        resolve_citations(evidence, [known[1], known[0], known[1]])
+        resolve_citations(evidence, [ids(evidence)[0], absent(evidence)])
 
     assert (unknown.value.defect, unknown.value.index) == (CitationDefect.UNKNOWN, 1)
-    assert (repeated.value.defect, repeated.value.index) == (
-        CitationDefect.DUPLICATE,
-        2,
-    )
+
+
+def test_a_repeated_reference_is_cited_once_at_its_first_position() -> None:
+    evidence = evidence_set()
+    first, second, _ = ids(evidence)
+
+    citations = resolve_citations(evidence, [second, first, second, second])
+
+    assert [c.evidence_id.value for c in citations] == [second, first]
+
+
+def test_a_repeated_reference_still_needs_every_other_reference_valid() -> None:
+    evidence = evidence_set()
+    first = ids(evidence)[0]
+
+    with pytest.raises(InvalidCitation) as caught:
+        resolve_citations(evidence, [first, first, "E1"])
+
+    assert (caught.value.defect, caught.value.index) == (CitationDefect.MALFORMED, 2)
 
 
 def test_an_id_from_another_request_is_unknown_here() -> None:
@@ -348,3 +360,5 @@ def test_any_reference_list_gives_known_citations_or_one_typed_refusal(
         return
     assert all(evidence.get(c.evidence_id) is not None for c in citations)
     assert len({c.evidence_id for c in citations}) == len(citations)
+    # Each listed ID is cited once, in the order it first appears.
+    assert [c.evidence_id.value for c in citations] == list(dict.fromkeys(mixed))

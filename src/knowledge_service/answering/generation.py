@@ -115,6 +115,8 @@ class AnswerOutcome(StrEnum):
     NO_EVIDENCE = "no_evidence"
     REFUSED = "refused"
     INVALID = "invalid"
+    # Set by `confirm_citations` (see `answering.current_citations`).
+    WITHDRAWN = "withdrawn"
 
 
 @dataclass(frozen=True, slots=True)

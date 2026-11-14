@@ -7,7 +7,7 @@ depends_on: ["M06-T04"]
 estimate: 75m
 topics: ["generation","citations","sse"]
 deliverables: ["citation validator"]
-status: planned
+status: completed
 ---
 
 # M06-T05 — Validate Citation identities

@@ -56,7 +56,7 @@ MAX_EVIDENCE = 20
 _ID_BYTES = 4
 _ID = re.compile(r"E[0-9a-f]{8}")
 # The excerpt is cut from the text's start; cleaning more would only cost.
-_EXCERPT_SOURCE_CHARACTERS = 4_000
+EXCERPT_SOURCE_CHARACTERS = 4_000
 
 
 class InvalidEvidence(ValueError):
@@ -193,7 +193,7 @@ def _evidence(evidence_id: EvidenceId, candidate: Candidate) -> Evidence:
             title=_shown(candidate.title),
             heading_path=_optional(candidate.heading_path),
             source_link=_optional(candidate.source_anchor),
-            excerpt=display_excerpt(text[:_EXCERPT_SOURCE_CHARACTERS]),
+            excerpt=display_excerpt(text[:EXCERPT_SOURCE_CHARACTERS]),
             text=text,
         )
     except Exception:  # noqa: S110 - a Candidate's code may raise anything

@@ -199,7 +199,6 @@ async def test_a_refusal_keeps_its_usage_and_has_no_text() -> None:
         (body(answer="\u202e\x00"), AnswerDefect.EMPTY_ANSWER),
         (body(citations=[]), AnswerDefect.UNCITED),
         (body(citations=["E00000099"]), AnswerDefect.INVALID_CITATION),
-        (body(citations=[FIRST, FIRST]), AnswerDefect.INVALID_CITATION),
         (body(citations=["cite E1"]), AnswerDefect.INVALID_CITATION),
         (
             body(abstained=True, citations=[FIRST], reason="Not enough."),
@@ -233,7 +232,6 @@ async def test_a_refusal_keeps_its_usage_and_has_no_text() -> None:
         "control-only-answer",
         "uncited",
         "unknown-id",
-        "repeated-id",
         "malformed-id",
         "cited-abstention",
         "no-reason",
@@ -250,6 +248,15 @@ async def test_a_reply_that_breaks_a_rule_is_invalid_and_keeps_its_usage(
     assert result.defect is defect
     assert (result.text, result.reason, result.citations) == ("", None, ())
     assert result.usage == USAGE
+
+
+async def test_a_repeated_citation_is_cited_once() -> None:
+    model = FakeAnswerModel(body(citations=[FIRST, SECOND, FIRST]))
+
+    result = await generate(model)
+
+    assert result.outcome is AnswerOutcome.ANSWERED
+    assert [c.evidence_id.value for c in result.citations] == [FIRST, SECOND]
 
 
 async def test_evidence_dropped_by_the_budget_cannot_be_cited() -> None:

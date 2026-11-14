@@ -11,16 +11,20 @@ What the module promises:
 
 - **Strict references.** `resolve_citations` takes the model's list of
   IDs as it arrived. It refuses, with `InvalidCitation`, anything that is
-  not a list or tuple of plain `str`, an ID that is malformed, an ID not
-  in the set, and an ID listed twice. One bad reference rejects the whole
-  list; nothing is guessed or dropped.
+  not a list or tuple of plain `str`, an ID that is malformed, and an ID
+  not in the set. One bad reference rejects the whole list; nothing is
+  guessed or dropped.
+- **Each source once.** An ID the model lists twice is cited once, at its
+  first position. It names the same Evidence again, so it adds nothing a
+  user should see, and it is no reason to throw away a paid Answer.
 - **Provenance from the server.** A `Citation` is built from its Evidence
   only.
 - **Checked when read back.** `CitationPayload` is the JSON form of a
   Citation, for a client or for storage. `read_citations` reads a list of
   payloads against the `EvidenceSet` they claim to come from, with the
-  same checks, and also refuses a payload whose Document, title, heading,
-  link, or excerpt differs from its Evidence, or that has a field too many.
+  same checks, and also refuses an ID listed twice, since the server
+  never writes one, and a payload whose Document, title, heading, link, or
+  excerpt differs from its Evidence, or that has a field too many.
 - **Quiet.** Errors name the position and the defect, never a value, and
   keep no chained error that could; the reprs of a Citation and of a
   `CitationPayload` hide the Document's title, heading, link, and excerpt.
@@ -98,7 +102,10 @@ class CitationPayload(BaseModel):
 def resolve_citations(
     evidence: EvidenceSet, references: object
 ) -> tuple[Citation, ...]:
-    """Turn the model's Evidence IDs into Citations, or raise `InvalidCitation`."""
+    """Turn the model's Evidence IDs into Citations, or raise `InvalidCitation`.
+
+    A repeated ID is cited once, at its first position.
+    """
     if type(evidence) is not EvidenceSet:
         raise TypeError("evidence must be an EvidenceSet")
     # A list subclass could run its own code while being read; not this one.
@@ -107,7 +114,10 @@ def resolve_citations(
     citations: list[Citation] = []
     seen: set[EvidenceId] = set()
     for index, reference in enumerate(cast(Sequence[object], references)):
-        item = _known(evidence, reference, index, seen)
+        item = _known(evidence, reference, index)
+        if item.evidence_id in seen:
+            continue
+        seen.add(item.evidence_id)
         citations.append(_citation(item))
     return tuple(citations)
 
@@ -143,7 +153,10 @@ def read_citations(evidence: EvidenceSet, payloads: object) -> tuple[Citation, .
         # Raised outside any `except`: a validation error quotes the input.
         if payload is None:
             raise InvalidCitation(CitationDefect.MALFORMED, index)
-        item = _known(evidence, payload.evidence_id, index, seen)
+        item = _known(evidence, payload.evidence_id, index)
+        if item.evidence_id in seen:
+            raise InvalidCitation(CitationDefect.DUPLICATE, index)
+        seen.add(item.evidence_id)
         citation = _citation(item)
         if citation_payload(citation) != payload:
             raise InvalidCitation(CitationDefect.MISMATCHED, index)
@@ -163,10 +176,8 @@ def _payload(raw: object) -> CitationPayload | None:
         return None
 
 
-def _known(
-    evidence: EvidenceSet, reference: object, index: int, seen: set[EvidenceId]
-) -> Evidence:
-    """The Evidence a reference names, if it is well formed, known, and new."""
+def _known(evidence: EvidenceSet, reference: object, index: int) -> Evidence:
+    """The Evidence a reference names, if it is well formed and known."""
     try:
         evidence_id = EvidenceId(cast(str, reference))
     except InvalidEvidence:
@@ -174,9 +185,6 @@ def _known(
     item = evidence.get(evidence_id)
     if item is None:
         raise InvalidCitation(CitationDefect.UNKNOWN, index)
-    if evidence_id in seen:
-        raise InvalidCitation(CitationDefect.DUPLICATE, index)
-    seen.add(evidence_id)
     return item
 
 
