@@ -15,8 +15,16 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from uuid import UUID
 
-from knowledge_service.identifiers import ConversationId, MessageId, UserId
+from knowledge_service.documents import ContentVersion
+from knowledge_service.identifiers import (
+    ChunkId,
+    ConversationId,
+    DocumentId,
+    MessageId,
+    UserId,
+)
 
 
 class InvalidConversation(ValueError):
@@ -46,6 +54,43 @@ class MessageRole(StrEnum):
     ASSISTANT = "assistant"
 
 
+class MessageOutcome(StrEnum):
+    """How an assistant Message ended; only an Answer may feed History."""
+
+    ANSWERED = "answered"
+    ABSTAINED = "abstained"
+    FAILED = "failed"
+
+
+# As many as an Answer can cite (`answering.evidence.MAX_EVIDENCE`).
+MAX_MESSAGE_REFERENCES = 20
+MAX_STORED_VERSION = 2**31 - 1
+
+
+@dataclass(frozen=True, slots=True)
+class MessageReference:
+    """A Chunk an Answer cited, in the version it read."""
+
+    chunk_id: ChunkId
+    document_id: DocumentId
+    content_version: ContentVersion
+
+    def __post_init__(self) -> None:
+        identifiers = ((self.chunk_id, ChunkId), (self.document_id, DocumentId))
+        if (
+            not all(
+                type(value) is kind and type(value.value) is UUID
+                for value, kind in identifiers
+            )
+            or type(self.content_version) is not ContentVersion
+            # The column is a PostgreSQL integer.
+            or self.content_version.number > MAX_STORED_VERSION
+        ):
+            raise InvalidConversation(
+                "a reference names a Chunk, its Document, and version"
+            )
+
+
 class MessageRating(StrEnum):
     """The thumbs signal a User attaches to one Message."""
 
@@ -68,6 +113,9 @@ class Message:
     role: MessageRole
     text: str = field(repr=False)
     created_at: datetime
+    # An assistant Message stored before outcomes existed has none.
+    outcome: MessageOutcome | None = None
+    references: tuple[MessageReference, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.ordinal) is not int or self.ordinal < 0:
@@ -75,6 +123,23 @@ class Message:
         if not self.text.strip():
             raise InvalidConversation("message text must not be empty")
         _require_utc(self.created_at, "message created_at")
+        if self.outcome is not None and (
+            type(self.outcome) is not MessageOutcome
+            or self.role is not MessageRole.ASSISTANT
+        ):
+            raise InvalidConversation("only an assistant Message has an outcome")
+        references = self.references
+        if type(references) is not tuple or not all(
+            type(reference) is MessageReference for reference in references
+        ):
+            raise InvalidConversation("references must be a tuple of MessageReference")
+        answered = self.outcome is MessageOutcome.ANSWERED
+        if answered != bool(references):
+            raise InvalidConversation("an Answer, and only an Answer, cites Chunks")
+        if len(references) > MAX_MESSAGE_REFERENCES:
+            raise InvalidConversation("an Answer cites too many Chunks")
+        if len({reference.chunk_id for reference in references}) != len(references):
+            raise InvalidConversation("an Answer cites a Chunk once")
 
 
 @dataclass(frozen=True, slots=True)

@@ -361,11 +361,37 @@ messages = sa.Table(
     sa.Column("role", sa.String(length=16), nullable=False),
     sa.Column("text", sa.Text(), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("outcome", sa.String(length=16), nullable=True),
     sa.UniqueConstraint(
         "conversation_id", "ordinal", name="uq_messages_conversation_ordinal"
     ),
     sa.CheckConstraint("ordinal >= 0", name="ck_messages_ordinal"),
     sa.CheckConstraint("role in ('user', 'assistant')", name="ck_messages_role"),
+    sa.CheckConstraint(
+        "outcome is null or (role = 'assistant'"
+        " and outcome in ('answered', 'abstained', 'failed'))",
+        name="ck_messages_outcome",
+    ),
+)
+
+message_references = sa.Table(
+    "message_references",
+    metadata,
+    sa.Column(
+        "message_id",
+        sa.Uuid(),
+        sa.ForeignKey("messages.message_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("position", sa.Integer(), primary_key=True),
+    sa.Column("chunk_id", sa.Uuid(), nullable=False),
+    sa.Column("document_id", sa.Uuid(), nullable=False),
+    sa.Column("content_version", sa.Integer(), nullable=False),
+    sa.UniqueConstraint("message_id", "chunk_id", name="uq_message_references_chunk"),
+    sa.CheckConstraint("position >= 0", name="ck_message_references_position"),
+    sa.CheckConstraint(
+        "content_version >= 1", name="ck_message_references_content_version"
+    ),
 )
 
 message_feedback = sa.Table(

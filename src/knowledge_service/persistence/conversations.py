@@ -1,9 +1,9 @@
 """Store Conversations, their Messages, and feedback on them.
 
 The answering flow uses only the owner-scoped functions: `start_conversation`,
-`add_message`, `read_conversation`, and `delete_conversation`. Each takes the
-caller's `UserId` and puts it in the SQL itself, so another User's
-Conversation never leaves the database. They promise:
+`add_message`, `add_turn`, `read_conversation`, and `delete_conversation`.
+Each takes the caller's `UserId` and puts it in the SQL itself, so another
+User's Conversation never leaves the database. They promise:
 
 - **One answer for "not yours".** A Conversation that is missing, another
   User's, deleted, or past its retention deadline reads as None and refuses
@@ -23,6 +23,12 @@ Conversation never leaves the database. They promise:
 - **Bounded.** `ConversationLimits` bounds the retention, the number of
   Messages, and each Message's length, and refuses text PostgreSQL cannot
   store, before any SQL runs.
+- **A turn stays together.** `add_turn` stores a Question and its reply in
+  one transaction, with how the reply ended and the Chunks an Answer
+  cited, so History can trust that a reply follows its own Question.
+- **Only through the store.** The rules a Message checks, such as "an
+  Answer cites Chunks", live in Python, not in the database; a row written
+  past these functions can make its Conversation unreadable.
 
 The other functions read and write without an owner, for system work such
 as retention and purge Jobs; they are never given a User's request.
@@ -30,6 +36,7 @@ as retention and purge Jobs; they are never given a User's request.
 
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
@@ -46,16 +53,27 @@ from knowledge_service.conversations import (
     InvalidConversation,
     Message,
     MessageFeedback,
+    MessageOutcome,
     MessageRating,
+    MessageReference,
     MessageRole,
     Transcript,
 )
-from knowledge_service.identifiers import ConversationId, JobId, MessageId, UserId
+from knowledge_service.documents import ContentVersion
+from knowledge_service.identifiers import (
+    ChunkId,
+    ConversationId,
+    DocumentId,
+    JobId,
+    MessageId,
+    UserId,
+)
 from knowledge_service.jobs import Job, JobKind
 from knowledge_service.persistence.jobs import enqueue_job
 from knowledge_service.persistence.schema import (
     conversations,
     message_feedback,
+    message_references,
     messages,
 )
 
@@ -103,14 +121,33 @@ def _message_row(message: Message) -> dict[str, object]:
         "role": message.role.value,
         "text": message.text,
         "created_at": message.created_at,
+        "outcome": None if message.outcome is None else message.outcome.value,
     }
 
 
-def _message_from(record: Mapping[str, object]) -> Message:
+def _reference_rows(message: Message) -> list[dict[str, object]]:
+    return [
+        {
+            "message_id": message.message_id.value,
+            "position": position,
+            "chunk_id": reference.chunk_id.value,
+            "document_id": reference.document_id.value,
+            "content_version": reference.content_version.number,
+        }
+        for position, reference in enumerate(message.references)
+    ]
+
+
+def _message_from(
+    record: Mapping[str, object],
+    references: tuple[MessageReference, ...] = (),
+) -> Message:
     try:
         role = MessageRole(cast(str, record["role"]))
+        stored = record.get("outcome")
+        outcome = None if stored is None else MessageOutcome(cast(str, stored))
     except ValueError:
-        raise InvalidConversation("stored message role is not a known value") from None
+        raise InvalidConversation("a stored role or outcome is not known") from None
 
     return Message(
         message_id=MessageId(cast(UUID, record["message_id"])),
@@ -119,6 +156,16 @@ def _message_from(record: Mapping[str, object]) -> Message:
         role=role,
         text=cast(str, record["text"]),
         created_at=cast(datetime, record["created_at"]),
+        outcome=outcome,
+        references=references,
+    )
+
+
+def _reference_from(record: Mapping[str, object]) -> MessageReference:
+    return MessageReference(
+        chunk_id=ChunkId(cast(UUID, record["chunk_id"])),
+        document_id=DocumentId(cast(UUID, record["document_id"])),
+        content_version=ContentVersion(cast(int, record["content_version"])),
     )
 
 
@@ -207,14 +254,41 @@ async def load_messages(
     *,
     conversation_id: ConversationId,
 ) -> tuple[Message, ...]:
-    """Read a Conversation's Messages in ordinal order."""
+    """Read a Conversation's Messages in ordinal order, with their references."""
     statement = (
         sa.select(messages)
         .where(messages.c.conversation_id == conversation_id.value)
         .order_by(messages.c.ordinal)
     )
     records = (await connection.execute(statement)).mappings().all()
-    return tuple(_message_from(dict(record)) for record in records)
+    cited = (
+        (
+            await connection.execute(
+                sa.select(message_references)
+                .join(
+                    messages, messages.c.message_id == message_references.c.message_id
+                )
+                .where(messages.c.conversation_id == conversation_id.value)
+                .order_by(
+                    message_references.c.message_id, message_references.c.position
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    references: dict[UUID, list[MessageReference]] = {}
+    for record in cited:
+        references.setdefault(cast(UUID, record["message_id"]), []).append(
+            _reference_from(dict(record))
+        )
+    return tuple(
+        _message_from(
+            dict(record),
+            tuple(references.get(cast(UUID, record["message_id"]), ())),
+        )
+        for record in records
+    )
 
 
 async def rate_message(
@@ -283,8 +357,13 @@ async def add_message(
     text: str,
     now: datetime,
     limits: ConversationLimits,
+    outcome: MessageOutcome | None = None,
+    references: tuple[MessageReference, ...] = (),
 ) -> Message:
     """Append a Message to the owner's live Conversation, at the next ordinal.
+
+    An assistant Message carries how it ended; an Answer also carries the
+    Chunks it cited, stored with it in the same transaction.
 
     Raises `InvalidConversation` for bad text or role before any SQL runs,
     `ConversationNotFound` when no live Conversation of this owner has this
@@ -294,6 +373,18 @@ async def add_message(
     if type(role) is not MessageRole:
         raise InvalidConversation("role must be a MessageRole")
     now = _utc(now)
+    # Built once before any SQL, so a bad outcome or reference never waits
+    # for the lock; its ordinal and time are set under the lock.
+    draft = Message(
+        message_id=MessageId.new(),
+        conversation_id=ConversationId(_id(conversation_id)),
+        ordinal=0,
+        role=role,
+        text=checked,
+        created_at=now,
+        outcome=outcome,
+        references=references,
+    )
     # Locked, so concurrent Messages take turns for the next ordinal.
     record = (
         (
@@ -320,21 +411,76 @@ async def add_message(
         raise ConversationFull("the conversation holds as many messages as allowed")
     # Clocks of two servers can disagree; time never runs backwards here.
     created_at = max(now, conversation.last_message_at)
-    message = Message(
-        message_id=MessageId.new(),
-        conversation_id=conversation_id,
-        ordinal=0 if last is None else last + 1,
-        role=role,
-        text=checked,
-        created_at=created_at,
+    message = replace(
+        draft, ordinal=0 if last is None else last + 1, created_at=created_at
     )
     await connection.execute(sa.insert(messages).values(_message_row(message)))
+    if message.references:
+        await connection.execute(
+            sa.insert(message_references), _reference_rows(message)
+        )
     await connection.execute(
         sa.update(conversations)
         .where(conversations.c.conversation_id == conversation_id.value)
         .values(last_message_at=created_at)
     )
     return message
+
+
+async def add_turn(
+    connection: AsyncConnection,
+    *,
+    owner_id: UserId,
+    conversation_id: ConversationId,
+    question: str,
+    reply: str,
+    outcome: MessageOutcome,
+    references: tuple[MessageReference, ...] = (),
+    now: datetime,
+    limits: ConversationLimits,
+) -> tuple[Message, Message]:
+    """Store a Question and its reply together, once the reply is known.
+
+    The first Message's row lock is held to the end of the transaction, so
+    no other Message comes between the two, and History pairs a reply with
+    the Question right before it. Both are checked before any SQL; if the
+    second cannot be stored, a savepoint takes back the first as well.
+    """
+    if type(outcome) is not MessageOutcome:
+        raise InvalidConversation("a reply must say how it ended")
+    _limits(limits).checked_text(question)
+    Message(
+        message_id=MessageId.new(),
+        conversation_id=ConversationId(_id(conversation_id)),
+        ordinal=0,
+        role=MessageRole.ASSISTANT,
+        text=_limits(limits).checked_text(reply),
+        created_at=_utc(now),
+        outcome=outcome,
+        references=references,
+    )
+    async with connection.begin_nested():
+        asked = await add_message(
+            connection,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            role=MessageRole.USER,
+            text=question,
+            now=now,
+            limits=limits,
+        )
+        replied = await add_message(
+            connection,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            role=MessageRole.ASSISTANT,
+            text=reply,
+            now=now,
+            limits=limits,
+            outcome=outcome,
+            references=references,
+        )
+    return asked, replied
 
 
 async def read_conversation(

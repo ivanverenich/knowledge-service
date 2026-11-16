@@ -7,7 +7,7 @@ depends_on: ["M06-T10"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["history builder"]
-status: planned
+status: completed
 ---
 
 # M06-T11 — Construct bounded history
