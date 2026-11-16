@@ -7,7 +7,7 @@ depends_on: ["M06-T07"]
 estimate: 75m
 topics: ["generation","citations","sse"]
 deliverables: ["SSE event model"]
-status: planned
+status: completed
 ---
 
 # M06-T08 — Define SSE event contracts
