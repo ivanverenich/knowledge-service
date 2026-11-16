@@ -531,7 +531,7 @@ def _checked(
     start = _quote_start(named.text, quote)
     if start is None:
         return _unchecked(claim, SupportVerdict.QUOTE_NOT_FOUND)
-    if not _numbers(text) <= _numbers(quote):
+    if not numbers_in(text) <= numbers_in(quote):
         return _unchecked(claim, SupportVerdict.NUMBER_MISMATCH)
     return ClaimFinding(
         claim=claim,
@@ -566,8 +566,24 @@ def _joins(left: str, right: str) -> bool:
     return bool(left) and bool(right) and _WORD.fullmatch(left + right) is not None
 
 
-def _numbers(text: str) -> set[str]:
+def numbers_in(text: str) -> set[str]:
+    """Every whole number in `text`: "2.5", "1,000", and "-5" are one each."""
     return set(_NUMBER.findall(text))
+
+
+def topic_words(text: str) -> set[str]:
+    """The words of four or more letters in `text`, ignoring case and numbers."""
+    return {
+        w
+        for w in _WORD.findall(text.casefold())
+        if len(w) >= _LONG_WORD and not any(c.isdigit() for c in w)
+    }
+
+
+def shares_topic(words: set[str], sentence: str) -> bool:
+    """True when `sentence` holds at least 60% of `words`."""
+    present = set(_WORD.findall(sentence.casefold()))
+    return len(words & present) >= _OVERLAP * len(words)
 
 
 def _unchecked(claim: Claim, verdict: SupportVerdict) -> ClaimFinding:
@@ -579,19 +595,14 @@ def _unchecked(claim: Claim, verdict: SupportVerdict) -> ClaimFinding:
 def _lexical_finding(
     index: int, claim: str, sentences: list[tuple[str, str]]
 ) -> JudgeFinding:
-    numbers = _numbers(claim)
-    long_words = {
-        w
-        for w in _WORD.findall(claim.casefold())
-        if len(w) >= _LONG_WORD and not any(c.isdigit() for c in w)
-    }
+    numbers = numbers_in(claim)
+    long_words = topic_words(claim)
     if not numbers and not long_words:
         return JudgeFinding(claim=index, evidence_id=None, quote=None)
     for evidence_id, sentence in sentences:
-        if not numbers <= _numbers(sentence):
+        if not numbers <= numbers_in(sentence):
             continue
-        present = set(_WORD.findall(sentence.casefold()))
-        if long_words and len(long_words & present) < _OVERLAP * len(long_words):
+        if long_words and not shares_topic(long_words, sentence):
             continue
         return JudgeFinding(claim=index, evidence_id=evidence_id, quote=sentence)
     return JudgeFinding(claim=index, evidence_id=None, quote=None)

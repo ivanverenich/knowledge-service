@@ -7,7 +7,7 @@ depends_on: ["M06-T06"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["abstention policy"]
-status: planned
+status: completed
 ---
 
 # M06-T07 — Implement calibrated abstention
