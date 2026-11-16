@@ -7,7 +7,7 @@ depends_on: ["M06-T09"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["conversation workflow"]
-status: planned
+status: completed
 ---
 
 # M06-T10 — Persist bounded Conversations

@@ -3,9 +3,16 @@
 A Conversation holds the User's questions and the Answers generated for them.
 It belongs to one User, it is bounded in length, and it carries the moment it
 expires so a later task can delete it without guessing.
+
+`ConversationLimits` holds the bounds: how long a Conversation lives, how
+many Messages it may hold, and how long one Message may be. These are this
+service's own rules, written in its own terms, user and assistant turns of
+plain text, whatever shape a chat interface sends. A Message's text stays
+out of every repr and every error.
 """
 
-from dataclasses import dataclass, replace
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 
@@ -22,6 +29,14 @@ class NotConversationOwner(InvalidConversation):
 
 class ConversationFull(InvalidConversation):
     """A Conversation already holds as many Messages as its bound allows."""
+
+
+class ConversationNotFound(InvalidConversation):
+    """No live Conversation with this ID belongs to the caller.
+
+    A missing, another User's, deleted, or expired Conversation all read the
+    same, so a caller learns nothing about Conversations it does not own.
+    """
 
 
 class MessageRole(StrEnum):
@@ -51,7 +66,7 @@ class Message:
     conversation_id: ConversationId
     ordinal: int
     role: MessageRole
-    text: str
+    text: str = field(repr=False)
     created_at: datetime
 
     def __post_init__(self) -> None:
@@ -120,12 +135,18 @@ class Conversation:
         """Start a Conversation that expires `retention` after it opens."""
         if retention <= timedelta(0):
             raise InvalidConversation("retention must be a positive duration")
+        deadline: datetime | None = None
+        # Near the end of the calendar, the deadline does not fit in a date.
+        with suppress(OverflowError):
+            deadline = opened_at + retention
+        if deadline is None:
+            raise InvalidConversation("the retention deadline is out of range")
         return cls(
             conversation_id=conversation_id,
             owner_id=owner_id,
             created_at=opened_at,
             last_message_at=opened_at,
-            retention_deadline=opened_at + retention,
+            retention_deadline=deadline,
             deleted_at=None,
         )
 
@@ -157,3 +178,59 @@ class Conversation:
         """Whether the retention deadline has passed on a live Conversation."""
         _require_utc(now, "now")
         return self.deleted_at is None and now >= self.retention_deadline
+
+
+MAX_RETENTION = timedelta(days=3_650)
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationLimits:
+    """How long a Conversation lives, and how much it may hold."""
+
+    retention: timedelta = timedelta(days=30)
+    max_messages: int = 100
+    max_message_characters: int = 16_000
+
+    def __post_init__(self) -> None:
+        if type(self.retention) is not timedelta or not (
+            timedelta(0) < self.retention <= MAX_RETENTION
+        ):
+            raise InvalidConversation("retention must be positive and at most 10 years")
+        for name in ("max_messages", "max_message_characters"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise InvalidConversation(f"{name} must be a positive integer")
+
+    def checked_text(self, text: object) -> str:
+        """Return `text` if it may be a Message, or raise `InvalidConversation`.
+
+        It must be plain text with a non-space character, within the length
+        limit, and storable: valid Unicode without the NUL character, which
+        PostgreSQL text cannot hold.
+        """
+        if type(text) is not str:
+            raise InvalidConversation("message text must be text")
+        if len(text) > self.max_message_characters:
+            raise InvalidConversation("message text is longer than the limit")
+        if not text.strip():
+            raise InvalidConversation("message text must not be empty")
+        if chr(0) in text or not _encodable(text):
+            raise InvalidConversation("message text must be valid, storable Unicode")
+        return text
+
+
+@dataclass(frozen=True, slots=True)
+class Transcript:
+    """A live Conversation and its Messages, in order."""
+
+    conversation: Conversation
+    messages: tuple[Message, ...]
+
+
+def _encodable(text: str) -> bool:
+    """True when `text` is valid Unicode: a str can hold a lone surrogate."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
