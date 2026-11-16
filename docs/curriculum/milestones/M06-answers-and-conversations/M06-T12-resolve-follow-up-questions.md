@@ -7,7 +7,7 @@ depends_on: ["M06-T11"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["follow-up resolver"]
-status: planned
+status: completed
 ---
 
 # M06-T12 — Resolve follow-up Questions
