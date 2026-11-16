@@ -7,7 +7,7 @@ depends_on: ["M06-T08"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["streaming endpoint"]
-status: planned
+status: completed
 ---
 
 # M06-T09 — Stream and cancel Answers

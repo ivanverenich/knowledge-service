@@ -31,12 +31,16 @@ model's own window, and `max_output_tokens` is the Answer's reserve.
 import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator
 from decimal import Decimal
-from typing import Self, cast
+from typing import Any, Self, cast
 from uuid import UUID
 
+import anyio
+import httpx
 import openai
-from openai import AsyncOpenAI, omit
+from openai import AsyncOpenAI, AsyncStream, omit
+from openai.types.responses import Response, ResponseStreamEvent
 from openai.types.shared_params import Reasoning, ReasoningEffort
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,6 +67,12 @@ from knowledge_service.pricing import ModelPrice
 logger = logging.getLogger(__name__)
 
 PROVIDER = "openai"
+# How long closing a stream may take, even for a cancelled caller.
+_CLOSE_SECONDS = 1.0
+# The events that end a stream with the whole response and its usage.
+_FINAL_EVENTS = frozenset(
+    {"response.completed", "response.incomplete", "response.failed"}
+)
 
 
 class AnswerSettings(BaseSettings):
@@ -133,29 +143,18 @@ class OpenAIAnswerModel:
         if type(prompt) is not EvidencePrompt:
             raise InvalidAnswerRequest("prompt must be an EvidencePrompt")
         deadline = self._deadline(timeout_seconds)
-        effort = self._settings.reasoning_effort
         started_at = time.perf_counter()
         response: object = None
         failure: ChatModelError | None = None
         try:
             async with asyncio.timeout(deadline):
-                response = await self._client.responses.create(
-                    model=self._settings.model,
-                    instructions=prompt.instructions,
-                    input=prompt.input,
-                    text={
-                        "format": {
-                            "type": "json_schema",
-                            "name": "answer",
-                            "strict": True,
-                            "schema": prompt.response_schema(),
-                        }
-                    },
-                    max_output_tokens=self._settings.max_output_tokens,
-                    store=False,
-                    timeout=deadline,
-                    extra_headers={"X-Request-ID": str(request_id)},
-                    reasoning=omit if effort is None else Reasoning(effort=effort),
+                # Unpacked arguments hide which overload is called: one
+                # without streaming, which returns a Response.
+                response = cast(
+                    Response,
+                    await self._client.responses.create(
+                        **self._request(prompt, request_id, deadline)
+                    ),
                 )
         except (TimeoutError, openai.APIError) as error:
             failure = _translated(error)
@@ -181,6 +180,101 @@ class OpenAIAnswerModel:
         )
         _log(request_id, self._identity, latency_ms, outcome, usage)
         return ModelReply(text=text, refused=refused, usage=usage)
+
+    async def stream(
+        self,
+        prompt: EvidencePrompt,
+        *,
+        request_id: UUID,
+        timeout_seconds: float,
+    ) -> AsyncGenerator[str | ModelReply]:
+        """Stream the reply's text, then yield one `ModelReply` with its usage.
+
+        The caller's deadline bounds the whole stream. Closing the generator
+        early closes the HTTP response, so the provider stops generating.
+        """
+        if type(prompt) is not EvidencePrompt:
+            raise InvalidAnswerRequest("prompt must be an EvidencePrompt")
+        deadline = self._deadline(timeout_seconds)
+        started_at = time.perf_counter()
+        events: AsyncStream[ResponseStreamEvent] | None = None
+        final: object = None
+        failure: ChatModelError | None = None
+        usage: Usage | None = None
+        outcome = "cancelled"
+        try:
+            try:
+                events = await self._client.responses.create(
+                    **self._request(prompt, request_id, deadline), stream=True
+                )
+                async for event in events:
+                    if event.type == "response.output_text.delta" and event.delta:
+                        yield event.delta
+                    elif event.type in _FINAL_EVENTS:
+                        final = getattr(event, "response", None)
+                        break
+                    elif event.type == "error":
+                        failure = ChatModelUnavailable()
+                        break
+            except (TimeoutError, openai.APIError) as error:
+                failure = _translated(error)
+            except ValueError:
+                failure = ChatModelMalformedResponse("the stream was not readable")
+            except httpx.HTTPError:
+                # The connection broke while the stream was being read.
+                failure = ChatModelUnavailable()
+            latency_ms = _since(started_at)
+            if failure is None and final is None:
+                failure = ChatModelMalformedResponse("the stream ended without a reply")
+            if failure is not None:
+                outcome = type(failure).__name__
+                # Raised outside the SDK's except block: its error holds the request.
+                raise failure
+            usage = self._usage(final, latency_ms)
+            text, refused = _reply(final)
+            outcome = (
+                "refused"
+                if refused
+                else "succeeded"
+                if text is not None
+                else "unreadable"
+            )
+            reply = ModelReply(text=text, refused=refused, usage=usage)
+        except ChatModelError as error:
+            outcome = type(error).__name__
+            raise
+        finally:
+            if events is not None:
+                # Shielded: a cancelled caller must not cut the connection's
+                # close short; bounded, so a stuck close cannot hang it.
+                with anyio.move_on_after(_CLOSE_SECONDS, shield=True):
+                    await events.close()
+            _log(request_id, self._identity, _since(started_at), outcome, usage)
+        yield reply
+
+    def _request(
+        self, prompt: EvidencePrompt, request_id: UUID, deadline: float
+    ) -> dict[str, Any]:
+        """The arguments of one Responses API request for this prompt."""
+        effort = self._settings.reasoning_effort
+        return {
+            "model": self._settings.model,
+            "instructions": prompt.instructions,
+            "input": prompt.input,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "answer",
+                    "strict": True,
+                    "schema": prompt.response_schema(),
+                }
+            },
+            "max_output_tokens": self._settings.max_output_tokens,
+            "store": False,
+            "timeout": deadline,
+            "extra_headers": {"X-Request-ID": str(request_id)},
+            "reasoning": omit if effort is None else Reasoning(effort=effort),
+        }
 
     def _deadline(self, timeout_seconds: float) -> float:
         if not positive_seconds(timeout_seconds):

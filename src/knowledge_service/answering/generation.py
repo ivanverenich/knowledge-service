@@ -245,31 +245,34 @@ async def generate_answer(
         _log(request_id, model, result)
         return result
     reply = await _ask(model, allocated.prompt, request_id, timeout_seconds)
-    if reply.refused:
-        result = _result(AnswerOutcome.REFUSED, context, usage=reply.usage)
-    else:
-        try:
-            checked = checked_answer(reply.text, allocated.evidence)
-        except InvalidAnswer as error:
-            result = _result(
-                AnswerOutcome.INVALID, context, usage=reply.usage, defect=error.defect
-            )
-        else:
-            result = AnswerResult(
-                outcome=(
-                    AnswerOutcome.ABSTAINED
-                    if checked.abstained
-                    else AnswerOutcome.ANSWERED
-                ),
-                text=checked.text,
-                reason=checked.reason,
-                citations=checked.citations,
-                defect=None,
-                usage=reply.usage,
-                context=context,
-            )
+    result = reply_result(reply, allocated.evidence, context)
     _log(request_id, model, result)
     return result
+
+
+def reply_result(
+    reply: ModelReply, evidence: EvidenceSet, context: ContextReport
+) -> AnswerResult:
+    """The one outcome of a reply to a prompt built from `evidence`."""
+    if reply.refused:
+        return _result(AnswerOutcome.REFUSED, context, usage=reply.usage)
+    try:
+        checked = checked_answer(reply.text, evidence)
+    except InvalidAnswer as error:
+        return _result(
+            AnswerOutcome.INVALID, context, usage=reply.usage, defect=error.defect
+        )
+    return AnswerResult(
+        outcome=(
+            AnswerOutcome.ABSTAINED if checked.abstained else AnswerOutcome.ANSWERED
+        ),
+        text=checked.text,
+        reason=checked.reason,
+        citations=checked.citations,
+        defect=None,
+        usage=reply.usage,
+        context=context,
+    )
 
 
 def positive_seconds(value: object) -> bool:

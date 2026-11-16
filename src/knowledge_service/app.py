@@ -1,11 +1,19 @@
 import asyncio
-from collections.abc import Awaitable, Callable
+import contextlib
+from collections.abc import Awaitable, Callable, Coroutine
 from uuid import UUID, uuid4
 
+import anyio
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
+from knowledge_service.answering.streaming import (
+    CLOSE_SECONDS,
+    AnswerStream,
+    AnswerStreamer,
+)
 from knowledge_service.contracts import Answer, ErrorResponse, Question
 from knowledge_service.errors import (
     FailureKind,
@@ -68,9 +76,77 @@ def request_id_from(request: Request) -> UUID:
         return uuid4()
 
 
+class EventStreamResponse(StreamingResponse):
+    """An SSE response that stops its events the moment the client leaves.
+
+    Under ASGI 2.4, Starlette notices a disconnect only when its next write
+    fails, so a stream waiting on a silent model would run on. This
+    response always listens for the disconnect. The writing task is then
+    cancelled once, so the model's own cleanup is not cut short, and the
+    events are closed, so the model's stream is closed even when they were
+    waiting to be written. Each wait is bounded by `CLOSE_SECONDS`.
+    """
+
+    media_type = "text/event-stream"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        writing = asyncio.ensure_future(self._write(send))
+        watching = asyncio.ensure_future(self.listen_for_disconnect(receive))
+        try:
+            await asyncio.wait({writing, watching}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            watching.cancel()
+            writing.cancel()
+            await asyncio.wait({writing, watching}, timeout=2 * CLOSE_SECONDS)
+            close = getattr(self.body_iterator, "aclose", None)
+            # A writing task still running holds the events; leave it be.
+            if writing.done() and close is not None:
+                # Shielded, so it runs even while cancelled; bounded, so a
+                # stuck close cannot hold the response open.
+                with anyio.move_on_after(2 * CLOSE_SECONDS, shield=True):
+                    await close()
+        if writing.done() and not writing.cancelled():
+            writing.result()
+
+    async def _write(self, send: Send) -> None:
+        # Under ASGI 2.4, a write after the client left raises OSError.
+        with contextlib.suppress(OSError):
+            await self.stream_response(send)
+
+
+async def _unless_client_leaves(
+    request: Request, opening: Coroutine[object, object, AnswerStream]
+) -> AnswerStream | None:
+    """Await `opening`, or cancel it and return None when the client leaves.
+
+    Its errors are raised as they are, so they still map to an HTTP error.
+    """
+
+    async def left() -> None:
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    work = asyncio.ensure_future(opening)
+    watch = asyncio.ensure_future(left())
+    try:
+        await asyncio.wait({work, watch}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (watch, work):
+            if not task.done():
+                task.cancel()
+        # Each task finishes its own cleanup, such as ending its record.
+        await asyncio.wait({work, watch})
+    if watch.cancelled():
+        return work.result()
+    if not work.cancelled() and work.exception() is None:
+        await work.result().aclose()
+    return None
+
+
 def create_app(
     readiness_check: ReadinessCheck | None = None,
     workflow: AnswerWorkflow | None = None,
+    streamer: AnswerStreamer | None = None,
 ) -> FastAPI:
     app = FastAPI(title="knowledge-service")
 
@@ -127,5 +203,36 @@ def create_app(
                 kind=classify_failure(error),
                 request_id=request_id,
             )
+
+    @app.post("/v1/answer/stream")
+    async def answer_stream(question: Question, request: Request) -> Response:
+        request_id = request_id_from(request)
+        if streamer is None:
+            return error_response(
+                status_code=503,
+                code="workflow_unavailable",
+                message="Answer workflow is unavailable",
+                request_id=request_id,
+            )
+        try:
+            events = await _unless_client_leaves(
+                request, streamer.open(question, request_id=request_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Nothing was sent yet, so a failure is still a plain HTTP error.
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        if events is None:
+            # Nobody is left to read it; 499 marks the request in access logs.
+            return Response(status_code=499)
+        return EventStreamResponse(
+            events,
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Request-ID": str(request_id),
+            },
+        )
 
     return app
