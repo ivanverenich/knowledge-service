@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sqlalchemy import exc as database_errors
+
 from knowledge_service.embeddings.port import (
     EmbeddingError,
     EmbeddingInputRejected,
@@ -102,6 +104,29 @@ POLICIES = {
 }
 
 
+# SQLSTATE classes of a database that is unreachable or overloaded, or
+# that gave up on a statement which may work again: a lost connection
+# (08), a serialization failure or deadlock (40), too many connections or
+# no space (53), and a cancelled statement or a shutdown (57).
+_UNAVAILABLE_STATES = frozenset({"08", "40", "53", "57"})
+
+
+def _database_unavailable(error: BaseException) -> bool:
+    """True when sending the request again later may work."""
+    # The pool had no free connection in time.
+    if isinstance(error, database_errors.TimeoutError):
+        return True
+    if not isinstance(error, database_errors.DBAPIError):
+        return False
+    if error.connection_invalidated:
+        return True
+    if not isinstance(error, database_errors.OperationalError):
+        return False
+    # No SQLSTATE means the server never answered, such as a refused connection.
+    state = getattr(error.orig, "sqlstate", None)
+    return state is None or str(state)[:2] in _UNAVAILABLE_STATES
+
+
 def classify_failure(error: BaseException) -> FailureKind:
     if isinstance(error, asyncio.CancelledError):
         return FailureKind.CANCELLATION
@@ -114,6 +139,10 @@ def classify_failure(error: BaseException) -> FailureKind:
     if isinstance(error, (ChatModelRateLimited, EmbeddingRateLimited)):
         return FailureKind.CAPACITY
     if isinstance(error, (AnswerDeadlineExceeded, ChatModelError, EmbeddingError)):
+        return FailureKind.DEPENDENCY
+    # The database is down, unreachable, too slow, or out of connections.
+    # Any other database error, such as a broken constraint, is a bug.
+    if _database_unavailable(error):
         return FailureKind.DEPENDENCY
     return FailureKind.INTERNAL
 

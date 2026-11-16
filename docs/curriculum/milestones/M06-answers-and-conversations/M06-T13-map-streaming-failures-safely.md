@@ -7,7 +7,7 @@ depends_on: ["M06-T12"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["stream failure policy"]
-status: planned
+status: completed
 ---
 
 # M06-T13 — Map streaming failures safely

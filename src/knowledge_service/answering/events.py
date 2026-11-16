@@ -65,8 +65,9 @@ from knowledge_service.answering.citations import (
 from knowledge_service.answering.evidence import MAX_EVIDENCE, EvidenceId
 from knowledge_service.answering.generation import MAX_ANSWER_CHARACTERS
 from knowledge_service.answering.prompt import has_visible_text
+from knowledge_service.answering.stream_failures import StreamPhase, stream_failure
 from knowledge_service.contracts import Usage
-from knowledge_service.errors import FailureKind, RetryOwner, policy_for
+from knowledge_service.errors import FailureKind, RetryOwner
 from knowledge_service.language import Language
 
 EVENT_PROTOCOL_VERSION = "1"
@@ -408,14 +409,15 @@ class AnswerEventWriter:
     def error(self, kind: FailureKind) -> bytes:
         if type(kind) is not FailureKind:
             raise InvalidEventStream(StreamDefect.MALFORMED)
-        policy = policy_for(kind)
+        # What a client is told once the headers are out (`stream_failures`).
+        failure = stream_failure(kind, StreamPhase.AFTER_HEADERS)
         # A cancelled request has nobody left to tell.
-        if policy.public_code is None or policy.client_message is None:
+        if failure.public_code is None or failure.message is None:
             raise InvalidEventStream(StreamDefect.UNKNOWN_ERROR)
-        code, message = policy.public_code, policy.client_message
+        code, message = failure.public_code, failure.message
         return self._write(
             EventName.ERROR,
-            lambda: ErrorData(code=code, message=message, retry=policy.retry_owner),
+            lambda: ErrorData(code=code, message=message, retry=failure.retry),
         )
 
     def _write(self, name: EventName, build: Callable[[], EventData]) -> bytes:
@@ -531,9 +533,11 @@ class _PublicError:
 
 
 _PUBLIC_ERRORS: dict[str, _PublicError] = {
-    policy.public_code: _PublicError(policy.client_message, policy.retry_owner)
-    for policy in map(policy_for, FailureKind)
-    if policy.public_code is not None and policy.client_message is not None
+    failure.public_code: _PublicError(failure.message, failure.retry)
+    for kind in FailureKind
+    if (failure := stream_failure(kind, StreamPhase.AFTER_HEADERS)).public_code
+    is not None
+    and failure.message is not None
 }
 
 

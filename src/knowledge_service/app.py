@@ -7,8 +7,9 @@ import anyio
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
+from knowledge_service.answering.stream_failures import StreamPhase, stream_failure
 from knowledge_service.answering.streaming import (
     CLOSE_SECONDS,
     AnswerStream,
@@ -49,7 +50,10 @@ def failure_response(
     kind: FailureKind,
     request_id: UUID,
 ) -> JSONResponse:
+    """The JSON error for `kind`: a response not yet started has no stream."""
     policy = policy_for(kind)
+    # An outage or a limit says when to send the request again.
+    retry_after = stream_failure(kind, StreamPhase.BEFORE_HEADERS).retry_after_seconds
 
     status_code = policy.status_code
     public_code = policy.public_code
@@ -58,12 +62,15 @@ def failure_response(
     if status_code is None or public_code is None or client_message is None:
         raise RuntimeError("Failure policy has no public HTTP response")
 
-    return error_response(
+    response = error_response(
         status_code=status_code,
         code=public_code,
         message=client_message,
         request_id=request_id,
     )
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 def request_id_from(request: Request) -> UUID:
@@ -109,9 +116,17 @@ class EventStreamResponse(StreamingResponse):
             writing.result()
 
     async def _write(self, send: Send) -> None:
+        async def sending(message: Message) -> None:
+            # Recorded as the headers are handed over, before any event.
+            if message["type"] == "http.response.start":
+                headers_sent = getattr(self.body_iterator, "headers_sent", None)
+                if callable(headers_sent):
+                    headers_sent()
+            await send(message)
+
         # Under ASGI 2.4, a write after the client left raises OSError.
         with contextlib.suppress(OSError):
-            await self.stream_response(send)
+            await self.stream_response(sending)
 
 
 async def _unless_client_leaves(

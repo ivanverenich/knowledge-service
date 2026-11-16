@@ -38,7 +38,9 @@ What the stream promises:
 - **One record per stream.** "answer stream started" and "answer stream
   ended" hold the request ID, counts, tokens, timing, and how the stream
   ended: `completed`, `failed`, or `cancelled`, also when it ends before
-  its first event. Never text.
+  its first event. The end also holds the phase it ended in, its audit
+  outcome, and what became of the partial text, as `stream_failures`
+  defines them. Never text.
 """
 
 import asyncio
@@ -83,6 +85,13 @@ from knowledge_service.answering.generation import (
     well_formed_reply,
 )
 from knowledge_service.answering.prompt import EvidencePrompt
+from knowledge_service.answering.stream_failures import (
+    AuditOutcome,
+    PartialText,
+    StreamPhase,
+    finished_outcome,
+    stream_failure,
+)
 from knowledge_service.answering.support import SupportJudge, check_support
 from knowledge_service.contracts import Question, Usage
 from knowledge_service.errors import (
@@ -267,8 +276,10 @@ class AnswerStreamer:
             span.end()
             raise
         except Exception as error:
+            failed = stream_failure(classify_failure(error), StreamPhase.BEFORE_HEADERS)
             span.failure = type(error).__name__
             span.outcome = "failed"
+            span.audit_outcome = failed.audit_outcome
             span.end()
             raise
         plan = _Plan(
@@ -284,6 +295,8 @@ class AnswerStreamer:
         writer = AnswerEventWriter(plan.request_id)
         finished: FinishedAnswer | None = None
         failure: FailureKind | None = None
+        # The response sends its headers before it asks for the first event.
+        span.phase = StreamPhase.AFTER_HEADERS
         try:
             yield writer.metadata()
             context = plan.context
@@ -325,24 +338,41 @@ class AnswerStreamer:
                 ):
                     rest = finished.result.text[span.characters :]
                     if rest:
-                        yield writer.text_delta(rest)
+                        delta = writer.text_delta(rest)
+                        # Counted before it is handed over, as in the loop above.
                         span.sent(rest)
+                        yield delta
                     for citation in finished.result.citations:
                         yield writer.citation(citation)
                         span.citations += 1
                 if span.usage is not None:
                     yield writer.usage(span.usage)
                 if decision is not None:
-                    yield writer.completion(decision, plan.language)
+                    completion = writer.completion(decision, plan.language)
+                    # Recorded before it is handed over: a client that leaves
+                    # after reading it got the whole stream.
                     span.outcome = "completed"
+                    span.audit_outcome = finished_outcome(decision.decision)
+                    span.partial_text = (
+                        PartialText.KEPT
+                        if decision.decision is Decision.ANSWER
+                        else PartialText.REPLACED
+                    )
+                    yield completion
             except InvalidEventStream as error:
                 # A refused event changes nothing, so an error can still end it.
                 decision = None
                 failure = FailureKind.INTERNAL
                 span.failure = f"{type(error).__name__}:{error.defect.value}"
             if decision is None:
-                yield writer.error(failure or FailureKind.INTERNAL)
+                failed = stream_failure(
+                    failure or FailureKind.INTERNAL, StreamPhase.AFTER_HEADERS
+                )
+                error_event = writer.error(failed.kind)
                 span.outcome = "failed"
+                span.audit_outcome = failed.audit_outcome
+                span.partial_text = failed.partial_text
+                yield error_event
         finally:
             span.end()
 
@@ -401,6 +431,10 @@ class AnswerStream:
 
     def __aiter__(self) -> AnswerStream:
         return self
+
+    def headers_sent(self) -> None:
+        """Record that the response headers went out, before any event."""
+        self._span.phase = StreamPhase.AFTER_HEADERS
 
     async def __anext__(self) -> bytes:
         return await anext(self._events)
@@ -519,6 +553,10 @@ class _Span:
     usage: Usage | None = None
     failure: str | None = None
     outcome: str = "cancelled"
+    phase: StreamPhase = StreamPhase.BEFORE_HEADERS
+    audit_outcome: AuditOutcome = AuditOutcome.CANCELLED
+    # What a client that left holds; a decision or an error sets it.
+    partial_text: PartialText = PartialText.ABANDONED
     ended: bool = False
 
     def __post_init__(self) -> None:
@@ -544,6 +582,11 @@ class _Span:
             "text_deltas": self.deltas,
             "characters": self.characters,
             "citations": self.citations,
+            "phase": str(self.phase),
+            "audit_outcome": str(self.audit_outcome),
+            "partial_text": str(
+                self.partial_text if self.characters else PartialText.NONE
+            ),
         }
         if self.usage is not None:
             fields["input_tokens"] = self.usage.input_tokens
