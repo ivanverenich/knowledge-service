@@ -8,7 +8,7 @@
 # Bare `make` shows the command menu.
 .DEFAULT_GOAL := do_good
 
-.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check check hooks-install hooks docs-check
+.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check keycloak-up keycloak-down keycloak-reset check hooks-install hooks docs-check
 
 # ---------------------------------------------------------------------------
 # Command menu
@@ -95,6 +95,34 @@ test-integration: ## Run integration tests (needs services)
 
 ml-check: ## Type-check and test the local BGE-M3 and reranker servers (Python 3.12)
 	cd ml/bge_m3_server && uv run pyright && uv run pytest -q
+
+# ---------------------------------------------------------------------------
+# Local identity provider
+# ---------------------------------------------------------------------------
+
+# Keycloak for local work only (M07-T02). Its secrets live in
+# deploy/keycloak/.env, created on the first `keycloak-up` and ignored by Git.
+# The realm is imported only into an empty volume, so new secrets beside an
+# old volume would not match the stored passwords: `keycloak-up` refuses that.
+KEYCLOAK_COMPOSE = docker compose -f deploy/keycloak/compose.yaml
+KEYCLOAK_PROJECT = knowledge-service-keycloak
+KEYCLOAK_VOLUME = $(KEYCLOAK_PROJECT)_keycloak-data
+
+keycloak-up: ## Start the local Keycloak, creating its secrets on first use
+	@if [ ! -f deploy/keycloak/.env ] && docker volume inspect $(KEYCLOAK_VOLUME) >/dev/null 2>&1; then \
+		echo "deploy/keycloak/.env is gone but Keycloak's volume still holds a realm made with it; run make keycloak-reset"; \
+		exit 1; \
+	fi
+	uv run python scripts/keycloak_env.py
+	$(KEYCLOAK_COMPOSE) up -d --wait
+
+keycloak-down: ## Stop the local Keycloak and keep its users and keys
+	docker compose -p $(KEYCLOAK_PROJECT) down
+
+# By project name, not by file, so it works even when .env is missing.
+keycloak-reset: ## Remove the local Keycloak, its volume, and its secrets
+	docker compose -p $(KEYCLOAK_PROJECT) down -v
+	rm -f deploy/keycloak/.env
 
 # ---------------------------------------------------------------------------
 # Combined checks and git hooks

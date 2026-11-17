@@ -17,7 +17,7 @@ end is checked by `make docs-check`.
 | Questions, Answers, Conversations | Reveal what a User asked and what they were told | PostgreSQL `conversations`, `messages`; the model provider's request |
 | Citations and Evidence IDs | Tell the User where a claim came from; a fake one launders a claim | Built on the server per request |
 | Evaluation Datasets and Runs | Hold Questions, expected Documents, and Authorization Contexts | `datasets/`, `artifacts/` |
-| Credentials | Database URL, provider API keys, later OIDC client secrets | Environment and settings, redacted in repr |
+| Credentials | Database URL, provider API keys, the OIDC client secret and demo passwords | Environment and settings, redacted in repr; the local Keycloak's in the Git-ignored `deploy/keycloak/.env`, generated per machine |
 | Telemetry | Logs and, later, traces; a copy of everything they hold | Log records today |
 | Availability and budget | Every Answer costs model tokens | Model providers, the database pool |
 
@@ -50,6 +50,7 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 | `POST /v1/answer/stream` | Any client that reaches the API | The grounded path: Evidence, checked Citations, and the abstention policy. No token check yet; the reader is fixed when the Evidence source is built (M07-T03, M07-T04) |
 | `POST /v1/answer` | Any client that reaches the API | The M01 walking skeleton: sends the Question straight to the model, with no retrieval, Evidence, Citations, or output limit, and without asking the provider not to keep it. The versioned Question route replaces it (M09-T01) |
 | `GET /health/live`, `GET /health/ready` | Load balancers | Return status only |
+| Local Keycloak, `http://localhost:8180` | Developers and, later, Open WebUI | Bound to 127.0.0.1. One application client, `open-webui`: the code flow with S256 PKCE, one exact redirect URI, no optional scopes, and only the four application roles in its tokens. No client in the realm gives a token for a password alone. The master realm's admin console shares the port, behind the generated bootstrap admin. Non-production demo users with fixed IDs |
 | Source adapters | Workers | The local directory Source; Confluence in M08 |
 | Model replies | The API | Answer, rewrite, ranking, and support replies, each checked on the server |
 | Jobs | Workers | Stored jobs with typed errors; the Redis queue in M08 |
@@ -130,4 +131,5 @@ Each row traces one invariant under "Invariants" in `docs/security.md` to its co
 - `confirm_citations` is not called in any served path; M07-T09 wires it.
 - Telemetry is log records only; there are no traces and no audit events until M07-T12 and M07-T14.
 - There are no rate limits until M09-T10.
+- The local Keycloak names itself `http://localhost:8180`, which a container cannot reach; Open WebUI and the API in containers need a back-channel address (M09-T08, M12-T03).
 - CI runs the unit tests only, so the integration test owners and `make docs-check` run locally; the trace itself is also checked by a unit test.

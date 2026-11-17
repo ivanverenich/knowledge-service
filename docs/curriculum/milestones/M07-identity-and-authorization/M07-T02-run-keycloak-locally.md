@@ -7,7 +7,7 @@ depends_on: ["M07-T01"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["Keycloak local configuration"]
-status: planned
+status: completed
 ---
 
 # M07-T02 — Run Keycloak locally

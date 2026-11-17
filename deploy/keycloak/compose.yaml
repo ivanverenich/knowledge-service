@@ -1,0 +1,44 @@
+# Local, non-production Keycloak for the knowledge service (M07-T02).
+#
+# Start it with `make keycloak-up`, which first creates `.env` beside this
+# file with random secrets. Nothing here holds a credential: every secret is
+# read from that file, and Compose refuses to start when one is missing.
+name: knowledge-service-keycloak
+
+services:
+  keycloak:
+    # Keycloak 26.8.1, pinned by digest so every machine runs the same image.
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?run make keycloak-up}
+      # Tokens name this issuer whichever address the client used.
+      KC_HOSTNAME: http://localhost:8180
+      KC_HEALTH_ENABLED: "true"
+      # Read by the realm file's placeholders when the realm is imported.
+      KS_OPEN_WEBUI_CLIENT_SECRET: ${KS_OPEN_WEBUI_CLIENT_SECRET:?run make keycloak-up}
+      KS_ALICE_PASSWORD: ${KS_ALICE_PASSWORD:?run make keycloak-up}
+      KS_BOB_PASSWORD: ${KS_BOB_PASSWORD:?run make keycloak-up}
+      KS_CAROL_PASSWORD: ${KS_CAROL_PASSWORD:?run make keycloak-up}
+    ports:
+      - "127.0.0.1:8180:8080"
+    volumes:
+      # The realm is imported once, on the first start with an empty volume.
+      - ./knowledge-service-realm.json:/opt/keycloak/data/import/knowledge-service-realm.json:ro
+      # Users, sessions, and the generated signing keys live here. The image
+      # owns this directory, so a new volume gets its owner, not root's.
+      - keycloak-data:/opt/keycloak/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"status": "UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+volumes:
+  keycloak-data:

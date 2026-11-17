@@ -1,0 +1,232 @@
+{
+  "realm": "knowledge-service",
+  "displayName": "Knowledge service (local, non-production)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "defaultSignatureAlgorithm": "RS256",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      {
+        "name": "user",
+        "description": "Asks questions and manages their own Conversations."
+      },
+      {
+        "name": "content-manager",
+        "description": "Configures Sources and starts Synchronization Runs."
+      },
+      {
+        "name": "evaluator",
+        "description": "Manages Evaluation Datasets and runs paid evaluation."
+      },
+      {
+        "name": "administrator",
+        "description": "Manages policy and operational configuration."
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "engineering"
+    },
+    {
+      "name": "finance"
+    }
+  ],
+  "users": [
+    {
+      "id": "0f5e7d2a-7c51-4f0e-9d2b-1a6c3e8b4a01",
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KS_ALICE_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/engineering"
+      ],
+      "realmRoles": [
+        "user"
+      ]
+    },
+    {
+      "id": "0f5e7d2a-7c51-4f0e-9d2b-1a6c3e8b4a02",
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.test",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KS_BOB_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/finance"
+      ],
+      "realmRoles": [
+        "user",
+        "content-manager"
+      ]
+    },
+    {
+      "id": "0f5e7d2a-7c51-4f0e-9d2b-1a6c3e8b4a03",
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@example.test",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KS_CAROL_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [],
+      "realmRoles": [
+        "user",
+        "administrator"
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "open-webui",
+      "name": "Open WebUI (local)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KS_OPEN_WEBUI_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": true,
+      "redirectUris": [
+        "http://localhost:3000/oauth/oidc/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "knowledge-service-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "knowledge-service-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "acr",
+        "web-origins",
+        "profile",
+        "email",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "admin-cli",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ],
+  "scopeMappings": [
+    {
+      "client": "open-webui",
+      "roles": [
+        "user",
+        "content-manager",
+        "evaluator",
+        "administrator"
+      ]
+    }
+  ],
+  "components": {
+    "org.keycloak.keys.KeyProvider": [
+      {
+        "name": "rsa-generated",
+        "providerId": "rsa-generated",
+        "config": {
+          "priority": [
+            "100"
+          ],
+          "keySize": [
+            "2048"
+          ],
+          "algorithm": [
+            "RS256"
+          ]
+        }
+      },
+      {
+        "name": "hmac-generated-hs512",
+        "providerId": "hmac-generated",
+        "config": {
+          "priority": [
+            "100"
+          ],
+          "algorithm": [
+            "HS512"
+          ]
+        }
+      },
+      {
+        "name": "aes-generated",
+        "providerId": "aes-generated",
+        "config": {
+          "priority": [
+            "100"
+          ]
+        }
+      }
+    ]
+  }
+}

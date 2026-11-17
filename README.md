@@ -60,7 +60,18 @@ make test-unit         Run deterministic unit tests
 make test-integration  Run non-live integration tests
 make check             Run every non-live quality gate with coverage
 make docs-check        Validate the documentation under docs/
+make keycloak-up       Start the local Keycloak (creates its secrets once)
+make keycloak-down     Stop the local Keycloak, keeping its users and keys
+make keycloak-reset    Remove the local Keycloak, its volume, and its secrets
 ```
+
+The local Keycloak (`deploy/keycloak/`) serves the `knowledge-service` realm at
+`http://localhost:8180` for development only. `make keycloak-up` writes random
+secrets to the Git-ignored `deploy/keycloak/.env` on first use; the demo users'
+passwords are read from there. The realm is imported only into an empty volume,
+so if that file is lost or edited, run `make keycloak-reset` and then
+`make keycloak-up`. Keycloak briefly locks a user after quick failed logins;
+wait a minute or reset.
 
 Example of a direct command: UV_CACHE_DIR=/tmp/uv-cache-rag-project make test-unit
 
