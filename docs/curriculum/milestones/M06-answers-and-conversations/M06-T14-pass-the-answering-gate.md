@@ -7,7 +7,7 @@ depends_on: ["M06-T13"]
 estimate: 90m
 topics: ["generation","citations","sse"]
 deliverables: ["M06 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M06-T14 — Pass the answering understanding gate

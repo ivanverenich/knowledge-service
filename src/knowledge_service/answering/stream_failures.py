@@ -15,9 +15,9 @@ different things in each:
   service never retries a stream once text is out, because the text could
   differ, so an outage or a limit tells the caller to send the Question
   again. A validation failure here is the server's own, because the
-  request was accepted, so it is reported as an internal error. The
-  event reader accepts only this guidance; no client of the version `1`
-  events had shipped before it changed, so the version stays `1`.
+  request was accepted, so it is reported as an internal error. Events
+  of protocol version `2` carry this guidance; the reader still reads a
+  version `1` error with the M01 retry owner it had then.
 
 What every failure settles:
 

@@ -550,11 +550,11 @@ async def test_text_sent_at_the_end_is_counted_when_the_client_leaves(
         {"citations": [CITED], "abstained": False, "reason": None, "answer": ANSWER}
     )
     events = await streamer(Model(final=final)).open(QUESTION, request_id=REQUEST_ID)
-    sent = [await anext(events), await anext(events)]
+    sent = [await anext(events), await anext(events), await anext(events)]
 
     await events.aclose()
 
-    assert names(sent) == ["metadata", "text_delta"]
+    assert names(sent) == ["metadata", "checking", "text_delta"]
     record = ended(caplog)
     assert record["characters"] == len(ANSWER)
     assert (record["audit_outcome"], record["partial_text"]) == (

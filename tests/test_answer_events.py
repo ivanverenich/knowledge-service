@@ -125,7 +125,7 @@ def test_the_stream_is_the_documented_text_format() -> None:
 
     assert first == (
         "id: 0\nevent: metadata\n"
-        'data: {"version":"1","request_id":"00000000-0000-0000-0000-000000000049"}'
+        'data: {"version":"2","request_id":"00000000-0000-0000-0000-000000000049"}'
         "\n\n"
     )
 
@@ -459,7 +459,7 @@ def test_an_unknown_or_forged_error_is_refused() -> None:
         b"event: metadata\nid: 0\ndata: {}\n\n",
         b"id: 0\nevent: metadata\ndata: []\n\n",
         b"id: 0\nevent: metadata\ndata: {}\nretry: 5\n\n",
-        b'id: 0\nevent: metadata\ndata: {"version":"2",'
+        b'id: 0\nevent: metadata\ndata: {"version":"3",'
         b'"request_id":"00000000-0000-0000-0000-000000000049"}\n\n',
         b'id: 0\nevent: metadata\ndata: {"version":"1","request_id":"x"}\n\n',
         b'id: 0\nevent: metadata\ndata: {"version":"1",'

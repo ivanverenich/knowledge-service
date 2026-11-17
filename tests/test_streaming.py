@@ -296,6 +296,7 @@ async def test_a_reply_in_another_key_order_sends_the_text_at_the_end() -> None:
 
     assert names(sent) == [
         "metadata",
+        "checking",
         "text_delta",
         "citation",
         "usage",

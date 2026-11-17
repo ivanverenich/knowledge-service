@@ -9,14 +9,27 @@ whatever the writer sends, the reader accepts.
 
 The order of one stream:
 
-    metadata  text_delta*  citation*  usage?  (completion | error)
+    metadata  text_delta*  (checking  text_delta*)?  citation*  usage?
+    (completion | error)
 
 - **`metadata` first.** Exactly once: the protocol version and the
   request ID. A request that fails before it is an HTTP error, not a
   stream.
+- **Versions.** The writer writes version `2`: the `checking` event and
+  the retry guidance of `stream_failures` came with it. The reader also
+  reads version `1`, as servers wrote it before: no `checking`, and the
+  retry owner of the M01 error policy. A version `1` reader refuses a
+  version `2` stream at its first event, so a client that is too old
+  learns it at once instead of misreading the Answer.
 - **Text, then Citations, then usage.** `text_delta` events hold the
   Answer's text in pieces; joined, they are the text. `citation` events
   follow, each Evidence once; `usage` follows, at most once.
+- **`checking` when the model is done.** Version `2` only. At most once, before any
+  Citation, usage, or terminal event: the model has finished and the
+  server is checking its reply before it decides, which can take a while.
+  It holds no data and changes nothing a client rebuilds; the end of the
+  text may still follow it, because text the model did not stream as it
+  wrote is sent only once the server has decided to answer.
 - **One terminal event, last.** `completion` or `error` ends the stream;
   nothing may follow it, and a stream that stops without one is cut off.
 - **What the client keeps.** `completion` with `answer` keeps the text and
@@ -67,10 +80,12 @@ from knowledge_service.answering.generation import MAX_ANSWER_CHARACTERS
 from knowledge_service.answering.prompt import has_visible_text
 from knowledge_service.answering.stream_failures import StreamPhase, stream_failure
 from knowledge_service.contracts import Usage
-from knowledge_service.errors import FailureKind, RetryOwner
+from knowledge_service.errors import FailureKind, RetryOwner, policy_for
 from knowledge_service.language import Language
 
-EVENT_PROTOCOL_VERSION = "1"
+EVENT_PROTOCOL_VERSION = "2"
+# The version servers wrote before `checking`; still read, never written.
+_FIRST_VERSION = "1"
 MAX_EVENT_CHARACTERS = 131_072
 _ID = re.compile(r"id: (0|[1-9][0-9]{0,8})")
 _STRICT = ConfigDict(extra="forbid", strict=True, frozen=True)
@@ -105,6 +120,7 @@ class EventName(StrEnum):
 
     METADATA = "metadata"
     TEXT_DELTA = "text_delta"
+    CHECKING = "checking"
     CITATION = "citation"
     USAGE = "usage"
     COMPLETION = "completion"
@@ -119,7 +135,7 @@ class MetadataData(BaseModel):
 
     model_config = _STRICT
 
-    version: Literal["1"]
+    version: Literal["1", "2"]
     request_id: str
 
 
@@ -129,6 +145,12 @@ class TextDeltaData(BaseModel):
     model_config = _STRICT
 
     text: str = Field(min_length=1, repr=False)
+
+
+class CheckingData(BaseModel):
+    """The model is done; the server is checking its reply. No data."""
+
+    model_config = _STRICT
 
 
 class UsageData(BaseModel):
@@ -165,6 +187,7 @@ class ErrorData(BaseModel):
 type EventData = (
     MetadataData
     | TextDeltaData
+    | CheckingData
     | CitationPayload
     | UsageData
     | CompletionData
@@ -174,6 +197,7 @@ type EventData = (
 _DATA: dict[EventName, type[BaseModel]] = {
     EventName.METADATA: MetadataData,
     EventName.TEXT_DELTA: TextDeltaData,
+    EventName.CHECKING: CheckingData,
     EventName.CITATION: CitationPayload,
     EventName.USAGE: UsageData,
     EventName.COMPLETION: CompletionData,
@@ -232,6 +256,8 @@ _AFTER: dict[EventName, tuple[frozenset[_Phase], _Phase]] = {
         frozenset({_Phase.METADATA, _Phase.TEXT}),
         _Phase.TEXT,
     ),
+    # Text may follow `checking`; `_Rules` keeps it to once.
+    EventName.CHECKING: (frozenset({_Phase.METADATA, _Phase.TEXT}), _Phase.TEXT),
     EventName.CITATION: (
         frozenset({_Phase.METADATA, _Phase.TEXT, _Phase.CITATIONS}),
         _Phase.CITATIONS,
@@ -262,6 +288,8 @@ class _Rules:
         self.characters = 0
         self.citations: list[CitationPayload] = []
         self.usage: UsageData | None = None
+        self.version = EVENT_PROTOCOL_VERSION
+        self.checking = False
         self.result: StreamedAnswer | None = None
 
     def accept(self, event: AnswerEvent) -> None:
@@ -281,11 +309,19 @@ class _Rules:
         match data:
             case MetadataData():
                 self.request_id = _request_id(data.request_id)
+                self.version = data.version
             case TextDeltaData():
                 if self.characters + len(data.text) > MAX_ANSWER_CHARACTERS:
                     raise InvalidEventStream(StreamDefect.TOO_LARGE)
                 self.text.append(data.text)
                 self.characters += len(data.text)
+            case CheckingData():
+                # Version 1 had no such event.
+                if self.version == _FIRST_VERSION:
+                    raise InvalidEventStream(StreamDefect.MALFORMED)
+                if self.checking:
+                    raise InvalidEventStream(StreamDefect.OUT_OF_ORDER)
+                self.checking = True
             case CitationPayload():
                 if not _server_ids(data):
                     raise InvalidEventStream(StreamDefect.MALFORMED)
@@ -319,7 +355,8 @@ class _Rules:
         )
 
     def _failed(self, data: ErrorData) -> StreamedAnswer:
-        policy = _PUBLIC_ERRORS.get(data.code)
+        errors = _FIRST_ERRORS if self.version == _FIRST_VERSION else _PUBLIC_ERRORS
+        policy = errors.get(data.code)
         if policy is None:
             raise InvalidEventStream(StreamDefect.UNKNOWN_ERROR)
         if data.message != policy.client_message or data.retry is not (
@@ -376,6 +413,9 @@ class AnswerEventWriter:
 
     def text_delta(self, text: str) -> bytes:
         return self._write(EventName.TEXT_DELTA, lambda: TextDeltaData(text=text))
+
+    def checking(self) -> bytes:
+        return self._write(EventName.CHECKING, CheckingData)
 
     def citation(self, citation: Citation) -> bytes:
         if type(citation) is not Citation:
@@ -538,6 +578,12 @@ _PUBLIC_ERRORS: dict[str, _PublicError] = {
     if (failure := stream_failure(kind, StreamPhase.AFTER_HEADERS)).public_code
     is not None
     and failure.message is not None
+}
+# What a version 1 error said: the M01 policy, before `stream_failures`.
+_FIRST_ERRORS: dict[str, _PublicError] = {
+    policy.public_code: _PublicError(policy.client_message, policy.retry_owner)
+    for policy in map(policy_for, FailureKind)
+    if policy.public_code is not None and policy.client_message is not None
 }
 
 

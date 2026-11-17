@@ -18,7 +18,8 @@ What the stream promises:
   `error` event.
 - **Text as it comes, the decision at the end.** The model writes JSON
   whose first field is the answer; its text is passed on piece by piece.
-  The whole reply is then checked as `generate_answer` checks it, and the
+  When the reply is complete, a `checking` event says so. The whole reply
+  is then checked as `generate_answer` checks it, and the
   `AnswerFinisher` decides. The client keeps the text only if the decision
   is `answer`, and the streamed text is then exactly the checked text: a
   missing end is sent, and any other difference abstains.
@@ -40,7 +41,10 @@ What the stream promises:
   ended: `completed`, `failed`, or `cancelled`, also when it ends before
   its first event. The end also holds the phase it ended in, its audit
   outcome, and what became of the partial text, as `stream_failures`
-  defines them. Never text.
+  defines them; for a completed abstention its reason; and, when the model
+  replied, how its reply was judged (`answered`, `abstained`, `refused`,
+  `invalid`) and the rule an invalid one broke, such as
+  `invalid_citation`. Never text.
 """
 
 import asyncio
@@ -75,6 +79,7 @@ from knowledge_service.answering.evidence import EvidenceSet
 from knowledge_service.answering.generation import (
     MAX_ANSWER_CHARACTERS,
     MAX_REPLY_CHARACTERS,
+    AnswerDefect,
     AnswerOutcome,
     AnswerResult,
     InvalidAnswerRequest,
@@ -323,7 +328,11 @@ class AnswerStreamer:
                     finally:
                         await _close(parts)
                     span.usage = reply.usage
+                    # The model is done; checking its reply can take a while.
+                    yield writer.checking()
                     finished = await self._finished(plan, context, reply, span)
+                    span.reply = finished.result.outcome
+                    span.defect = finished.result.defect
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -352,6 +361,7 @@ class AnswerStreamer:
                     # Recorded before it is handed over: a client that leaves
                     # after reading it got the whole stream.
                     span.outcome = "completed"
+                    span.reason = decision.reason
                     span.audit_outcome = finished_outcome(decision.decision)
                     span.partial_text = (
                         PartialText.KEPT
@@ -552,6 +562,10 @@ class _Span:
     citations: int = 0
     usage: Usage | None = None
     failure: str | None = None
+    # Why the policy abstained, and which rule a reply broke: names only.
+    reason: AbstentionReason | None = None
+    reply: AnswerOutcome | None = None
+    defect: AnswerDefect | None = None
     outcome: str = "cancelled"
     phase: StreamPhase = StreamPhase.BEFORE_HEADERS
     audit_outcome: AuditOutcome = AuditOutcome.CANCELLED
@@ -587,6 +601,9 @@ class _Span:
             "partial_text": str(
                 self.partial_text if self.characters else PartialText.NONE
             ),
+            "reason": None if self.reason is None else str(self.reason),
+            "reply": None if self.reply is None else str(self.reply),
+            "defect": None if self.defect is None else str(self.defect),
         }
         if self.usage is not None:
             fields["input_tokens"] = self.usage.input_tokens
