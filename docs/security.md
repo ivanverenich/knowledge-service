@@ -1,5 +1,9 @@
 # Security model
 
+The threat model, `docs/threat-model.md`, names the assets, actors, entry
+points, and abuse cases behind these rules, and traces each invariant to a
+control and a test owner.
+
 ## Invariants
 
 1. A Chunk is eligible for retrieval only when its Document is currently available and at least one normalized Access Grant matches the verified Authorization Context.

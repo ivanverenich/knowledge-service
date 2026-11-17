@@ -7,7 +7,7 @@ depends_on: ["M06-T14"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["threat model"]
-status: planned
+status: completed
 ---
 
 # M07-T01 — Write the system threat model
