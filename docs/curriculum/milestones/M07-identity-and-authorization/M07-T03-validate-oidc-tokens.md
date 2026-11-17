@@ -7,7 +7,7 @@ depends_on: ["M07-T02"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["OIDC verifier"]
-status: planned
+status: completed
 ---
 
 # M07-T03 — Validate OIDC tokens

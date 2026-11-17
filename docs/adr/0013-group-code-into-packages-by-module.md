@@ -17,6 +17,7 @@ module, and persistence is split by the kind of record it stores.
 | `knowledge_service.embeddings` | The EmbeddingModel port and its OpenAI adapter, batching, publication, index configurations, model migrations |
 | `knowledge_service.retrieval` | Vector search, retrieval filters, the vector benchmark |
 | `knowledge_service.persistence` | `schema` (every table, the one `metadata` Alembic compares) and one module per kind of record |
+| `knowledge_service.identity` | Who is calling: the OIDC token verifier (M07-T03), and the Authorization Context built from its result |
 
 Domain values (`identifiers`, `access`, `documents`, `chunks`, `language`,
 `audit`, `jobs`, `conversations`, `evaluation`), configuration, the database
@@ -37,3 +38,6 @@ may import them.
   rewritten.
 - A new module goes into the package of the architecture module it serves;
   a new package needs a reason recorded here.
+- M07-T03 added `knowledge_service.identity`. Checking who calls is the
+  seam to the identity provider, an external system, and every transport
+  needs it before any module runs; it belongs to none of the modules above.

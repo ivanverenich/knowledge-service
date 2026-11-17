@@ -37,7 +37,7 @@ end is checked by `make docs-check`.
 
 The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boundaries that matter here:
 
-- **Public to edge.** Everything from the browser is untrusted until the edge and the API have verified a token (M07-T03).
+- **Public to edge.** Everything from the browser is untrusted until the edge and the API have verified a token. `OidcVerifier` verifies one; the endpoints call it from M07-T04.
 - **API to data.** PostgreSQL decides eligibility inside every search; a Chunk the reader may not see never leaves it.
 - **API to model providers.** Evidence and the Question leave the private zone here; only eligible Evidence under opaque IDs may cross, and replies come back as untrusted data.
 - **Workers to Sources.** Source content enters here and stays untrusted data for its whole life.
@@ -47,7 +47,7 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 
 | Entry point | Who reaches it | Today |
 |---|---|---|
-| `POST /v1/answer/stream` | Any client that reaches the API | The grounded path: Evidence, checked Citations, and the abstention policy. No token check yet; the reader is fixed when the Evidence source is built (M07-T03, M07-T04) |
+| `POST /v1/answer/stream` | Any client that reaches the API | The grounded path: Evidence, checked Citations, and the abstention policy. No token check yet; the reader is fixed when the Evidence source is built (M07-T04) |
 | `POST /v1/answer` | Any client that reaches the API | The M01 walking skeleton: sends the Question straight to the model, with no retrieval, Evidence, Citations, or output limit, and without asking the provider not to keep it. The versioned Question route replaces it (M09-T01) |
 | `GET /health/live`, `GET /health/ready` | Load balancers | Return status only |
 | Local Keycloak, `http://localhost:8180` | Developers and, later, Open WebUI | Bound to 127.0.0.1. One application client, `open-webui`: the code flow with S256 PKCE, one exact redirect URI, no optional scopes, and only the four application roles in its tokens. No client in the realm gives a token for a password alone. The master realm's admin console shares the port, behind the generated bootstrap admin. Non-production demo users with fixed IDs |
@@ -104,7 +104,9 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 
 | Abuse case | Mitigation now | Still to come |
 |---|---|---|
-| A client with no identity reads or spends | Nothing yet: neither answer endpoint checks a token | Token validation and the Authorization Context (M07-T03, M07-T04) |
+| A client with no identity reads or spends | Nothing yet in the endpoints: `OidcVerifier` exists, but neither answer endpoint calls it | The Authorization Context from verified tokens only (M07-T04) |
+| A forged, expired, or other-audience token is accepted | `OidcVerifier`: RS256 only, a key from the issuer's JWKS, the exact issuer, the API audience, and the times within 30 seconds of skew | The endpoints use it (M07-T04) |
+| Random key IDs make the API flood the identity provider, or an outage opens the API | An unknown key ID refreshes the keys at most once per 30 seconds; cached keys outlive failed refreshes for at most an hour, then every token is refused as unavailable | None |
 | Logs or traces hold Question, Evidence, or Answer text | Log records hold counts, names, and outcomes; marker tests prove no planted text reaches them | Redacted logs and traces (M07-T12) |
 | A credential appears in a repr or a log | Settings redact the database URL and API keys | Configuration separate from secrets (M12-T05) |
 | An evaluation artifact leaks private content | `artifacts/private` and `artifacts/raw` are ignored; reports name no text | Durable audit events (M07-T14) |
@@ -126,7 +128,8 @@ Each row traces one invariant under "Invariants" in `docs/security.md` to its co
 
 ## Known gaps
 
-- The API checks no token yet; until M07-T03 and M07-T04 the reader is whoever the Evidence source was built for.
+- The API checks no token yet: `OidcVerifier` exists, but until M07-T04 the reader is whoever the Evidence source was built for.
+- `OidcVerifier` sets no maximum token lifetime and does not check a token's type: Keycloak's ID tokens are refused only because their audience is the client, not the API.
 - `POST /v1/answer` is the ungrounded M01 path, kept until M09-T01 replaces it.
 - `confirm_citations` is not called in any served path; M07-T09 wires it.
 - Telemetry is log records only; there are no traces and no audit events until M07-T12 and M07-T14.
