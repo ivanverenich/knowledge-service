@@ -7,7 +7,7 @@ depends_on: ["M07-T05"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["grant normalizer"]
-status: planned
+status: completed
 ---
 
 # M07-T06 — Normalize source Access Grants

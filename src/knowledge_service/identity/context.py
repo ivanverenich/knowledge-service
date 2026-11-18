@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 # Fixed forever: changing it would give every User and Group a new ID.
 IDENTITY_NAMESPACE = UUID("6f1d3c52-4b8e-4c1a-9a57-2e0b7d4f9c31")
+# The longest subject or group path a token may name.
+MAX_NAME_LENGTH = 255
 # RFC 6750 §2.1: the scheme, one or more spaces, and a b64token.
 BEARER = re.compile(r"Bearer +([A-Za-z0-9\-._~+/]+=*)", re.IGNORECASE | re.ASCII)
 # Letters, marks that combine with them, digits, punctuation, and symbols.
@@ -111,7 +113,7 @@ class ContextPolicy:
     trusted_clients: frozenset[str]
     max_groups: int = 64
     max_roles: int = 64
-    max_name_length: int = 255
+    max_name_length: int = MAX_NAME_LENGTH
 
     def __post_init__(self) -> None:
         if type(self.trusted_clients) is not frozenset or not self.trusted_clients:
@@ -171,7 +173,7 @@ def build_authorization_context(
     client: object = claims.get("azp")
     if not isinstance(client, str) or client not in policy.trusted_clients:
         raise _defect(ClaimDefect.UNTRUSTED_CLIENT)
-    if not _visible_name(token.subject, policy):
+    if not visible_name(token.subject, policy.max_name_length):
         raise _defect(ClaimDefect.SUBJECT)
     return AuthorizationContext(
         user_id=user_id_for(issuer, token.subject),
@@ -264,34 +266,36 @@ def _group_paths(claims: Mapping[str, Any], policy: ContextPolicy) -> set[str]:
         if not isinstance(path, str):
             raise _defect(ClaimDefect.GROUPS_MALFORMED)
         named.add(path)
-    kept = {path for path in named if _plain_path(path, policy)}
+    kept = {path for path in named if plain_group_path(path, policy.max_name_length)}
     if ignored := len(named - kept):
         # A count only: the names may be anything the provider holds.
         logger.warning("group claim entries ignored: %d", ignored)
     return kept
 
 
-def _plain_path(path: str, policy: ContextPolicy) -> bool:
+def plain_group_path(path: str, max_length: int = MAX_NAME_LENGTH) -> bool:
     """A full path such as `/finance/payroll`, with nothing ambiguous in it.
 
     Keycloak writes a `/` inside a group's name as `~/`, but leaves `~`
-    itself alone, so a path with `~` could be either of two groups.
+    itself alone, so a path with `~` could be either of two groups. Only a
+    plain path ever reaches an Authorization Context.
     """
     return (
         path.startswith("/")
         and path != "/"
         and "~" not in path
-        and _visible_name(path, policy)
+        and visible_name(path, max_length)
     )
 
 
-def _visible_name(name: str, policy: ContextPolicy) -> bool:
+def visible_name(name: str, max_length: int = MAX_NAME_LENGTH) -> bool:
     """Non-empty, within the length limit, and every character visible.
 
-    Spaces are allowed inside a name, not at either end.
+    Spaces are allowed inside a name, not at either end. Only a visible
+    subject ever reaches an Authorization Context.
     """
     return (
-        0 < len(name) <= policy.max_name_length
+        0 < len(name) <= max_length
         and name == name.strip()
         and all(
             char == " " or (unicodedata.category(char) in VISIBLE and char not in BLANK)

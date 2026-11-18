@@ -58,7 +58,7 @@ Each module above has its own package under `src/knowledge_service/`
 
 | Package | Module | Main entry points |
 |---|---|---|
-| `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document` |
+| `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document`, `normalize_access` (`grant_normalization`, a Source's `user:<id>` and `group:<id>` principals to Access Grant subjects through its `PrincipalDirectory`, as the same UUIDv5 IDs the Authorization Context uses, and only to subjects and paths a token could carry; distinct, in a stable order, and failing closed: an unmapped or malformed principal grants nothing and is reported), `narrow_access` (a record that fails to normalize keeps its last good version only for readers its old and new access both name) |
 | `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
 | `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `OpenAIEmbeddingModel` (managed), `LocalEmbeddingModel` (BGE-M3 over HTTP, pinned revision), `SparseModel` (`sparse`, the port for sparse term weights; M05-T10 prototype only), `publish_document_embeddings`, the migration workflow |
 | `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both; `simple` reads a Question's topic words, without Ukrainian stop words, and needs two of them), `search_english_chunks`, `search_ukrainian_chunks`, `Candidate` (the fields every branch returns), `fuse_ranked_candidates` (Reciprocal Rank Fusion of branch Candidates), `retrieve_hybrid` (both branches at once under one deadline, fused, with per-branch diagnostics), `MetadataCondition`, `load_dataset` / `verify_corpus` / `run_dataset` / `compare_branches` (the bilingual seed Evaluation Dataset in `datasets/bilingual-seed/`, run lexical, dense, and fused), `recall_at` / `reciprocal_rank` (Recall@k and MRR), `compare_sparse` with `search_sparse_chunks` (M05-T10 prototype: BGE-M3 sparse weights against PostgreSQL word search; no default uses it), `Reranker` (`reranking`, the port for cross-encoder scores) with `rerank_candidates` (reorders eligible Candidates within the reranker's limits under one deadline) and `LocalReranker` (`local_reranker`, bge-reranker-v2-m3 over HTTP, pinned revision), `compare_reranking` (fused retrieval before and after reranking; no default reranks yet), `RankingModel` (`llm_reranking`, the port for a language model that returns a ranking) with `rerank_with_llm` (orders the top eligible Candidates under opaque IDs within a candidate and token budget, checks the ranking, keeps retrieval's order on any failure, and returns the billed usage) and `OpenAIRankingModel` (`openai_ranking`, a pinned model over the Responses API with Structured Outputs), `compare_llm_reranking` (the same comparison with fallbacks and cost), `compare_reranking_strategies` (no reranker, the cross-encoder, and the language model on the same Candidates of each case, with quality, latency, and cost per case), `classify_question` (`rewrite_classes`, one rewrite class per Question and the words any rewrite must keep; any word with a digit, or with `_`, `@`, `/`, `.`, `:`, or a backslash inside it, is `exact_identifier` and never rewritten) with `load_rewrite_cases` / `score_rewrite_cases` (`rewrite_cases`, the verified labels in `datasets/bilingual-seed/rewrite-classes.json` and how often the rules agree), `rewrite_question` (`query_rewriting`, the `RewriteModel` port: a Question is sent only when its class is switched on in a `RewritePolicy`, and its rewrite is used only when it keeps every word to keep, every typed identifier, and the stated language, and adds no search operator; otherwise the Question is searched as typed) with `OpenAIRewriteModel` (`openai_rewriting`, a pinned model over the Responses API; `QUERY_REWRITE_CLASSES` is the policy flag, empty by default), and `compare_rewriting` with `score_rewriting` / `check_rollout` (`rewrite_evaluation`, the gain per class on `datasets/bilingual-seed/rewrite-retrieval.json`; a class that harms a case, was not fully measured, or does not gain is not rolled out) |
@@ -203,7 +203,7 @@ sequenceDiagram
     participant Rec as reconcile_document
     participant Del as deletions
     participant DB as PostgreSQL
-    Caller->>Sync: source, source_id, observed_at
+    Caller->>Sync: source, source_id, observed_at, principal_directory
     loop until next_checkpoint is None (a repeated checkpoint raises)
         Sync->>Source: fetch_page(checkpoint, page_size)
         Source-->>Sync: records (bytes, version, access, metadata) + next checkpoint
@@ -215,10 +215,12 @@ sequenceDiagram
                 Sync->>Norm: SourceRecord
                 Norm-->>Sync: NormalizedDocument or Quarantined
                 alt NormalizedDocument
+                    Sync->>Sync: normalize_access: mapped principals become readers, the rest are kept as unresolved
                     Sync->>Rec: NormalizedDocument + readers
                     Rec->>DB: one transaction: lock row, compare fingerprints, write what changed
                 else Quarantined
                     Sync->>Sync: keep it in seen, so its last good version stays
+                    Sync->>Rec: narrow_access: keep only readers old and new access both name
                 end
             end
         end
@@ -227,7 +229,7 @@ sequenceDiagram
     Del->>DB: one transaction: tombstone, audit event, queue purge Job
     Sync->>Del: requeue_unfinished_purges
     Del->>DB: queue a new purge for each exhausted one
-    Sync-->>Caller: SynchronizationSummary
+    Sync-->>Caller: SynchronizationSummary (with unresolved principals)
     Note over Del,DB: later, per Job: purge_document_chunks deletes Chunks of a still-tombstoned Document
 ```
 

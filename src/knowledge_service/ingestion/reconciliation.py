@@ -19,6 +19,10 @@ instead of rolling it back.
 A reader sees either the previous complete version or the new one, never a
 mixture, because the Document row, its Chunks, its Access Grants, and its
 metadata are written together and committed once.
+
+When a record cannot be normalized, its last good version stays, but
+`narrow_access` keeps it only for readers the Source still names: who may
+read it can shrink then, never grow.
 """
 
 from collections.abc import Sequence
@@ -37,7 +41,7 @@ from knowledge_service.documents import (
     DocumentMetadata,
     InvalidDocument,
 )
-from knowledge_service.identifiers import AccessGrantId, ChunkId, DocumentId
+from knowledge_service.identifiers import AccessGrantId, ChunkId, DocumentId, SourceId
 from knowledge_service.ingestion.chunking import chunk_by_structure
 from knowledge_service.ingestion.deletions import availability_event
 from knowledge_service.ingestion.fingerprints import (
@@ -46,7 +50,10 @@ from knowledge_service.ingestion.fingerprints import (
 )
 from knowledge_service.ingestion.normalization import NormalizedDocument
 from knowledge_service.ingestion.provenance import chunk_sources
-from knowledge_service.persistence.access import replace_access_grants
+from knowledge_service.persistence.access import (
+    load_access_grants,
+    replace_access_grants,
+)
 from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.chunks import replace_chunks
 from knowledge_service.persistence.documents import (
@@ -169,6 +176,59 @@ async def reconcile_document(
             source_version=source_version_changed,
         ),
     )
+
+
+async def narrow_access(
+    runtime: DatabaseRuntime,
+    *,
+    source_id: SourceId,
+    external_id: str,
+    readers: Sequence[Subject],
+    observed_at: datetime,
+) -> bool:
+    """Keep a stored Document only for readers both old and new access name.
+
+    For a record that failed to normalize: its last good version stays, so
+    the Source's new access cannot be fully applied, but anyone the Source
+    no longer names loses it now. Nobody gains it until the record
+    normalizes again. Returns whether the Access Grants changed.
+    """
+    async with runtime.transaction() as connection:
+        stored = await load_document(
+            connection, source_id=source_id, external_id=external_id, for_update=True
+        )
+        if stored is None or stored.availability is DocumentAvailability.TOMBSTONED:
+            return False
+        granted = await load_access_grants(connection, document_id=stored.document_id)
+        kept = _both(tuple(grant.subject for grant in granted), readers)
+        access = authorization_fingerprint(
+            document_id=stored.document_id,
+            grants=_grants(stored.document_id, kept, observed_at),
+        )
+        document = stored.reconcile(
+            title=stored.title,
+            content_fingerprint=stored.content_fingerprint,
+            authorization_fingerprint=access,
+            source_version=stored.provenance.source_version,
+            observed_at=observed_at,
+        )
+        if document is stored:
+            return False
+        # The fingerprint records the narrowed readers, so the next good
+        # observation compares against what is really stored.
+        await upsert_document(connection, document)
+        await _write_grants(connection, document, kept, observed_at)
+        return True
+
+
+def _both(stored: Sequence[Subject], observed: Sequence[Subject]) -> list[Subject]:
+    """The readers both sets let in; everyone stands for any reader."""
+    everyone = Subject.public()
+    if everyone in stored:
+        return list(observed)
+    if everyone in observed:
+        return list(stored)
+    return [subject for subject in stored if subject in set(observed)]
 
 
 def build_chunks(

@@ -1775,6 +1775,7 @@ async def _ingest(
             DirectorySource(corpus / folder, access=access),
             source_id=source_id,
             observed_at=observed_at,
+            principal_directory=None,
         )
         if summary.quarantined:
             raise InvalidDataset(f"a Document in {folder}/ could not be ingested")

@@ -4,9 +4,6 @@ from uuid import UUID
 
 from sqlalchemy.dialects import postgresql
 
-from knowledge_service.access import Subject
-from knowledge_service.ingestion.sources import SourceAccess
-from knowledge_service.ingestion.synchronization import source_readers
 from knowledge_service.persistence.chunks import searchable_chunks_statement
 
 
@@ -19,8 +16,3 @@ def test_searchable_chunks_belong_only_to_available_documents() -> None:
     )
 
     assert "documents.availability = 'available'" in sql
-
-
-def test_only_public_items_get_readers_until_identity_mapping_exists() -> None:
-    assert source_readers(SourceAccess(public=True)) == [Subject.public()]
-    assert source_readers(SourceAccess(public=False, principals=("hr",))) == []

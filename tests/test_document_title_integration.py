@@ -92,12 +92,20 @@ async def test_a_synchronized_file_keeps_its_title_and_a_second_pass_writes_noth
     (tmp_path / "handbook.md").write_bytes(HANDBOOK)
     source = DirectorySource(tmp_path, access=SourceAccess(public=True))
     await synchronize_source(
-        runtime, source, source_id=SOURCE_ID, observed_at=OBSERVED_AT
+        runtime,
+        source,
+        source_id=SOURCE_ID,
+        observed_at=OBSERVED_AT,
+        principal_directory=None,
     )
     before = await stored(runtime, "handbook.md")
 
     second = await synchronize_source(
-        runtime, source, source_id=SOURCE_ID, observed_at=LATER
+        runtime,
+        source,
+        source_id=SOURCE_ID,
+        observed_at=LATER,
+        principal_directory=None,
     )
 
     assert before[0].title == "handbook"
