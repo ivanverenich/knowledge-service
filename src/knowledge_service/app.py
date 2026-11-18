@@ -1,14 +1,18 @@
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable, Coroutine
+from typing import Protocol
 from uuid import UUID, uuid4
 
 import anyio
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import ValidationError
 from starlette.types import Message, Receive, Scope, Send
 
+from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.stream_failures import StreamPhase, stream_failure
 from knowledge_service.answering.streaming import (
     CLOSE_SECONDS,
@@ -21,9 +25,38 @@ from knowledge_service.errors import (
     classify_failure,
     policy_for,
 )
+from knowledge_service.identity.context import AuthenticationError, Unauthenticated
+from knowledge_service.identity.oidc import IdentityProviderUnavailable
 from knowledge_service.workflow import AnswerWorkflow
 
+logger = logging.getLogger(__name__)
+
 ReadinessCheck = Callable[[], Awaitable[bool]]
+# A Question is at most 4,000 characters; even escaped as JSON it fits.
+MAX_BODY_BYTES = 65_536
+
+
+class RequestAuthenticator(Protocol):
+    """Gives a request's Authorization Context from its `Authorization` headers.
+
+    `Authenticator` is the implementation; it raises `Unauthenticated`, or
+    `IdentityProviderUnavailable` when tokens cannot be checked.
+    """
+
+    async def authenticate(self, headers: list[str]) -> AuthorizationContext: ...
+
+
+class _NotAuthenticated(Exception):
+    def __init__(self, error: AuthenticationError) -> None:
+        self.error = error
+
+
+class _CannotAuthenticate(Exception):
+    pass
+
+
+class _BodyTooLarge(Exception):
+    pass
 
 
 def error_response(
@@ -162,8 +195,82 @@ def create_app(
     readiness_check: ReadinessCheck | None = None,
     workflow: AnswerWorkflow | None = None,
     streamer: AnswerStreamer | None = None,
+    authenticator: RequestAuthenticator | None = None,
 ) -> FastAPI:
+    """The HTTP application.
+
+    Both answer endpoints need a bearer token: without an `authenticator`
+    they answer 503, and the reader is only ever the context it returns.
+    """
     app = FastAPI(title="knowledge-service")
+
+    async def admit(request: Request) -> tuple[AuthorizationContext, Question]:
+        """The reader, then the Question: the body is not read without a reader."""
+        reader = await authenticate(request)
+        return reader, await read_question(request)
+
+    async def authenticate(request: Request) -> AuthorizationContext:
+        if authenticator is None:
+            raise _CannotAuthenticate
+        # Every Authorization header, whatever the case of its name.
+        headers = [
+            value.decode("latin-1")
+            for name, value in request.headers.raw
+            if name.lower() == b"authorization"
+        ]
+        try:
+            return await authenticator.authenticate(headers)
+        except Unauthenticated as refused:
+            logger.info("request not authenticated: %s", refused.reason)
+            error = refused.error
+        except IdentityProviderUnavailable:
+            logger.warning("request not authenticated: identity provider unavailable")
+            raise _CannotAuthenticate from None
+        except Exception as unexpected:
+            # Only the type: the message may quote the token or its claims.
+            logger.error("authentication failed: %s", type(unexpected).__name__)
+            raise _CannotAuthenticate from None
+        raise _NotAuthenticated(error)
+
+    @app.exception_handler(_NotAuthenticated)
+    async def not_authenticated_handler(
+        request: Request, refused: _NotAuthenticated
+    ) -> JSONResponse:
+        malformed = refused.error is AuthenticationError.INVALID_REQUEST
+        response = error_response(
+            status_code=400 if malformed else 401,
+            code="invalid_request" if malformed else "unauthenticated",
+            message=(
+                "The Authorization header is malformed"
+                if malformed
+                else "A valid access token is required"
+            ),
+            request_id=request_id_from(request),
+        )
+        # RFC 6750 §3: no error code when no Bearer token was sent.
+        response.headers["WWW-Authenticate"] = (
+            f'Bearer error="{refused.error}"' if refused.error else "Bearer"
+        )
+        return response
+
+    @app.exception_handler(_CannotAuthenticate)
+    async def cannot_authenticate_handler(
+        request: Request, _error: _CannotAuthenticate
+    ) -> JSONResponse:
+        return failure_response(
+            kind=FailureKind.DEPENDENCY, request_id=request_id_from(request)
+        )
+
+    @app.exception_handler(_BodyTooLarge)
+    async def body_too_large_handler(
+        request: Request, _error: _BodyTooLarge
+    ) -> JSONResponse:
+        return error_response(
+            status_code=413,
+            code="request_too_large",
+            message="The request body is too large",
+            request_id=request_id_from(request),
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -192,10 +299,10 @@ def create_app(
         )
 
     @app.post("/v1/answer", response_model=Answer)
-    async def answer(
-        question: Question,
-        request: Request,
-    ) -> Answer | JSONResponse:
+    async def answer(request: Request) -> Answer | JSONResponse:
+        # The ungrounded M01 path searches nothing, so it needs proof of
+        # identity but no reader; M09-T01 replaces it.
+        _reader, question = await admit(request)
         request_id = request_id_from(request)
 
         if workflow is None:
@@ -220,7 +327,8 @@ def create_app(
             )
 
     @app.post("/v1/answer/stream")
-    async def answer_stream(question: Question, request: Request) -> Response:
+    async def answer_stream(request: Request) -> Response:
+        reader, question = await admit(request)
         request_id = request_id_from(request)
         if streamer is None:
             return error_response(
@@ -231,7 +339,7 @@ def create_app(
             )
         try:
             events = await _unless_client_leaves(
-                request, streamer.open(question, request_id=request_id)
+                request, streamer.open(question, reader=reader, request_id=request_id)
             )
         except asyncio.CancelledError:
             raise
@@ -251,3 +359,19 @@ def create_app(
         )
 
     return app
+
+
+async def read_question(request: Request) -> Question:
+    """The body as a Question, read only up to `MAX_BODY_BYTES`."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise _BodyTooLarge
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_BODY_BYTES:
+            raise _BodyTooLarge
+    try:
+        return Question.model_validate_json(bytes(body))
+    except ValidationError as invalid:
+        raise RequestValidationError(invalid.errors()) from None

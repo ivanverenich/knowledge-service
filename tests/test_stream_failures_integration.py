@@ -10,6 +10,8 @@ import sqlalchemy as sa
 from pydantic import SecretStr
 
 from evidence_fakes import MARKER
+from identity_fakes import TRUSTED
+from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.streaming import FoundEvidence
 from knowledge_service.app import create_app
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
@@ -37,7 +39,9 @@ class DatabaseSource:
         self.runtime = runtime
         self.query = query
 
-    async def find(self, question: str, *, request_id: UUID) -> FoundEvidence:
+    async def find(
+        self, question: str, *, reader: AuthorizationContext, request_id: UUID
+    ) -> FoundEvidence:
         async with self.runtime.transaction() as connection:
             await connection.execute(sa.text(self.query), {"marker": MARKER})
         return FoundEvidence(EVIDENCE, SIGNALS)
@@ -77,7 +81,7 @@ async def search_fails(
     caplog.set_level(logging.DEBUG)
     model = Model()
     source = cast(Source, DatabaseSource(runtime, query))
-    app = create_app(streamer=streamer(model, source=source))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model, source=source))
 
     async with client(app) as http:
         response = await http.post("/v1/answer/stream", json={"text": QUESTION.text})

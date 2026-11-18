@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 
 from fakes import FakeChatModel, SlowChatModel
+from identity_fakes import AUTHORIZATION, TRUSTED
 from knowledge_service.app import create_app
 from knowledge_service.contracts import Answer, Question
 from knowledge_service.errors import AuthorizationDenied
@@ -25,11 +26,12 @@ def get_client(app: FastAPI) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=transport,
         base_url="http://test",
+        headers=AUTHORIZATION,
     )
 
 
 async def test_liveness_endpoint_returns_ok() -> None:
-    app = create_app()
+    app = create_app(authenticator=TRUSTED)
     async with get_client(app) as client:
         response = await client.get("/health/live")
         assert response.status_code == 200
@@ -60,7 +62,7 @@ async def test_readiness_endpoint_returns_success() -> None:
 
 async def test_answer_endpoint_returns_answer() -> None:
     workflow = AnswerWorkflow(model=FakeChatModel())
-    app = create_app(workflow=workflow)
+    app = create_app(authenticator=TRUSTED, workflow=workflow)
     async with get_client(app) as client:
         response = await client.post(
             "/v1/answer",
@@ -126,7 +128,7 @@ async def test_answer_endpoint_maps_failures(
     code: str,
     message: str,
 ) -> None:
-    app = create_app(workflow=error_workflow(error))
+    app = create_app(authenticator=TRUSTED, workflow=error_workflow(error))
 
     async with get_client(app) as client:
         response = await client.post(
@@ -144,7 +146,9 @@ async def test_answer_endpoint_maps_failures(
 
 
 async def test_answer_endpoint_preserves_cancellation() -> None:
-    app = create_app(workflow=error_workflow(asyncio.CancelledError()))
+    app = create_app(
+        authenticator=TRUSTED, workflow=error_workflow(asyncio.CancelledError())
+    )
 
     async with get_client(app) as client:
         with pytest.raises(asyncio.CancelledError):
@@ -156,7 +160,7 @@ async def test_answer_endpoint_preserves_cancellation() -> None:
 
 
 async def test_answer_endpoint_returns_workflow_unavailable_error() -> None:
-    app = create_app()
+    app = create_app(authenticator=TRUSTED)
 
     async with get_client(app) as client:
         response = await client.post(
@@ -174,7 +178,9 @@ async def test_answer_endpoint_returns_workflow_unavailable_error() -> None:
 
 
 async def test_answer_endpoint_returns_validation_error() -> None:
-    app = create_app(workflow=AnswerWorkflow(model=FakeChatModel()))
+    app = create_app(
+        authenticator=TRUSTED, workflow=AnswerWorkflow(model=FakeChatModel())
+    )
 
     async with get_client(app) as client:
         response = await client.post(
@@ -194,7 +200,7 @@ async def test_answer_endpoint_returns_validation_error() -> None:
 async def test_answer_endpoint_returns_correct_response_on_timeout() -> None:
     model = SlowChatModel()
     workflow = AnswerWorkflow(model=model, timeout_seconds=0.01)
-    app = create_app(workflow=workflow)
+    app = create_app(authenticator=TRUSTED, workflow=workflow)
 
     async with get_client(app) as client:
         response = await client.post(

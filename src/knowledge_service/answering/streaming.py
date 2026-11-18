@@ -59,6 +59,7 @@ from uuid import UUID
 
 import anyio
 
+from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.abstention import (
     AbstentionDecision,
     AbstentionPolicy,
@@ -165,7 +166,9 @@ class FoundEvidence:
 class EvidenceSource(Protocol):
     """Finds the Evidence the reader may see for one Question."""
 
-    async def find(self, question: str, *, request_id: UUID) -> FoundEvidence: ...
+    async def find(
+        self, question: str, *, reader: AuthorizationContext, request_id: UUID
+    ) -> FoundEvidence: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,8 +259,10 @@ class AnswerStreamer:
         self._budget = budget
         self._timeout_seconds = timeout_seconds
 
-    async def open(self, question: Question, *, request_id: UUID) -> AnswerStream:
-        """Find and judge the Evidence, then return the stream of events.
+    async def open(
+        self, question: Question, *, reader: AuthorizationContext, request_id: UUID
+    ) -> AnswerStream:
+        """Find and judge the Evidence `reader` may see, then return the stream.
 
         Raises before any byte is sent: `AnswerDeadlineExceeded` when finding
         Evidence takes the whole deadline, the source's own errors, and the
@@ -266,9 +271,13 @@ class AnswerStreamer:
         """
         span = _Span(request_id)
         try:
+            if type(reader) is not AuthorizationContext:
+                raise InvalidAnswerRequest("reader must be an AuthorizationContext")
             deadline = asyncio.get_running_loop().time() + self._timeout_seconds
             async with _before(deadline):
-                found = await self._source.find(question.text, request_id=request_id)
+                found = await self._source.find(
+                    question.text, reader=reader, request_id=request_id
+                )
             if type(found) is not FoundEvidence:
                 raise InvalidAnswerRequest("the source must return FoundEvidence")
             sufficiency = assess_evidence(found.signals, self._policy)

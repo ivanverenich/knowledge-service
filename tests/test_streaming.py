@@ -14,6 +14,8 @@ from hypothesis import strategies as st
 from starlette.types import Message
 
 from evidence_fakes import MARKER, candidate
+from identity_fakes import AUTHORIZATION, READER, TRUSTED
+from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.abstention import (
     POLICY_VERSION,
     AbstentionDecision,
@@ -91,8 +93,12 @@ class Source:
         self.error = error
         self.wait = wait
         self.cancelled = False
+        self.readers: list[AuthorizationContext] = []
 
-    async def find(self, question: str, *, request_id: UUID) -> FoundEvidence:
+    async def find(
+        self, question: str, *, reader: AuthorizationContext, request_id: UUID
+    ) -> FoundEvidence:
+        self.readers.append(reader)
         if self.wait:
             try:
                 await asyncio.Event().wait()
@@ -187,7 +193,7 @@ def streamer(
 async def chunks(
     answering: AnswerStreamer, question: Question = QUESTION
 ) -> list[bytes]:
-    events = await answering.open(question, request_id=REQUEST_ID)
+    events = await answering.open(question, reader=READER, request_id=REQUEST_ID)
     return [chunk async for chunk in events]
 
 
@@ -220,7 +226,7 @@ async def test_a_client_rebuilds_the_checked_answer_from_the_stream() -> None:
 
 async def test_text_reaches_the_client_before_the_model_has_finished() -> None:
     model = Model(hold=4)
-    events = await streamer(model).open(QUESTION, request_id=REQUEST_ID)
+    events = await streamer(model).open(QUESTION, reader=READER, request_id=REQUEST_ID)
 
     first = [await anext(events) for _ in range(4)]
     assert names(first) == ["metadata", "text_delta", "text_delta", "text_delta"]
@@ -442,14 +448,14 @@ async def test_a_source_failure_is_raised_before_any_byte() -> None:
     answering = streamer(Model(), source=Source(error=AuthorizationDenied()))
 
     with pytest.raises(AuthorizationDenied):
-        await answering.open(QUESTION, request_id=REQUEST_ID)
+        await answering.open(QUESTION, reader=READER, request_id=REQUEST_ID)
 
 
 async def test_a_slow_source_runs_out_of_the_deadline_before_any_byte() -> None:
     answering = streamer(Model(), source=Source(wait=True), timeout_seconds=0.1)
 
     with pytest.raises(AnswerDeadlineExceeded):
-        await answering.open(QUESTION, request_id=REQUEST_ID)
+        await answering.open(QUESTION, reader=READER, request_id=REQUEST_ID)
 
 
 # --- Cancellation ---------------------------------------------------------------
@@ -460,7 +466,7 @@ async def test_closing_the_stream_closes_the_model_and_records_a_cancellation(
 ) -> None:
     caplog.set_level(logging.INFO)
     model = Model(hold=2)
-    events = await streamer(model).open(QUESTION, request_id=REQUEST_ID)
+    events = await streamer(model).open(QUESTION, reader=READER, request_id=REQUEST_ID)
     await anext(events)
     await anext(events)
 
@@ -477,7 +483,7 @@ async def test_a_stream_closed_before_its_first_event_ends_its_record(
 ) -> None:
     caplog.set_level(logging.INFO)
     model = Model()
-    events = await streamer(model).open(QUESTION, request_id=REQUEST_ID)
+    events = await streamer(model).open(QUESTION, reader=READER, request_id=REQUEST_ID)
 
     await events.aclose()
 
@@ -488,7 +494,7 @@ async def test_a_stream_closed_before_its_first_event_ends_its_record(
 
 async def test_a_model_whose_close_never_ends_cannot_hold_the_stream() -> None:
     model = Model(hold=2, close_delay=60)
-    events = await streamer(model).open(QUESTION, request_id=REQUEST_ID)
+    events = await streamer(model).open(QUESTION, reader=READER, request_id=REQUEST_ID)
     await anext(events)
     await anext(events)
 
@@ -539,12 +545,14 @@ def test_the_stream_record_hides_the_text_it_counts() -> None:
 
 def client(app: Any) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://t"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://t",
+        headers=AUTHORIZATION,
     )
 
 
 async def test_the_endpoint_streams_events_a_client_can_rebuild() -> None:
-    app = create_app(streamer=streamer(Model()))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(Model()))
     async with client(app) as http:
         response = await http.post(
             "/v1/answer/stream",
@@ -574,9 +582,10 @@ async def test_a_failure_before_the_first_byte_is_a_plain_http_error(
         "slow": Source(wait=True),
     }
     app = create_app(
+        authenticator=TRUSTED,
         streamer=None
         if answering is None
-        else streamer(Model(), source=sources[answering], timeout_seconds=0.1)
+        else streamer(Model(), source=sources[answering], timeout_seconds=0.1),
     )
     async with client(app) as http:
         response = await http.post("/v1/answer/stream", json={"text": "Leave?"})
@@ -587,7 +596,7 @@ async def test_a_failure_before_the_first_byte_is_a_plain_http_error(
 
 async def test_an_empty_question_is_refused_before_any_work() -> None:
     model = Model()
-    app = create_app(streamer=streamer(model))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model))
     async with client(app) as http:
         response = await http.post("/v1/answer/stream", json={"text": ""})
 
@@ -639,7 +648,10 @@ def scope(spec_version: str) -> dict[str, Any]:
         "raw_path": b"/v1/answer/stream",
         "query_string": b"",
         "root_path": "",
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"authorization", AUTHORIZATION["Authorization"].encode()),
+        ],
         "client": ("127.0.0.1", 1),
         "server": ("t", 80),
     }
@@ -653,7 +665,7 @@ async def test_a_client_that_leaves_midstream_stops_the_model_and_the_stream(
     # The model goes quiet after two pieces and would never finish alone.
     model = Model(hold=2)
     connection = Connection(leave_after=2)
-    app = create_app(streamer=streamer(model))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model))
 
     await asyncio.wait_for(
         app(scope(spec_version), connection.receive, connection.send), timeout=2
@@ -672,7 +684,7 @@ async def test_a_model_that_awaits_while_closing_is_closed_when_the_client_leave
 ) -> None:
     model = Model(hold=2, close_delay=0.05)
     connection = Connection(leave_after=2)
-    app = create_app(streamer=streamer(model))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model))
 
     await asyncio.wait_for(
         app(scope(spec_version), connection.receive, connection.send), timeout=2
@@ -691,7 +703,7 @@ async def test_a_client_that_leaves_during_the_search_cancels_it(
     model = Model()
     connection = Connection(leave_after=0)
     connection.left.set()
-    app = create_app(streamer=streamer(model, source=source))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model, source=source))
 
     await asyncio.wait_for(
         app(scope(spec_version), connection.receive, connection.send), timeout=2
@@ -706,7 +718,7 @@ async def test_a_client_that_leaves_during_the_search_cancels_it(
 async def test_a_stuck_close_cannot_hold_the_response_open() -> None:
     model = Model(hold=4, close_delay=60)
     connection = Connection(leave_after=100, stall=True)
-    app = create_app(streamer=streamer(model))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model))
 
     await asyncio.wait_for(
         app(scope("2.4"), connection.receive, connection.send),
@@ -718,7 +730,7 @@ async def test_a_client_that_stops_reading_and_leaves_closes_the_model() -> None
     # The server is stuck writing the second event when the client leaves.
     model = Model(hold=4)
     connection = Connection(leave_after=100, stall=True)
-    app = create_app(streamer=streamer(model))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model))
 
     await asyncio.wait_for(
         app(scope("2.4"), connection.receive, connection.send), timeout=2

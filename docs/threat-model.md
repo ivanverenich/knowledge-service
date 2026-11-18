@@ -13,7 +13,7 @@ end is checked by `make docs-check`.
 |---|---|---|
 | Document text and Chunks | Organizational knowledge; most of it is not for every reader | PostgreSQL `documents`, `chunks`; Evidence in a prompt |
 | Access Grants and Authorization Versions | Decide who may read what; a wrong grant is a leak | PostgreSQL `access_grants` |
-| Authorization Context | The verified User and Groups of one request | In memory, per request |
+| Authorization Context | The verified User and Groups of one request | In memory, per request; built only by `Authenticator` from a verified token |
 | Questions, Answers, Conversations | Reveal what a User asked and what they were told | PostgreSQL `conversations`, `messages`; the model provider's request |
 | Citations and Evidence IDs | Tell the User where a claim came from; a fake one launders a claim | Built on the server per request |
 | Evaluation Datasets and Runs | Hold Questions, expected Documents, and Authorization Contexts | `datasets/`, `artifacts/` |
@@ -37,7 +37,7 @@ end is checked by `make docs-check`.
 
 The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boundaries that matter here:
 
-- **Public to edge.** Everything from the browser is untrusted until the edge and the API have verified a token. `OidcVerifier` verifies one; the endpoints call it from M07-T04.
+- **Public to edge.** Everything from the browser is untrusted until the edge and the API have verified a token. Both answer endpoints accept only a request whose bearer token `OidcVerifier` verifies, and `Authenticator` builds its Authorization Context from that token's claims alone.
 - **API to data.** PostgreSQL decides eligibility inside every search; a Chunk the reader may not see never leaves it.
 - **API to model providers.** Evidence and the Question leave the private zone here; only eligible Evidence under opaque IDs may cross, and replies come back as untrusted data.
 - **Workers to Sources.** Source content enters here and stays untrusted data for its whole life.
@@ -47,8 +47,8 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 
 | Entry point | Who reaches it | Today |
 |---|---|---|
-| `POST /v1/answer/stream` | Any client that reaches the API | The grounded path: Evidence, checked Citations, and the abstention policy. No token check yet; the reader is fixed when the Evidence source is built (M07-T04) |
-| `POST /v1/answer` | Any client that reaches the API | The M01 walking skeleton: sends the Question straight to the model, with no retrieval, Evidence, Citations, or output limit, and without asking the provider not to keep it. The versioned Question route replaces it (M09-T01) |
+| `POST /v1/answer/stream` | Any client that reaches the API | The grounded path: Evidence, checked Citations, and the abstention policy. Needs a bearer token, checked before the body is read; the Evidence source searches as the token's User and Groups |
+| `POST /v1/answer` | Any client that reaches the API | The M01 walking skeleton: needs a bearer token, then sends the Question straight to the model, with no retrieval, Evidence, Citations, or output limit, and without asking the provider not to keep it. The versioned Question route replaces it (M09-T01) |
 | `GET /health/live`, `GET /health/ready` | Load balancers | Return status only |
 | Local Keycloak, `http://localhost:8180` | Developers and, later, Open WebUI | Bound to 127.0.0.1. One application client, `open-webui`: the code flow with S256 PKCE, one exact redirect URI, no optional scopes, and only the four application roles in its tokens. No client in the realm gives a token for a password alone. The master realm's admin console shares the port, behind the generated bootstrap admin. Non-production demo users with fixed IDs |
 | Source adapters | Workers | The local directory Source; Confluence in M08 |
@@ -104,8 +104,9 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 
 | Abuse case | Mitigation now | Still to come |
 |---|---|---|
-| A client with no identity reads or spends | Nothing yet in the endpoints: `OidcVerifier` exists, but neither answer endpoint calls it | The Authorization Context from verified tokens only (M07-T04) |
-| A forged, expired, or other-audience token is accepted | `OidcVerifier`: RS256 only, a key from the issuer's JWKS, the exact issuer, the API audience, and the times within 30 seconds of skew | The endpoints use it (M07-T04) |
+| A client with no identity reads or spends | Both answer endpoints need a bearer token before the body is read; no other header, cookie, or body field names the reader; bodies over 64 KiB are refused; without an authenticator the endpoints answer 503 | Identity-aware rate limits (M09-T10) |
+| A forged, expired, or other-audience token is accepted | `OidcVerifier`: RS256 only, a key from the issuer's JWKS, the exact issuer, the API audience, and the times within 30 seconds of skew; `Authenticator` calls it on every answer request | None |
+| A token widens what its User reads: issued to another client, or with crafted group names | `azp` must be a trusted client; `groups` must be a list of at most 64 names, and a path with `~`, a hidden character, or no leading `/` is left out; Keycloak escapes `/` inside group names, so a group named `a/b` never becomes group `b` inside `a` | Source group normalization (M07-T06) |
 | Random key IDs make the API flood the identity provider, or an outage opens the API | An unknown key ID refreshes the keys at most once per 30 seconds; cached keys outlive failed refreshes for at most an hour, then every token is refused as unavailable | None |
 | Logs or traces hold Question, Evidence, or Answer text | Log records hold counts, names, and outcomes; marker tests prove no planted text reaches them | Redacted logs and traces (M07-T12) |
 | A credential appears in a repr or a log | Settings redact the database URL and API keys | Configuration separate from secrets (M12-T05) |
@@ -118,7 +119,7 @@ Each row traces one invariant under "Invariants" in `docs/security.md` to its co
 
 | Invariant | Control | Test owners |
 |---|---|---|
-| 1 | `eligible_chunks_predicate`: the Document is available and a grant names everyone, the User, or one of their Groups | `tests/test_vector_search_integration.py::test_only_a_matching_access_grant_makes_a_chunk_eligible`, `tests/test_vector_search_integration.py::test_a_reader_without_groups_sees_only_public_and_own_grants`, `M07-T04` |
+| 1 | `Authenticator` builds the Authorization Context from a verified token only; `eligible_chunks_predicate`: the Document is available and a grant names everyone, the User, or one of their Groups | `tests/test_app_authentication.py::test_a_verified_token_is_the_reader_the_search_runs_as`, `tests/test_app_authentication.py::test_headers_and_body_fields_cannot_choose_or_widen_the_reader`, `tests/test_vector_search_integration.py::test_only_a_matching_access_grant_makes_a_chunk_eligible`, `tests/test_vector_search_integration.py::test_a_reader_without_groups_sees_only_public_and_own_grants` |
 | 2 | The predicate inside every lexical and vector query, beside ORDER BY and LIMIT | `tests/test_lexical_search_integration.py::test_a_better_match_the_reader_may_not_see_is_never_returned`, `tests/test_vector_search_integration.py::test_a_nearer_chunk_the_reader_may_not_see_is_never_ranked`, `M07-T07`, `M07-T08` |
 | 3 | Grants, Chunks, and availability written in one transaction; a tombstone makes a Document unavailable at once | `tests/test_vector_search_integration.py::test_revoked_and_tombstoned_documents_disappear_at_once`, `M07-T10` |
 | 4 | Fixed policy; Question and Evidence as escaped JSON; Citations only from this request's Evidence IDs | `tests/test_prompt.py::test_the_input_reads_back_as_exactly_the_question_and_evidence`, `tests/test_prompt.py::test_no_hidden_or_control_character_reaches_the_prompt_unescaped`, `tests/test_citations.py::test_a_passage_cannot_choose_its_own_citation`, `tests/test_llm_reranking.py::test_an_obeyed_injection_can_only_reorder_eligible_candidates`, `M07-T13` |
@@ -128,7 +129,8 @@ Each row traces one invariant under "Invariants" in `docs/security.md` to its co
 
 ## Known gaps
 
-- The API checks no token yet: `OidcVerifier` exists, but until M07-T04 the reader is whoever the Evidence source was built for.
+- No production entry point assembles the app yet: whoever does must pass an `Authenticator`, or both answer endpoints answer 503. No Evidence source over the database takes the reader yet (M07-T07, M07-T08).
+- Groups from the identity provider become Group IDs by their path; Source groups get their own mapping in M07-T06. A Keycloak group whose path holds `~` or a hidden character gives its members nothing.
 - `OidcVerifier` sets no maximum token lifetime and does not check a token's type: Keycloak's ID tokens are refused only because their audience is the client, not the API.
 - `POST /v1/answer` is the ungrounded M01 path, kept until M09-T01 replaces it.
 - `confirm_citations` is not called in any served path; M07-T09 wires it.

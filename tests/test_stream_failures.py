@@ -12,6 +12,7 @@ from sqlalchemy import exc as database_errors
 from starlette.types import Message
 
 from evidence_fakes import MARKER
+from identity_fakes import READER, TRUSTED
 from knowledge_service.answering.events import (
     AnswerEventReader,
     AnswerEventWriter,
@@ -301,7 +302,9 @@ async def test_a_failure_in_the_search_is_an_http_error_with_retry_guidance(
 ) -> None:
     caplog.set_level(logging.DEBUG)
     model = Model()
-    app = create_app(streamer=streamer(model, source=Source(error=error)))
+    app = create_app(
+        authenticator=TRUSTED, streamer=streamer(model, source=Source(error=error))
+    )
 
     async with client(app) as http:
         response = await http.post("/v1/answer/stream", json={"text": QUESTION.text})
@@ -435,7 +438,9 @@ async def test_a_client_that_leaves_during_the_search_is_recorded_before_the_hea
     caplog.set_level(logging.INFO)
     source = Source(wait=True)
     opening = asyncio.create_task(
-        streamer(Model(), source=source).open(QUESTION, request_id=REQUEST_ID)
+        streamer(Model(), source=source).open(
+            QUESTION, reader=READER, request_id=REQUEST_ID
+        )
     )
     await asyncio.sleep(0)
 
@@ -454,7 +459,7 @@ async def test_a_client_that_leaves_mid_text_abandons_it(
 ) -> None:
     caplog.set_level(logging.INFO)
     model = Model(hold=2)
-    events = await streamer(model).open(QUESTION, request_id=REQUEST_ID)
+    events = await streamer(model).open(QUESTION, reader=READER, request_id=REQUEST_ID)
     sent = [await anext(events), await anext(events)]
 
     await events.aclose()
@@ -503,7 +508,9 @@ def test_an_error_event_with_the_retry_owner_of_the_http_policy_is_refused() -> 
 async def test_a_database_error_retrying_cannot_fix_is_internal_without_retry_after(
     error: Exception,
 ) -> None:
-    app = create_app(streamer=streamer(Model(), source=Source(error=error)))
+    app = create_app(
+        authenticator=TRUSTED, streamer=streamer(Model(), source=Source(error=error))
+    )
 
     async with client(app) as http:
         response = await http.post("/v1/answer/stream", json={"text": QUESTION.text})
@@ -529,7 +536,7 @@ async def test_a_client_that_leaves_as_the_headers_go_out_is_after_the_headers(
     caplog.set_level(logging.INFO)
     model = Model()
     connection = LeavesOnHeaders(leave_after=1)
-    app = create_app(streamer=streamer(model))
+    app = create_app(authenticator=TRUSTED, streamer=streamer(model))
 
     await asyncio.wait_for(
         app(scope("2.4"), connection.receive, connection.send), timeout=5
@@ -549,7 +556,9 @@ async def test_text_sent_at_the_end_is_counted_when_the_client_leaves(
     final = json.dumps(
         {"citations": [CITED], "abstained": False, "reason": None, "answer": ANSWER}
     )
-    events = await streamer(Model(final=final)).open(QUESTION, request_id=REQUEST_ID)
+    events = await streamer(Model(final=final)).open(
+        QUESTION, reader=READER, request_id=REQUEST_ID
+    )
     sent = [await anext(events), await anext(events), await anext(events)]
 
     await events.aclose()
@@ -577,7 +586,7 @@ async def test_a_client_that_read_the_terminal_event_and_left_is_not_cancelled(
     caplog.set_level(logging.INFO)
     failing = Raising(database_down()) if finisher else None
     events = await streamer(Model(), finisher=failing).open(
-        QUESTION, request_id=REQUEST_ID
+        QUESTION, reader=READER, request_id=REQUEST_ID
     )
     sent: list[bytes] = []
     while not sent or names(sent)[-1] not in ("completion", "error"):
@@ -596,7 +605,9 @@ class FailingWorkflow:
 
 
 async def test_the_answer_endpoint_gives_the_same_retry_guidance() -> None:
-    app = create_app(workflow=cast(AnswerWorkflow, FailingWorkflow()))
+    app = create_app(
+        authenticator=TRUSTED, workflow=cast(AnswerWorkflow, FailingWorkflow())
+    )
 
     async with client(app) as http:
         response = await http.post("/v1/answer", json={"text": QUESTION.text})

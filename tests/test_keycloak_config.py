@@ -225,6 +225,16 @@ def test_keycloak_listens_on_the_loopback_address_only() -> None:
     assert "expose:" not in text
 
 
+def test_a_slash_inside_a_group_name_is_escaped_in_its_path() -> None:
+    # Without it, a top-level group named "a/b" has the path of group "b"
+    # inside group "a", and both become one Group in the Authorization Context.
+    assert re.search(
+        r'^\s+KC_SPI_GROUP__JPA__ESCAPE_SLASHES_IN_GROUP_PATH: "true"$',
+        compose(),
+        re.MULTILINE,
+    )
+
+
 def test_the_realm_is_mounted_read_only_and_imported_on_start() -> None:
     text = compose()
 

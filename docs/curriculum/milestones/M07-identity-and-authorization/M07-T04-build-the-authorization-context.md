@@ -7,7 +7,7 @@ depends_on: ["M07-T03"]
 estimate: 75m
 topics: ["oidc","authorization","security"]
 deliverables: ["Authorization Context builder"]
-status: planned
+status: completed
 ---
 
 # M07-T04 — Build the Authorization Context

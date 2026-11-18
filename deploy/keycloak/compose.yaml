@@ -16,6 +16,9 @@ services:
       # Tokens name this issuer whichever address the client used.
       KC_HOSTNAME: http://localhost:8180
       KC_HEALTH_ENABLED: "true"
+      # Keycloak writes "/" inside a group name as "~/", so a top-level group
+      # named "a/b" never has the path of group "b" inside group "a".
+      KC_SPI_GROUP__JPA__ESCAPE_SLASHES_IN_GROUP_PATH: "true"
       # Read by the realm file's placeholders when the realm is imported.
       KS_OPEN_WEBUI_CLIENT_SECRET: ${KS_OPEN_WEBUI_CLIENT_SECRET:?run make keycloak-up}
       KS_ALICE_PASSWORD: ${KS_ALICE_PASSWORD:?run make keycloak-up}
