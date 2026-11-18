@@ -15,11 +15,12 @@ from knowledge_service.access import (
     InvalidGrant,
     Subject,
     SubjectKind,
+    checked_reader,
     granted_subjects,
 )
 from knowledge_service.documents import DocumentAvailability
 from knowledge_service.identifiers import AccessGrantId, DocumentId, GroupId, UserId
-from knowledge_service.persistence.schema import access_grants, documents
+from knowledge_service.persistence.schema import access_grants, chunks, documents
 
 
 def subject_grants_statement(subject_kind: str, subject_id: UUID) -> sa.Select[Any]:
@@ -68,9 +69,17 @@ def eligible_chunks_predicate(context: AuthorizationContext) -> sa.ColumnElement
 
     Its Document is available, and at least one of its Access Grants names
     everyone, the context's User, or one of the context's Groups. The
-    statement using it must join `chunks` to `documents`. Every value is a
-    bound parameter, never text spliced into the SQL.
+    statement using it must read `chunks` and `documents`; the predicate
+    ties each Chunk to its own Document itself, so a statement that forgets
+    the join narrows nothing instead of pairing every Chunk with every
+    visible Document. Every value is a bound parameter, never text spliced
+    into the SQL.
+
+    Only an exact `AuthorizationContext` with sound fields is accepted (see
+    `checked_reader`): a subclass, a look-alike, or a context changed after
+    it was made could answer with other Users or Groups.
     """
+    context = checked_reader(context)
     group_ids = sorted(group_id.value for group_id in context.group_ids)
     granted = sa.exists().where(
         access_grants.c.document_id == documents.c.document_id,
@@ -93,6 +102,7 @@ def eligible_chunks_predicate(context: AuthorizationContext) -> sa.ColumnElement
         ),
     )
     return sa.and_(
+        documents.c.document_id == chunks.c.document_id,
         documents.c.availability == DocumentAvailability.AVAILABLE.value,
         granted,
     )

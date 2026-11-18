@@ -7,7 +7,7 @@ depends_on: ["M07-T06"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["authorized vector query"]
-status: planned
+status: completed
 ---
 
 # M07-T07 — Enforce ACLs in vector search

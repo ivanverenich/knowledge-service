@@ -76,14 +76,31 @@ class AuthorizationContext:
     group_ids: frozenset[GroupId] = frozenset()
 
     def __post_init__(self) -> None:
-        # A plain UUID, or a UserId passed as a group, would match a grant
-        # meant for another subject kind, so the exact types are required.
-        if type(self.user_id) is not UserId:
-            raise InvalidAuthorizationContext("the user must be a UserId")
-        if type(self.group_ids) is not frozenset:
-            raise InvalidAuthorizationContext("the groups must be a frozenset")
-        if any(type(group_id) is not GroupId for group_id in self.group_ids):
-            raise InvalidAuthorizationContext("every group must be a GroupId")
+        _check_reader_fields(self)
+
+
+def checked_reader(context: object) -> AuthorizationContext:
+    """`context` itself, if it is exactly an `AuthorizationContext` with sound fields.
+
+    A frozen dataclass can still be changed with `object.__setattr__`, and a
+    subclass or look-alike can answer with other Users or Groups, so code
+    that turns a reader into a permission check calls this first.
+    """
+    if type(context) is not AuthorizationContext:
+        raise InvalidAuthorizationContext("the reader must be an AuthorizationContext")
+    _check_reader_fields(context)
+    return context
+
+
+def _check_reader_fields(context: AuthorizationContext) -> None:
+    # A plain UUID, or a UserId passed as a group, would match a grant
+    # meant for another subject kind, so the exact types are required.
+    if type(context.user_id) is not UserId:
+        raise InvalidAuthorizationContext("the user must be a UserId")
+    if type(context.group_ids) is not frozenset:
+        raise InvalidAuthorizationContext("the groups must be a frozenset")
+    if any(type(group_id) is not GroupId for group_id in context.group_ids):
+        raise InvalidAuthorizationContext("every group must be a GroupId")
 
 
 def _require_utc(value: datetime, field_name: str) -> None:
