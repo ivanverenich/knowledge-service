@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.identifiers import UserId
 from knowledge_service.language import Language
+from knowledge_service.persistence.access import eligible_chunks_predicate
 from knowledge_service.retrieval.lexical_routing import LexicalConfiguration
 from knowledge_service.retrieval.lexical_search import (
     MAX_QUERY_CHARACTERS,
@@ -230,6 +231,44 @@ def test_only_the_ranked_and_limited_rows_are_highlighted() -> None:
     assert outer.count("ts_headline(") == 2
     assert "ts_headline" not in ranked
     assert "LIMIT" in ranked
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["leave", '"leave" -sick', "щорічна відпустка", '"щорічна відпустка"'],
+    ids=["words", "syntax", "topic-words", "typed"],
+)
+@pytest.mark.parametrize(
+    "configurations",
+    [
+        (LexicalConfiguration.ENGLISH,),
+        (LexicalConfiguration.SIMPLE,),
+        (LexicalConfiguration.ENGLISH, LexicalConfiguration.SIMPLE),
+    ],
+    ids=["english", "ukrainian", "both"],
+)
+def test_the_permission_check_comes_before_ranking_and_highlighting(
+    configurations: tuple[LexicalConfiguration, ...], text: str
+) -> None:
+    # Each configuration, and `simple` both by topic words and as typed,
+    # builds its own match; the check must sit beside every one of them.
+    statement = lexical_search_statement(
+        configurations,
+        text=text,
+        eligibility=eligible_chunks_predicate(CONTEXT),
+        limit=5,
+    )
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    outer, rest = sql.split("FROM (SELECT", 1)
+    ranked = rest.split(") AS ranked", 1)[0]
+
+    # The grants are read in the ranked query's WHERE, before its own last
+    # ORDER BY and LIMIT; the outer query only highlights the rows kept.
+    assert "access_grants" not in outer
+    assert ranked.index("access_grants") < ranked.rindex("ORDER BY")
+    assert ranked.rindex("ORDER BY") < ranked.rindex("LIMIT")
+    assert outer.count("ts_headline(") == len(configurations)
 
 
 def test_ties_are_broken_by_chunk_id_before_the_limit_cuts() -> None:

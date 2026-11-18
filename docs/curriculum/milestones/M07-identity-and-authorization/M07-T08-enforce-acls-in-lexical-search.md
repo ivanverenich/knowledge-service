@@ -7,7 +7,7 @@ depends_on: ["M07-T07"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["authorized lexical query"]
-status: planned
+status: completed
 ---
 
 # M07-T08 — Enforce ACLs in lexical search
