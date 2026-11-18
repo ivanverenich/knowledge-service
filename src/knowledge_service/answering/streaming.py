@@ -26,6 +26,17 @@ What the stream promises:
 - **Citations after the decision.** They are sent only once the decision
   is `answer`, so the title of a Document behind an Answer the policy
   rejects never leaves the server.
+- **Evidence as it is now.** Before the model is asked, the
+  `CitationCheck` rereads every Evidence as the reader. If one is not
+  visible, through a retrieval bug or a change since the search, the
+  stream abstains like an empty search and the model never sees it, so
+  none of its text can be streamed.
+- **Citations as they are now.** Before the decision, the check rereads
+  every cited Chunk again. If one fails, the Answer is `WITHDRAWN` and the
+  stream ends with the same decision and message as an empty search. Text
+  already streamed was written from Evidence the reader could see when
+  the model was asked; the abstention replaces it but cannot unsend it.
+  Citations are sent with the provenance the check read.
 - **The usage once billed.** When the model's reply arrived, its usage is
   sent before the terminal event, also before an `error`, and also for a
   reply too long to be an Answer.
@@ -70,6 +81,7 @@ from knowledge_service.answering.abstention import (
     assess_evidence,
     decide,
 )
+from knowledge_service.answering.citations import Citation
 from knowledge_service.answering.context_budget import (
     AllocatedContext,
     ContextBudget,
@@ -179,6 +191,23 @@ class FinishedAnswer:
     decision: AbstentionDecision
 
 
+class CitationCheck(Protocol):
+    """Rereads Evidence and Citations against the Documents as they are now.
+
+    `CurrentCitations` is the implementation. `still_visible` says whether
+    the reader may see every Evidence; `confirm` returns an Answer with
+    current provenance, the Answer withdrawn, or anything else unchanged.
+    """
+
+    async def still_visible(
+        self, evidence: EvidenceSet, *, reader: AuthorizationContext, request_id: UUID
+    ) -> bool: ...
+
+    async def confirm(
+        self, result: AnswerResult, *, reader: AuthorizationContext, request_id: UUID
+    ) -> AnswerResult: ...
+
+
 class AnswerFinisher(Protocol):
     """Decides whether a checked result is shown to the client."""
 
@@ -231,6 +260,7 @@ class _Plan:
     """What `open` settled before the first byte."""
 
     request_id: UUID
+    reader: AuthorizationContext
     deadline: float
     language: Language
     sufficiency: Sufficiency
@@ -248,12 +278,14 @@ class AnswerStreamer:
         policy: AbstentionPolicy,
         budget: ContextBudget,
         *,
+        citations: CitationCheck,
         timeout_seconds: float,
     ) -> None:
         if not positive_seconds(timeout_seconds):
             raise InvalidAnswerRequest("timeout_seconds must be a positive number")
         self._source = source
         self._model = model
+        self._citations = citations
         self._finisher = finisher
         self._policy = policy
         self._budget = budget
@@ -280,6 +312,15 @@ class AnswerStreamer:
                 )
             if type(found) is not FoundEvidence:
                 raise InvalidAnswerRequest("the source must return FoundEvidence")
+            async with _before(deadline):
+                visible = await self._citations.still_visible(
+                    found.evidence, reader=reader, request_id=request_id
+                )
+            if type(visible) is not bool:
+                raise InvalidAnswerRequest("the citation check must answer yes or no")
+            if not visible:
+                # Something the reader may not see: answer as if nothing was found.
+                found = FoundEvidence(EvidenceSet(()), EvidenceSignals(0, None, None))
             sufficiency = assess_evidence(found.signals, self._policy)
             context = (
                 allocate_context(question.text, found.evidence, self._budget)
@@ -298,6 +339,7 @@ class AnswerStreamer:
             raise
         plan = _Plan(
             request_id=request_id,
+            reader=reader,
             deadline=deadline,
             language=_language(question.text),
             sufficiency=sufficiency,
@@ -409,6 +451,13 @@ class AnswerStreamer:
         ):
             # The client holds text that is not the checked Answer.
             return FinishedAnswer(result, _abstain(self._policy))
+        async with _before(plan.deadline):
+            confirmed = await self._citations.confirm(
+                result, reader=plan.reader, request_id=plan.request_id
+            )
+        if not _confirms(result, confirmed):
+            raise InvalidAnswerRequest("the citation check must answer this result")
+        result = confirmed
         async with _before(plan.deadline):
             finished = await self._finisher.finish(
                 result, context.evidence, request_id=plan.request_id
@@ -660,6 +709,44 @@ def _reply(part: object) -> ModelReply | None:
     if not well_formed_reply(part):
         raise ChatModelMalformedResponse("the model streamed something else")
     return cast(ModelReply, part)
+
+
+def _confirms(result: AnswerResult, confirmed: object) -> bool:
+    """Whether `confirmed` is a check of `result`, not some other result.
+
+    Anything but an Answer comes back unchanged. An Answer comes back
+    withdrawn, or with the same text and the same Evidence cited in the
+    same order, only its provenance read again.
+    """
+    if type(confirmed) is not AnswerResult:
+        return False
+    if result.outcome is not AnswerOutcome.ANSWERED:
+        return confirmed is result
+    if confirmed.outcome is AnswerOutcome.WITHDRAWN:
+        return confirmed.citations == () and confirmed.text == ""
+    if (
+        confirmed.outcome is not AnswerOutcome.ANSWERED
+        or confirmed.text != result.text
+        or type(confirmed.citations) is not tuple
+        or len(confirmed.citations) != len(result.citations)
+    ):
+        return False
+    # Only the provenance may be read again; the same Evidence must be
+    # cited, as the same Chunk of the same Document, Source, and version.
+    return all(
+        type(new) is Citation and _identity(new) == _identity(old)
+        for new, old in zip(confirmed.citations, result.citations, strict=True)
+    )
+
+
+def _identity(citation: Citation) -> tuple[object, ...]:
+    return (
+        citation.evidence_id,
+        citation.chunk_id,
+        citation.document_id,
+        citation.source_id,
+        citation.content_version,
+    )
 
 
 def _abstain(policy: AbstentionPolicy) -> AbstentionDecision:

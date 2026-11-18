@@ -7,7 +7,7 @@ depends_on: ["M07-T08"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["authorized document reader"]
-status: planned
+status: completed
 ---
 
 # M07-T09 — Authorize Document fetches

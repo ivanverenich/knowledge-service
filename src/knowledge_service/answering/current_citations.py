@@ -36,7 +36,8 @@ What `confirm_citations` promises:
   never a title, a link, or text.
 
 The caller passes a connection for a short transaction of its own; it
-must not hold one open while the model writes.
+must not hold one open while the model writes. `CurrentCitations` does that
+for the answer stream: it opens the transaction only once the model is done.
 """
 
 import logging
@@ -53,9 +54,12 @@ from knowledge_service.answering.citations import Citation
 from knowledge_service.answering.evidence import (
     EXCERPT_SOURCE_CHARACTERS,
     MAX_EVIDENCE,
+    Evidence,
     EvidenceId,
+    EvidenceSet,
 )
 from knowledge_service.answering.generation import AnswerOutcome, AnswerResult
+from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import ContentVersion
 from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
 from knowledge_service.ingestion.provenance import display_excerpt, display_text
@@ -118,6 +122,45 @@ async def confirm_citations(
         )
     _log(request_id, cited=len(cited), withdrawn=withdrawn, outcome=result.outcome)
     return result
+
+
+async def evidence_still_visible(
+    connection: AsyncConnection,
+    context: AuthorizationContext,
+    evidence: EvidenceSet,
+    *,
+    request_id: UUID,
+) -> bool:
+    """Whether the reader may still see every Evidence, in its current version.
+
+    The same query as `confirm_citations`, over every Chunk the Evidence
+    holds, before any of it is shown to the model. An empty set is visible.
+    Raises `TypeError` for anything but the request's context and a real
+    `EvidenceSet`.
+    """
+    if type(context) is not AuthorizationContext:
+        raise TypeError("context must be an AuthorizationContext")
+    if type(evidence) is not EvidenceSet:
+        raise TypeError("evidence must be an EvidenceSet")
+    if not evidence.items:
+        return True
+    statement = current_citations_statement(
+        [item.chunk_id.value for item in evidence.items],
+        eligibility=eligible_chunks_predicate(context),
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    rows = {cast(UUID, record["chunk_id"]): dict(record) for record in records}
+    hidden = sum(
+        not _same(item, rows.get(item.chunk_id.value)) for item in evidence.items
+    )
+    fields = {
+        "request_id": str(request_id),
+        "evidence": len(evidence.items),
+        "hidden": hidden,
+    }
+    level = logging.WARNING if hidden else logging.INFO
+    logger.log(level, "evidence confirmed", extra={"evidence_check": fields})
+    return hidden == 0
 
 
 def current_citations_statement(
@@ -194,14 +237,19 @@ def _well_formed(item: object) -> bool:
     )
 
 
+def _same(item: Citation | Evidence, row: dict[str, object] | None) -> bool:
+    """Whether a stored row is still this item's Chunk, Document, and version."""
+    return (
+        row is not None
+        and row["document_id"] == item.document_id.value
+        and row["source_id"] == item.source_id.value
+        and row["content_version"] == item.content_version.number
+    )
+
+
 def _current(citation: Citation, row: dict[str, object] | None) -> Citation | None:
     """The Citation rebuilt from its stored row, or None if it is not current."""
-    if (
-        row is None
-        or row["document_id"] != citation.document_id.value
-        or row["source_id"] != citation.source_id.value
-        or row["content_version"] != citation.content_version.number
-    ):
+    if row is None or not _same(citation, row):
         return None
     return Citation(
         evidence_id=citation.evidence_id,
@@ -232,3 +280,32 @@ def _log(
     }
     level = logging.WARNING if withdrawn else logging.INFO
     logger.log(level, "citations confirmed", extra={"citation_check": fields})
+
+
+class CurrentCitations:
+    """The answer stream's `CitationCheck` over PostgreSQL.
+
+    Each call runs in its own short transaction: `still_visible` before the
+    model is asked, `confirm` after it has finished writing.
+    """
+
+    def __init__(self, runtime: DatabaseRuntime) -> None:
+        self._runtime = runtime
+
+    async def still_visible(
+        self, evidence: EvidenceSet, *, reader: AuthorizationContext, request_id: UUID
+    ) -> bool:
+        """Whether the reader may see every Evidence now, in its current version."""
+        async with self._runtime.transaction() as connection:
+            return await evidence_still_visible(
+                connection, reader, evidence, request_id=request_id
+            )
+
+    async def confirm(
+        self, result: AnswerResult, *, reader: AuthorizationContext, request_id: UUID
+    ) -> AnswerResult:
+        """The Answer with current provenance, `WITHDRAWN`, or unchanged."""
+        async with self._runtime.transaction() as connection:
+            return await confirm_citations(
+                connection, reader, result, request_id=request_id
+            )

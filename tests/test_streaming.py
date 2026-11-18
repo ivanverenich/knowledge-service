@@ -1,9 +1,10 @@
 """Streaming an Answer: deltas, the decision, the deadline, and cancellation."""
 
 import asyncio
+import dataclasses
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 from uuid import UUID
 
@@ -30,7 +31,13 @@ from knowledge_service.answering.events import (
     StreamOutcome,
 )
 from knowledge_service.answering.evidence import build_evidence
-from knowledge_service.answering.generation import ModelIdentity, ModelReply
+from knowledge_service.answering.generation import (
+    AnswerOutcome,
+    AnswerResult,
+    InvalidAnswerRequest,
+    ModelIdentity,
+    ModelReply,
+)
 from knowledge_service.answering.openai_answering import AnswerSettings
 from knowledge_service.answering.prompt import EvidencePrompt
 from knowledge_service.answering.streaming import (
@@ -38,6 +45,7 @@ from knowledge_service.answering.streaming import (
     AnswerFieldReader,
     AnswerFinisher,
     AnswerStreamer,
+    CitationCheck,
     FinishedAnswer,
     FoundEvidence,
     PolicyFinisher,
@@ -47,6 +55,7 @@ from knowledge_service.answering.support import LexicalSupportJudge
 from knowledge_service.app import create_app
 from knowledge_service.contracts import Question, Usage
 from knowledge_service.errors import AnswerDeadlineExceeded, AuthorizationDenied
+from knowledge_service.identifiers import ChunkId, DocumentId
 from knowledge_service.model import ChatModelError, ChatModelRateLimited
 from knowledge_service.retrieval.reranking import RerankerIdentity
 
@@ -162,6 +171,66 @@ class Model:
             self.closed = True
 
 
+class Citations:
+    """A `CitationCheck` that sees all Evidence and keeps every Answer.
+
+    `visible` is what `still_visible` answers, as a revoked grant or a
+    retrieval bug would make it; `withdraw` withdraws an Answer; `rename`
+    gives every Citation a new title, as a renamed Document would; `alter`
+    answers with whatever it makes of the result; `error` fails `confirm`
+    and `delay` slows it.
+    """
+
+    def __init__(
+        self,
+        *,
+        visible: object = True,
+        withdraw: bool = False,
+        rename: str | None = None,
+        alter: Callable[[AnswerResult], object] | None = None,
+        error: Exception | None = None,
+        delay: float = 0,
+    ) -> None:
+        self.visible = visible
+        self.withdraw = withdraw
+        self.rename = rename
+        self.alter = alter
+        self.error = error
+        self.delay = delay
+        self.checked: list[AuthorizationContext] = []
+        self.calls: list[tuple[AnswerOutcome, AuthorizationContext]] = []
+
+    async def still_visible(
+        self, evidence: Any, *, reader: AuthorizationContext, request_id: UUID
+    ) -> bool:
+        self.checked.append(reader)
+        return self.visible  # type: ignore[return-value]
+
+    async def confirm(
+        self, result: AnswerResult, *, reader: AuthorizationContext, request_id: UUID
+    ) -> AnswerResult:
+        self.calls.append((result.outcome, reader))
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        if self.alter is not None:
+            return self.alter(result)  # type: ignore[return-value]
+        if result.outcome is not AnswerOutcome.ANSWERED:
+            return result
+        if self.withdraw:
+            return dataclasses.replace(
+                result, outcome=AnswerOutcome.WITHDRAWN, text="", citations=()
+            )
+        if self.rename is not None:
+            renamed = tuple(
+                dataclasses.replace(citation, title=self.rename)
+                for citation in result.citations
+            )
+            return dataclasses.replace(result, citations=renamed)
+        return result
+
+
 class SlowFinisher:
     """Never decides."""
 
@@ -179,6 +248,7 @@ def streamer(
     finisher: AnswerFinisher | None = None,
     policy: AbstentionPolicy = POLICY,
     timeout_seconds: float = 5.0,
+    citations: CitationCheck | None = None,
 ) -> AnswerStreamer:
     return AnswerStreamer(
         source or Source(),
@@ -186,6 +256,7 @@ def streamer(
         finisher or PolicyFinisher(LexicalSupportJudge(), policy, timeout_seconds=5),
         policy,
         AnswerSettings().budget,
+        citations=citations or Citations(),
         timeout_seconds=timeout_seconds,
     )
 
@@ -288,6 +359,176 @@ async def test_a_ukrainian_question_gets_a_ukrainian_abstention() -> None:
     assert rebuilt(sent).message == (
         "Я не знайшов документів, які відповідають на це запитання."
     )
+
+
+# --- Citations as they are now ------------------------------------------------
+
+
+async def test_the_citations_are_checked_as_the_reader_before_the_decision() -> None:
+    citations = Citations()
+
+    result = rebuilt(await chunks(streamer(Model(), citations=citations)))
+
+    assert citations.checked == [READER]
+    assert citations.calls == [(AnswerOutcome.ANSWERED, READER)]
+    assert result.outcome is StreamOutcome.ANSWERED
+
+
+async def test_evidence_the_reader_may_not_see_never_reaches_the_model() -> None:
+    model = Model()
+
+    sent = await chunks(streamer(model, citations=Citations(visible=False)))
+
+    assert model.calls == 0
+    assert names(sent) == ["metadata", "completion"]
+    assert rebuilt(sent).reason is AbstentionReason.NO_EVIDENCE
+
+
+@pytest.mark.parametrize("visible", [None, 1, "yes"])
+async def test_a_visibility_check_that_does_not_say_yes_or_no_fails_first(
+    visible: object,
+) -> None:
+    model = Model()
+
+    with pytest.raises(InvalidAnswerRequest):
+        await streamer(model, citations=Citations(visible=visible)).open(
+            QUESTION, reader=READER, request_id=REQUEST_ID
+        )
+
+    assert model.calls == 0
+
+
+async def test_a_withdrawn_answer_abstains_like_an_empty_search() -> None:
+    sent = await chunks(streamer(Model(), citations=Citations(withdraw=True)))
+    result = rebuilt(sent)
+
+    assert result.outcome is StreamOutcome.ABSTAINED
+    assert result.reason is AbstentionReason.NO_EVIDENCE
+    assert result.text == ""
+    assert "citation" not in names(sent)
+    assert result.usage is not None
+
+
+async def test_citations_carry_the_provenance_the_check_read() -> None:
+    sent = await chunks(streamer(Model(), citations=Citations(rename="Leave, 2027")))
+
+    (citation,) = rebuilt(sent).citations
+    assert citation.title == "Leave, 2027"
+
+
+def not_a_result(result: AnswerResult) -> object:
+    return "not a result"
+
+
+def other_text(result: AnswerResult) -> object:
+    return dataclasses.replace(result, text="You get 99 days.")
+
+
+def no_citation(result: AnswerResult) -> object:
+    return dataclasses.replace(result, citations=())
+
+
+def extra_citation(result: AnswerResult) -> object:
+    return dataclasses.replace(result, citations=result.citations * 2)
+
+
+def half_withdrawn(result: AnswerResult) -> object:
+    # Withdrawn, but still holding the text and the Citations.
+    return dataclasses.replace(result, outcome=AnswerOutcome.WITHDRAWN)
+
+
+def withdrawn_keeping_citations(result: AnswerResult) -> object:
+    return dataclasses.replace(result, outcome=AnswerOutcome.WITHDRAWN, text="")
+
+
+def withdrawn_keeping_text(result: AnswerResult) -> object:
+    return dataclasses.replace(result, outcome=AnswerOutcome.WITHDRAWN, citations=())
+
+
+def abstained_instead(result: AnswerResult) -> object:
+    return dataclasses.replace(result, outcome=AnswerOutcome.ABSTAINED)
+
+
+def subclassed(result: AnswerResult) -> object:
+    subclass = type("Subclassed", (AnswerResult,), {"__slots__": ()})
+    fields = {f.name: getattr(result, f.name) for f in dataclasses.fields(result)}
+    return subclass(**fields)
+
+
+def another_document(result: AnswerResult) -> object:
+    (citation,) = result.citations
+    moved = dataclasses.replace(citation, document_id=DocumentId(UUID(int=0xD0C)))
+    return dataclasses.replace(result, citations=(moved,))
+
+
+def another_chunk(result: AnswerResult) -> object:
+    (citation,) = result.citations
+    moved = dataclasses.replace(citation, chunk_id=ChunkId(UUID(int=0xC)))
+    return dataclasses.replace(result, citations=(moved,))
+
+
+def citations_as_list(result: AnswerResult) -> object:
+    return dataclasses.replace(result, citations=list(result.citations))
+
+
+def a_copy(result: AnswerResult) -> object:
+    return dataclasses.replace(result)
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        not_a_result,
+        other_text,
+        no_citation,
+        extra_citation,
+        half_withdrawn,
+        withdrawn_keeping_citations,
+        withdrawn_keeping_text,
+        abstained_instead,
+        subclassed,
+        another_document,
+        another_chunk,
+        citations_as_list,
+    ],
+)
+async def test_a_check_that_answers_another_result_ends_with_an_error(
+    alter: Callable[[AnswerResult], object],
+) -> None:
+    sent = await chunks(streamer(Model(), citations=Citations(alter=alter)))
+    result = rebuilt(sent)
+
+    assert result.outcome is StreamOutcome.FAILED
+    assert "citation" not in names(sent)
+
+
+async def test_a_check_that_answers_an_abstention_with_a_copy_fails() -> None:
+    final = reply_json("", citations=[], abstained=True, reason="Not in the documents.")
+    copying = Citations(alter=a_copy)
+
+    result = rebuilt(await chunks(streamer(Model(final=final), citations=copying)))
+
+    assert result.outcome is StreamOutcome.FAILED
+
+
+async def test_a_check_slower_than_the_deadline_ends_with_an_error() -> None:
+    slow = Citations(delay=1.0)
+
+    sent = await chunks(streamer(Model(), citations=slow, timeout_seconds=0.3))
+
+    assert rebuilt(sent).outcome is StreamOutcome.FAILED
+    assert "citation" not in names(sent)
+
+
+async def test_a_failing_check_ends_with_an_error_and_shows_no_citation() -> None:
+    sent = await chunks(
+        streamer(Model(), citations=Citations(error=RuntimeError(MARKER)))
+    )
+    result = rebuilt(sent)
+
+    assert result.outcome is StreamOutcome.FAILED
+    assert "citation" not in names(sent)
+    assert MARKER.encode() not in b"".join(sent)
 
 
 # --- The streamed text is the checked text -------------------------------------
