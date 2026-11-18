@@ -17,8 +17,10 @@ from knowledge_service.identity.context import (
     IDENTITY_NAMESPACE,
     AuthenticationError,
     Authenticator,
+    Caller,
     ContextPolicy,
     Unauthenticated,
+    application_roles,
     build_authorization_context,
     group_id_for,
     user_id_for,
@@ -29,6 +31,7 @@ from knowledge_service.identity.oidc import (
     TokenRejected,
     VerifiedToken,
 )
+from knowledge_service.roles import ApplicationRole
 
 ISSUER = "http://localhost:8180/realms/knowledge-service"
 ALICE = "0f5e7d2a-7c51-4f0e-9d2b-1a6c3e8b4a01"
@@ -43,6 +46,7 @@ def verified(**claims: object) -> VerifiedToken:
         "sub": ALICE,
         "azp": "open-webui",
         "groups": ["/engineering"],
+        "realm_access": {"roles": ["user"]},
         **claims,
     }
     payload = {name: value for name, value in payload.items() if value is not None}
@@ -79,6 +83,13 @@ class Verifier:
 def defect(token: VerifiedToken) -> str:
     with pytest.raises(Unauthenticated) as raised:
         build_authorization_context(token, POLICY)
+    return raised.value.reason
+
+
+def role_defect(token: VerifiedToken) -> str:
+    with pytest.raises(Unauthenticated) as raised:
+        application_roles(token, POLICY)
+    assert raised.value.error is AuthenticationError.INVALID_TOKEN
     return raised.value.reason
 
 
@@ -253,6 +264,7 @@ def test_too_many_groups_give_no_context() -> None:
         {"trusted_clients": frozenset[str]()},
         {"trusted_clients": {"open-webui"}},
         {"trusted_clients": frozenset({"open-webui"}), "max_groups": 0},
+        {"trusted_clients": frozenset({"open-webui"}), "max_roles": 0},
     ],
 )
 def test_a_policy_that_trusts_no_client_or_allows_nothing_is_refused(
@@ -262,15 +274,164 @@ def test_a_policy_that_trusts_no_client_or_allows_nothing_is_refused(
         ContextPolicy(**settings)
 
 
+# --- Application Roles: what the caller may do, never what they may read -------------
+
+
+USER = ApplicationRole.USER
+CONTENT_MANAGER = ApplicationRole.CONTENT_MANAGER
+ADMINISTRATOR = ApplicationRole.ADMINISTRATOR
+ALICE_READER = AuthorizationContext(
+    user_id=user_id_for(ISSUER, ALICE),
+    group_ids=frozenset({group_id_for(ISSUER, "/engineering")}),
+)
+
+
+@pytest.mark.parametrize(
+    ("names", "roles"),
+    [
+        (["user"], {USER}),
+        (["content-manager", "user"], {USER, CONTENT_MANAGER}),
+        (["administrator", "user", "user"], {USER, ADMINISTRATOR}),
+        ([], set[ApplicationRole]()),
+    ],
+    ids=["alice", "bob", "carol-listed-twice", "none"],
+)
+def test_realm_roles_become_application_roles(
+    names: list[str], roles: set[ApplicationRole]
+) -> None:
+    token = verified(realm_access={"roles": names})
+
+    assert application_roles(token, POLICY) == roles
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"realm_access": None},
+        {"realm_access": {}},
+    ],
+    ids=["no-realm-access", "no-roles-list"],
+)
+def test_a_token_without_realm_roles_has_no_roles(claims: dict[str, Any]) -> None:
+    assert application_roles(verified(**claims), POLICY) == frozenset()
+
+
+def test_roles_that_are_not_application_roles_are_left_out_and_counted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    names = [
+        "user",
+        "offline_access",
+        "default-roles-knowledge-service",
+        "Administrator",
+        "admin",
+        "administrator ",
+    ]
+
+    roles = application_roles(verified(realm_access={"roles": names}), POLICY)
+
+    assert roles == {USER}
+    assert caplog.messages == ["role claim entries ignored: 5"]
+
+
+def test_a_client_role_is_not_an_application_role() -> None:
+    token = verified(
+        realm_access={"roles": ["user"]},
+        resource_access={"open-webui": {"roles": ["administrator"]}},
+    )
+
+    assert application_roles(token, POLICY) == {USER}
+
+
+def test_a_group_named_like_a_role_gives_no_role() -> None:
+    token = verified(groups=["/administrator"], realm_access={"roles": ["user"]})
+
+    assert application_roles(token, POLICY) == {USER}
+
+
+@pytest.mark.parametrize(
+    "access",
+    [
+        ["user"],
+        "user",
+        {"roles": None},
+        {"roles": "user"},
+        {"roles": {"user": True}},
+        {"roles": ["user", 7]},
+        {"roles": ["user", None]},
+        {"roles": [["administrator"]]},
+    ],
+    ids=[
+        "list",
+        "string",
+        "roles-null",
+        "roles-string",
+        "roles-object",
+        "number",
+        "null",
+        "nested",
+    ],
+)
+def test_a_realm_roles_claim_that_is_not_a_list_of_names_gives_no_caller(
+    access: object,
+) -> None:
+    assert role_defect(verified(realm_access=access)) == "roles_malformed"
+
+
+def test_too_many_roles_give_no_caller() -> None:
+    names = ["user", *(f"role-{n}" for n in range(64))]
+
+    assert role_defect(verified(realm_access={"roles": names})) == "roles_oversized"
+
+
+@pytest.mark.parametrize(
+    "names",
+    [[], ["user"], ["administrator"], ["user", "content-manager", "evaluator"]],
+)
+async def test_roles_never_change_what_the_caller_may_read(names: list[str]) -> None:
+    token = verified(realm_access={"roles": names})
+    verifier = Verifier({"token": token})
+
+    caller = await Authenticator(verifier, POLICY).authenticate(["Bearer token"])
+
+    assert caller.reader == ALICE_READER
+
+
+@pytest.mark.parametrize(
+    ("reader", "roles"),
+    [
+        ("alice", frozenset({USER})),
+        (ALICE_READER, {USER}),
+        (ALICE_READER, frozenset({"user"})),
+        (ALICE_READER, frozenset({USER, "administrator"})),
+    ],
+    ids=["reader-name", "roles-set", "role-name", "mixed"],
+)
+def test_a_caller_takes_only_a_context_and_application_roles(
+    reader: Any, roles: Any
+) -> None:
+    with pytest.raises(TypeError):
+        Caller(reader=reader, roles=roles)
+
+
+def test_a_caller_cannot_be_changed_after_it_is_made() -> None:
+    caller = Caller(reader=ALICE_READER, roles=frozenset({USER}))
+
+    with pytest.raises(AttributeError):
+        caller.roles = frozenset(ApplicationRole)  # type: ignore[misc]
+
+    assert caller.roles == {USER}
+
+
 # --- The Authorization header ---------------------------------------------------------
 
 
 async def test_a_bearer_token_gives_the_context_of_its_claims() -> None:
     verifier = Verifier({"good-token": verified()})
 
-    context = await Authenticator(verifier, POLICY).authenticate(["Bearer good-token"])
+    caller = await Authenticator(verifier, POLICY).authenticate(["Bearer good-token"])
 
-    assert context.user_id == user_id_for(ISSUER, ALICE)
+    assert caller.reader.user_id == user_id_for(ISSUER, ALICE)
     assert verifier.seen == ["good-token"]
 
 
@@ -373,8 +534,16 @@ async def test_no_token_or_claim_text_reaches_errors_or_logs(
         for error in errors
     )
     ignored = await Authenticator(
-        Verifier({"groups": verified(groups=[f"/{MARKER}~"])}), POLICY
-    ).authenticate(["Bearer groups"])
+        Verifier(
+            {
+                "names": verified(
+                    groups=[f"/{MARKER}~"], realm_access={"roles": [MARKER]}
+                )
+            }
+        ),
+        POLICY,
+    ).authenticate(["Bearer names"])
 
-    assert ignored.group_ids == frozenset()
+    assert ignored.reader.group_ids == frozenset()
+    assert ignored.roles == frozenset()
     assert MARKER not in seen + caplog.text

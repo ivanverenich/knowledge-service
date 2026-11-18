@@ -1,16 +1,19 @@
-"""Turn a request's bearer token into the Authorization Context.
+"""Turn a request's bearer token into the Authorization Context and roles.
 
-`Authenticator.authenticate` is the only way a request gets an
-`AuthorizationContext`: it reads one `Authorization: Bearer` header, has the
-token verified, and maps the verified claims to typed identifiers. Nothing
-else in a request, no other header and no field of the body, names the User
-or their Groups.
+`Authenticator.authenticate` is the only way a request gets a `Caller`: it
+reads one `Authorization: Bearer` header, has the token verified, and maps
+the verified claims to typed identifiers and Application Roles. Nothing
+else in a request, no other header and no field of the body, names the User,
+their Groups, or their roles.
 
 The mapping is deterministic and needs no storage. A User is the issuer and
 the token's `sub`; a Group is the issuer and one full group path, such as
 `/engineering`. Each becomes a UUIDv5, so the same person or group always
 gets the same ID, and the same name from another issuer never collides with
 it. A group path no Access Grant names simply matches nothing.
+
+Roles come from the provider's realm roles and are kept apart from the
+Authorization Context: a role never changes what the caller may read.
 """
 
 import logging
@@ -25,6 +28,7 @@ from uuid import UUID, uuid5
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.identifiers import GroupId, UserId
 from knowledge_service.identity.oidc import TokenRejected, VerifiedToken
+from knowledge_service.roles import ApplicationRole
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +94,8 @@ class ClaimDefect(StrEnum):
     UNTRUSTED_CLIENT = "untrusted_client"
     GROUPS_MALFORMED = "groups_malformed"
     GROUPS_OVERSIZED = "groups_oversized"
+    ROLES_MALFORMED = "roles_malformed"
+    ROLES_OVERSIZED = "roles_oversized"
 
 
 class TokenVerifier(Protocol):
@@ -104,13 +110,34 @@ class ContextPolicy:
 
     trusted_clients: frozenset[str]
     max_groups: int = 64
+    max_roles: int = 64
     max_name_length: int = 255
 
     def __post_init__(self) -> None:
         if type(self.trusted_clients) is not frozenset or not self.trusted_clients:
             raise ValueError("trusted_clients must be a non-empty frozenset")
-        if self.max_groups <= 0 or self.max_name_length <= 0:
+        if min(self.max_groups, self.max_roles, self.max_name_length) <= 0:
             raise ValueError("limits must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class Caller:
+    """One request's caller: what they may read, and what they may do.
+
+    `reader` alone decides which Documents they may see; `roles` alone
+    decide which operations they may run.
+    """
+
+    reader: AuthorizationContext
+    roles: frozenset[ApplicationRole]
+
+    def __post_init__(self) -> None:
+        if type(self.reader) is not AuthorizationContext:
+            raise TypeError("the reader must be an AuthorizationContext")
+        if type(self.roles) is not frozenset:
+            raise TypeError("the roles must be a frozenset")
+        if any(type(role) is not ApplicationRole for role in self.roles):
+            raise TypeError("every role must be an ApplicationRole")
 
 
 def user_id_for(issuer: str, subject: str) -> UserId:
@@ -154,15 +181,47 @@ def build_authorization_context(
     )
 
 
+def application_roles(
+    token: VerifiedToken, policy: ContextPolicy
+) -> frozenset[ApplicationRole]:
+    """The Application Roles in the token's realm roles, or `Unauthenticated`.
+
+    `realm_access.roles`, if present, must be a list of at most `max_roles`
+    strings. A name that is not an Application Role, such as Keycloak's
+    `offline_access`, is left out and counted; roles of single clients
+    (`resource_access`) are never read.
+    """
+    access: object = token.claims.get("realm_access", {})
+    if not isinstance(access, Mapping):
+        raise _defect(ClaimDefect.ROLES_MALFORMED)
+    listed: object = cast("Mapping[str, object]", access).get("roles", [])
+    if not isinstance(listed, list):
+        raise _defect(ClaimDefect.ROLES_MALFORMED)
+    names = cast("list[object]", listed)
+    if len(names) > policy.max_roles:
+        raise _defect(ClaimDefect.ROLES_OVERSIZED)
+    named: set[str] = set()
+    for name in names:
+        if not isinstance(name, str):
+            raise _defect(ClaimDefect.ROLES_MALFORMED)
+        named.add(name)
+    known = {role.value: role for role in ApplicationRole}
+    roles = frozenset(known[name] for name in named if name in known)
+    if ignored := len(named - known.keys()):
+        # A count only, as for groups.
+        logger.warning("role claim entries ignored: %d", ignored)
+    return roles
+
+
 class Authenticator:
-    """Turns one request's `Authorization` header into its context."""
+    """Turns one request's `Authorization` header into its caller."""
 
     def __init__(self, verifier: TokenVerifier, policy: ContextPolicy) -> None:
         self._verifier = verifier
         self._policy = policy
 
-    async def authenticate(self, headers: list[str]) -> AuthorizationContext:
-        """The context for the request's `Authorization` header values.
+    async def authenticate(self, headers: list[str]) -> Caller:
+        """The caller for the request's `Authorization` header values.
 
         Raises `Unauthenticated` for no Bearer header, more than one header,
         a malformed one, a token the verifier rejects, or claims that cannot
@@ -184,7 +243,10 @@ class Authenticator:
         except TokenRejected as rejected:
             reason = str(rejected.reason)
         else:
-            return build_authorization_context(verified, self._policy)
+            return Caller(
+                reader=build_authorization_context(verified, self._policy),
+                roles=application_roles(verified, self._policy),
+            )
         # Raised outside `except`, so nothing about the token is chained.
         raise Unauthenticated(reason, error=AuthenticationError.INVALID_TOKEN)
 

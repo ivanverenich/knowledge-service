@@ -19,8 +19,8 @@ module, and persistence is split by the kind of record it stores.
 | `knowledge_service.persistence` | `schema` (every table, the one `metadata` Alembic compares) and one module per kind of record |
 | `knowledge_service.identity` | Who is calling: the OIDC token verifier (M07-T03), and the Authorization Context built from its result |
 
-Domain values (`identifiers`, `access`, `documents`, `chunks`, `language`,
-`audit`, `jobs`, `conversations`, `evaluation`), configuration, the database
+Domain values (`identifiers`, `access`, `roles`, `documents`, `chunks`,
+`language`, `audit`, `jobs`, `conversations`, `evaluation`), configuration, the database
 runtime, and the HTTP application stay at the top level, where every module
 may import them.
 

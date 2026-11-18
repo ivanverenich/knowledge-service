@@ -12,7 +12,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from starlette.types import Message, Receive, Scope, Send
 
-from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.stream_failures import StreamPhase, stream_failure
 from knowledge_service.answering.streaming import (
     CLOSE_SECONDS,
@@ -25,8 +24,13 @@ from knowledge_service.errors import (
     classify_failure,
     policy_for,
 )
-from knowledge_service.identity.context import AuthenticationError, Unauthenticated
+from knowledge_service.identity.context import (
+    AuthenticationError,
+    Caller,
+    Unauthenticated,
+)
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
+from knowledge_service.roles import Operation, PermissionDenied, require
 from knowledge_service.workflow import AnswerWorkflow
 
 logger = logging.getLogger(__name__)
@@ -37,13 +41,13 @@ MAX_BODY_BYTES = 65_536
 
 
 class RequestAuthenticator(Protocol):
-    """Gives a request's Authorization Context from its `Authorization` headers.
+    """Gives a request's caller from its `Authorization` headers.
 
     `Authenticator` is the implementation; it raises `Unauthenticated`, or
     `IdentityProviderUnavailable` when tokens cannot be checked.
     """
 
-    async def authenticate(self, headers: list[str]) -> AuthorizationContext: ...
+    async def authenticate(self, headers: list[str]) -> Caller: ...
 
 
 class _NotAuthenticated(Exception):
@@ -199,17 +203,22 @@ def create_app(
 ) -> FastAPI:
     """The HTTP application.
 
-    Both answer endpoints need a bearer token: without an `authenticator`
-    they answer 503, and the reader is only ever the context it returns.
+    Both answer endpoints need a bearer token and the role that permits
+    asking: without an `authenticator` they answer 503, and the reader is
+    only ever the context it returns.
     """
     app = FastAPI(title="knowledge-service")
 
-    async def admit(request: Request) -> tuple[AuthorizationContext, Question]:
-        """The reader, then the Question: the body is not read without a reader."""
-        reader = await authenticate(request)
-        return reader, await read_question(request)
+    async def admit(request: Request, operation: Operation) -> tuple[Caller, Question]:
+        """The caller, their permission, then the Question, in that order.
 
-    async def authenticate(request: Request) -> AuthorizationContext:
+        The body is not read until the caller is known and permitted.
+        """
+        caller = await authenticate(request)
+        require(caller.roles, operation)
+        return caller, await read_question(request)
+
+    async def authenticate(request: Request) -> Caller:
         if authenticator is None:
             raise _CannotAuthenticate
         # Every Authorization header, whatever the case of its name.
@@ -219,7 +228,7 @@ def create_app(
             if name.lower() == b"authorization"
         ]
         try:
-            return await authenticator.authenticate(headers)
+            caller = await authenticator.authenticate(headers)
         except Unauthenticated as refused:
             logger.info("request not authenticated: %s", refused.reason)
             error = refused.error
@@ -230,6 +239,11 @@ def create_app(
             # Only the type: the message may quote the token or its claims.
             logger.error("authentication failed: %s", type(unexpected).__name__)
             raise _CannotAuthenticate from None
+        else:
+            if type(caller) is not Caller:
+                logger.error("authentication failed: not a Caller")
+                raise _CannotAuthenticate
+            return caller
         raise _NotAuthenticated(error)
 
     @app.exception_handler(_NotAuthenticated)
@@ -252,6 +266,20 @@ def create_app(
             f'Bearer error="{refused.error}"' if refused.error else "Bearer"
         )
         return response
+
+    @app.exception_handler(PermissionDenied)
+    async def permission_denied_handler(
+        request: Request, denied: PermissionDenied
+    ) -> JSONResponse:
+        logger.info("request not permitted: %s", denied.operation)
+        # Not an RFC 6750 challenge: another token for the same User has the
+        # same roles, so there is nothing for the client to retry.
+        return error_response(
+            status_code=403,
+            code="forbidden",
+            message="Your role does not permit this operation",
+            request_id=request_id_from(request),
+        )
 
     @app.exception_handler(_CannotAuthenticate)
     async def cannot_authenticate_handler(
@@ -301,8 +329,8 @@ def create_app(
     @app.post("/v1/answer", response_model=Answer)
     async def answer(request: Request) -> Answer | JSONResponse:
         # The ungrounded M01 path searches nothing, so it needs proof of
-        # identity but no reader; M09-T01 replaces it.
-        _reader, question = await admit(request)
+        # identity and the role, but no reader; M09-T01 replaces it.
+        _caller, question = await admit(request, Operation.ASK_QUESTIONS)
         request_id = request_id_from(request)
 
         if workflow is None:
@@ -328,7 +356,7 @@ def create_app(
 
     @app.post("/v1/answer/stream")
     async def answer_stream(request: Request) -> Response:
-        reader, question = await admit(request)
+        caller, question = await admit(request, Operation.ASK_QUESTIONS)
         request_id = request_id_from(request)
         if streamer is None:
             return error_response(
@@ -339,7 +367,8 @@ def create_app(
             )
         try:
             events = await _unless_client_leaves(
-                request, streamer.open(question, reader=reader, request_id=request_id)
+                request,
+                streamer.open(question, reader=caller.reader, request_id=request_id),
             )
         except asyncio.CancelledError:
             raise

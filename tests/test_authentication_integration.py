@@ -1,8 +1,9 @@
 """The whole path against the local Keycloak (`make keycloak-up`).
 
 A demo user logs in through the login form; their access token goes to the
-app, and the Evidence source sees exactly their User and Groups. The tests
-skip themselves when Keycloak or its generated secrets are missing.
+app, and the Evidence source sees exactly their User and Groups, whatever
+Application Roles they also hold. The tests skip themselves when Keycloak or
+its generated secrets are missing.
 """
 
 from collections.abc import AsyncIterator
@@ -21,6 +22,7 @@ from knowledge_service.identity.context import (
     user_id_for,
 )
 from knowledge_service.identity.oidc import OidcVerifier
+from knowledge_service.roles import ApplicationRole
 from test_streaming import QUESTION, Model, Source, streamer
 
 pytestmark = pytest.mark.integration
@@ -32,6 +34,11 @@ USERS: dict[str, tuple[str, list[str]]] = {
     "carol": ("0f5e7d2a-7c51-4f0e-9d2b-1a6c3e8b4a03", []),
 }
 PASSWORDS = {name: f"KS_{name.upper()}_PASSWORD" for name in USERS}
+ROLES = {
+    "alice": {ApplicationRole.USER},
+    "bob": {ApplicationRole.USER, ApplicationRole.CONTENT_MANAGER},
+    "carol": {ApplicationRole.USER, ApplicationRole.ADMINISTRATOR},
+}
 
 
 @pytest.fixture
@@ -46,13 +53,17 @@ async def keycloak() -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
-def app_for(keycloak: httpx.AsyncClient, source: Source) -> Any:
-    authenticator = Authenticator(
+def authenticator_for(keycloak: httpx.AsyncClient) -> Authenticator:
+    return Authenticator(
         OidcVerifier(ISSUER, AUDIENCE, keycloak),
         ContextPolicy(trusted_clients=frozenset({CLIENT_ID})),
     )
+
+
+def app_for(keycloak: httpx.AsyncClient, source: Source) -> Any:
     return create_app(
-        streamer=streamer(Model(), source=source), authenticator=authenticator
+        streamer=streamer(Model(), source=source),
+        authenticator=authenticator_for(keycloak),
     )
 
 
@@ -106,3 +117,22 @@ async def test_an_id_token_or_no_token_reads_nothing(
     assert (await ask(app, tokens.id_token)).status_code == 401
     assert (await ask(app, None)).status_code == 401
     assert source.readers == []
+
+
+@pytest.mark.parametrize("username", list(USERS))
+async def test_each_demo_user_has_exactly_the_roles_the_realm_gives_them(
+    keycloak: httpx.AsyncClient, username: str
+) -> None:
+    secrets = local_secrets()
+    tokens = await log_in(
+        keycloak,
+        username,
+        secrets[PASSWORDS[username]],
+        client_secret=secrets["KS_OPEN_WEBUI_CLIENT_SECRET"],
+    )
+
+    caller = await authenticator_for(keycloak).authenticate(
+        [f"Bearer {tokens.access_token}"]
+    )
+
+    assert caller.roles == ROLES[username]

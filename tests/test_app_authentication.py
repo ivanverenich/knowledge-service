@@ -1,8 +1,9 @@
-"""Only the verifier's output can make a request's Authorization Context.
+"""Only the verifier's output can make a request's caller.
 
 The app gets the real `Authenticator` over a fake verifier. Each test checks
 what the Evidence source was asked as, so a reader that came from anywhere
-but a verified token would show up here.
+but a verified token would show up here, and that a caller without the role
+an endpoint needs is refused before anything runs.
 """
 
 import logging
@@ -14,8 +15,14 @@ import pytest
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.generation import InvalidAnswerRequest
 from knowledge_service.app import create_app
-from knowledge_service.identity.context import Authenticator, group_id_for, user_id_for
+from knowledge_service.identity.context import (
+    Authenticator,
+    Caller,
+    group_id_for,
+    user_id_for,
+)
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
+from knowledge_service.roles import ApplicationRole, Operation
 from knowledge_service.workflow import AnswerWorkflow
 from test_authorization_context import (
     ALICE,
@@ -25,6 +32,7 @@ from test_authorization_context import (
     Verifier,
     verified,
 )
+from test_roles import MATRIX, ROLE_SETS
 from test_streaming import QUESTION, REQUEST_ID, Model, Source, streamer
 
 ALICE_CONTEXT = AuthorizationContext(
@@ -35,6 +43,11 @@ TOKENS = {
     "alice-token": verified(),
     "outsider-token": verified(azp="account-console"),
     "crowded-token": verified(groups=[f"/g{n}" for n in range(65)]),
+    "roleless-token": verified(realm_access={"roles": []}),
+    "staff-token": verified(
+        realm_access={"roles": ["content-manager", "evaluator", "administrator"]}
+    ),
+    "admin-user-token": verified(realm_access={"roles": ["administrator", "user"]}),
 }
 
 
@@ -158,7 +171,9 @@ async def test_a_malformed_authorization_header_is_a_400(
     assert source.readers == []
 
 
-def raw_scope(headers: list[tuple[bytes, bytes]]) -> dict[str, Any]:
+def raw_scope(
+    headers: list[tuple[bytes, bytes]], path: str = "/v1/answer/stream"
+) -> dict[str, Any]:
     """An ASGI request scope, for what an HTTP client would never send."""
     return {
         "type": "http",
@@ -166,8 +181,8 @@ def raw_scope(headers: list[tuple[bytes, bytes]]) -> dict[str, Any]:
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/v1/answer/stream",
-        "raw_path": b"/v1/answer/stream",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "root_path": "",
         "headers": [(b"content-type", b"application/json"), *headers],
@@ -300,8 +315,24 @@ async def test_an_authenticated_invalid_body_is_still_a_422() -> None:
 class Broken:
     """An authenticator that fails in a way nobody planned for."""
 
-    async def authenticate(self, headers: list[str]) -> AuthorizationContext:
+    async def authenticate(self, headers: list[str]) -> Caller:
         raise KeyError(MARKER)
+
+
+class Careless:
+    """An authenticator that returns something other than exactly a `Caller`."""
+
+    def __init__(self, returned: object) -> None:
+        self.returned = returned
+
+    async def authenticate(self, headers: list[str]) -> Caller:
+        return cast(Caller, self.returned)
+
+
+class LooseCaller(Caller):
+    """A subclass could change what `roles` or `reader` answer."""
+
+    __slots__ = ()
 
 
 async def test_an_unexpected_authenticator_error_is_a_503_naming_only_its_type(
@@ -315,6 +346,26 @@ async def test_an_unexpected_authenticator_error_is_a_503_naming_only_its_type(
     assert response.status_code == 503
     assert MARKER not in response.text + caplog.text
     assert "authentication failed: KeyError" in caplog.messages
+    assert source.readers == []
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [ALICE_CONTEXT, LooseCaller(reader=ALICE_CONTEXT, roles=frozenset())],
+    ids=["bare-reader", "caller-subclass"],
+)
+async def test_an_authenticator_that_returns_no_caller_is_a_503(
+    returned: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    source = Source()
+    app = create_app(
+        streamer=streamer(Model(), source=source), authenticator=Careless(returned)
+    )
+
+    response = await ask(app, {"Authorization": "Bearer alice-token"})
+
+    assert response.status_code == 503
+    assert "authentication failed: not a Caller" in caplog.messages
     assert source.readers == []
 
 
@@ -339,6 +390,143 @@ async def test_the_ungrounded_endpoint_needs_a_token_too() -> None:
 
     assert response.status_code == 401
     assert workflow.calls == 0
+
+
+# --- Application Roles: who may ask, never what they may read -------------------------
+
+
+@pytest.mark.parametrize("token", ["roleless-token", "staff-token"])
+@pytest.mark.parametrize("path", ["/v1/answer", "/v1/answer/stream"])
+async def test_a_caller_without_the_user_role_gets_403_and_nothing_runs(
+    path: str, token: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    source = Source()
+    workflow = Workflow()
+    app = create_app(
+        workflow=cast(AnswerWorkflow, workflow),
+        streamer=streamer(Model(), source=source),
+        authenticator=Authenticator(Verifier(TOKENS), POLICY),
+    )
+
+    async with client(app) as http:
+        response = await http.post(
+            path,
+            json={"text": QUESTION.text},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "forbidden"
+    assert "www-authenticate" not in response.headers
+    assert (source.readers, workflow.calls) == ([], 0)
+    assert "request not permitted: ask_questions" in caplog.messages
+
+
+# Every route the app serves, written out by hand, and the operation it needs;
+# None marks a route anyone may call. A new route fails the first test below
+# until someone decides who may call it.
+ROUTES: dict[tuple[str, str], Operation | None] = {
+    ("GET", "/health/live"): None,
+    ("GET", "/health/ready"): None,
+    ("GET", "/openapi.json"): None,
+    ("GET", "/docs"): None,
+    ("GET", "/docs/oauth2-redirect"): None,
+    ("GET", "/redoc"): None,
+    ("POST", "/v1/answer"): Operation.ASK_QUESTIONS,
+    ("POST", "/v1/answer/stream"): Operation.ASK_QUESTIONS,
+}
+PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
+
+
+class Counting:
+    """A workflow that records that it was reached, then stops."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def answer(self, question: Any, *, request_id: Any) -> Any:
+        self.calls += 1
+        raise RuntimeError("reached")
+
+
+def full_app(
+    source: Source, workflow: Any = None, tokens: dict[str, Any] | None = None
+) -> Any:
+    """The app with both answer endpoints wired, so every route is real."""
+    return create_app(
+        workflow=cast(AnswerWorkflow, workflow or Counting()),
+        streamer=streamer(Model(), source=source),
+        authenticator=Authenticator(Verifier(tokens or TOKENS), POLICY),
+    )
+
+
+def test_every_route_the_app_serves_is_listed_with_its_operation() -> None:
+    served: set[tuple[str, str]] = set()
+    for route in full_app(Source()).routes:
+        # A websocket or mounted route has no methods, and must be listed too.
+        methods: set[str] = getattr(route, "methods", None) or {"ANY"}
+        served |= {(method, getattr(route, "path", "?")) for method in methods}
+
+    assert served - {("HEAD", path) for _, path in ROUTES} == set(ROUTES)
+
+
+@pytest.mark.parametrize(
+    "roles", ROLE_SETS, ids=lambda roles: "+".join(sorted(roles)) or "none"
+)
+@pytest.mark.parametrize(
+    ("route", "operation"), PROTECTED, ids=[path for (_, path), _ in PROTECTED]
+)
+async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
+    route: tuple[str, str],
+    operation: Operation,
+    roles: frozenset[ApplicationRole],
+) -> None:
+    source, workflow = Source(), Counting()
+    token = verified(realm_access={"roles": sorted(roles)})
+    app = full_app(source, workflow, {"token": token})
+    method, path = route
+
+    async with client(app) as http:
+        response = await http.request(
+            method,
+            path,
+            json={"text": QUESTION.text},
+            headers={"Authorization": "Bearer token"},
+        )
+
+    allowed = bool(roles & MATRIX[operation])
+    assert (response.status_code == 403) is not allowed
+    assert bool(source.readers or workflow.calls) is allowed
+
+
+@pytest.mark.parametrize("path", [path for (_, path), _ in PROTECTED])
+async def test_the_role_is_checked_before_the_body_is_read(path: str) -> None:
+    read: list[int] = []
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        read.append(1)
+        return {"type": "http.request", "body": b" " * 65_536, "more_body": True}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    headers = [(b"authorization", b"Bearer roleless-token")]
+    await full_app(Source())(raw_scope(headers, path), receive, send)
+
+    assert sent[0]["status"] == 403
+    assert read == []
+
+
+async def test_an_administrator_reads_exactly_what_the_same_user_reads() -> None:
+    plain, admin = Source(), Source()
+
+    await ask(app_with(plain), {"Authorization": "Bearer alice-token"})
+    response = await ask(app_with(admin), {"Authorization": "Bearer admin-user-token"})
+
+    assert response.status_code == 200
+    assert admin.readers == plain.readers == [ALICE_CONTEXT]
 
 
 # --- When tokens cannot be checked: 503, never a guess --------------------------------

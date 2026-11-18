@@ -7,7 +7,7 @@ depends_on: ["M07-T04"]
 estimate: 75m
 topics: ["oidc","authorization","security"]
 deliverables: ["role policy"]
-status: planned
+status: completed
 ---
 
 # M07-T05 — Enforce Application Roles

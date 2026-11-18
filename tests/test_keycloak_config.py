@@ -85,6 +85,16 @@ def test_the_realm_has_the_client_groups_roles_and_demo_users() -> None:
     }
 
 
+def test_application_roles_are_given_to_users_only_never_through_groups() -> None:
+    # Groups also decide Access Grants. A role mapped to a group, or a role
+    # that contains another, would let whoever manages one hand out the other.
+    config = realm()
+
+    assert all("realmRoles" not in group for group in config["groups"])
+    assert all("clientRoles" not in group for group in config["groups"])
+    assert all(not role.get("composite") for role in config["roles"]["realm"])
+
+
 def test_each_demo_user_keeps_one_id_across_resets() -> None:
     ids = [UUID(user["id"]) for user in realm()["users"]]
 
