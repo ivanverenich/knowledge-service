@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     environment: Environment = Environment.LOCAL
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Development only: lets logs hold raw Questions, Evidence, and Answers.
+    telemetry_diagnostics: bool = False
     model_api_key: SecretStr | None = None
     database_url: SecretStr | None = None
     database_pool_size: int = Field(default=5, gt=0)
@@ -41,5 +43,7 @@ class Settings(BaseSettings):
                 raise ValueError("MODEL_API_KEY is required in production")
             if self.database_url is None:
                 raise ValueError("DATABASE_URL is required in production")
+            if self.telemetry_diagnostics:
+                raise ValueError("TELEMETRY_DIAGNOSTICS is not allowed in production")
 
         return self

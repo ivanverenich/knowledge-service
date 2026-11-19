@@ -119,6 +119,7 @@ from knowledge_service.errors import (
 )
 from knowledge_service.language import Language
 from knowledge_service.model import ChatModelMalformedResponse
+from knowledge_service.telemetry import DIAGNOSTIC, diagnostics_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,7 @@ class AnswerStreamer:
         errors of `assess_evidence` and `allocate_context`. Its record ends
         here as `failed` or `cancelled` when it does.
         """
-        span = _Span(request_id)
+        span = _Span(request_id, question=question.text)
         try:
             if type(reader) is not AuthorizationContext:
                 raise InvalidAnswerRequest("reader must be an AuthorizationContext")
@@ -327,6 +328,8 @@ class AnswerStreamer:
                 if sufficiency is Sufficiency.SUFFICIENT
                 else None
             )
+            if context is not None:
+                span.evidence = tuple(item.text for item in context.evidence.items)
         except asyncio.CancelledError:
             span.end()
             raise
@@ -615,6 +618,9 @@ class _Span:
     request_id: UUID
     started_at: float = field(default_factory=time.perf_counter)
     text: list[str] = field(default_factory=list[str], repr=False)
+    # Raw text for development diagnostics only; never in the default record.
+    question: str = field(default="", repr=False)
+    evidence: tuple[str, ...] = field(default=(), repr=False)
     characters: int = 0
     deltas: int = 0
     citations: int = 0
@@ -666,8 +672,15 @@ class _Span:
         if self.usage is not None:
             fields["input_tokens"] = self.usage.input_tokens
             fields["output_tokens"] = self.usage.output_tokens
+        extra: dict[str, object] = {"answer_stream": fields}
+        if diagnostics_enabled():
+            extra[DIAGNOSTIC] = {
+                "question": self.question,
+                "evidence": list(self.evidence),
+                "answer": "".join(self.text),
+            }
         level = logging.INFO if self.outcome == "completed" else logging.WARNING
-        logger.log(level, "answer stream ended", extra={"answer_stream": fields})
+        logger.log(level, "answer stream ended", extra=extra)
 
 
 async def _close(parts: AsyncGenerator[str | ModelReply]) -> None:

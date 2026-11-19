@@ -73,6 +73,13 @@ an operation no role lists is denied, and no role permits reading a
 Document. Both answer endpoints `require` the `ask_questions` operation
 before they read the body, and refuse with 403 otherwise.
 
+`telemetry` decides what leaves the process as logs. `configure_telemetry`
+installs one root handler that writes JSON lines, and its `TelemetryFilter`
+keeps only the fields `TELEMETRY_FIELDS` lists, with plain values, only this
+service's own messages, and only an exception's type. Raw Questions,
+Evidence, and Answers appear only when `Settings.telemetry_diagnostics` is
+on, which production refuses.
+
 Model runtimes that need their own Python live outside `src/`, each as its
 own uv project (ADR 0009).
 `ml/bge_m3_server/` serves BGE-M3 dense embeddings, and for the M05-T10

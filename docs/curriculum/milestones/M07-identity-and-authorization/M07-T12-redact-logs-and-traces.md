@@ -7,7 +7,7 @@ depends_on: ["M07-T11"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["telemetry redaction"]
-status: planned
+status: completed
 ---
 
 # M07-T12 — Redact logs and traces
