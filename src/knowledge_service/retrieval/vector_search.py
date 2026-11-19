@@ -23,6 +23,14 @@ What a caller can rely on in a `VectorSearchResult`:
   A Chunk whose stored vector has no direction (all zeros) has no distance,
   so it is never a Candidate.
 
+The work does not depend on Chunks the reader may not see. The statement
+first settles every Chunk the reader may see, in a materialized step the
+database cannot reorder, and only then ranks those by distance. If it
+ranked first and checked permissions row by row, as a planner may choose,
+every hidden Chunk nearer than the reader's results would cost one more
+check, and the time of a search would tell a reader how many hidden
+Chunks are close to their question.
+
 Every stored vector and every query has length 1, so distances are right
 in pgvector's 32-bit floats. Ties are exact: two vectors in the same
 direction can still differ in the last digits of their distances, and are
@@ -181,14 +189,25 @@ def vector_search_statement(
 ) -> sa.Select[*tuple[Any, ...]]:
     """Select the nearest Chunks of one space that meet `eligibility`.
 
-    The predicate sits in the same WHERE as the space, so PostgreSQL applies
-    it before ORDER BY and LIMIT. The space must still be current when the
-    statement runs, so it never reads a space a migration has just switched
-    away from. Ties in distance are broken by Chunk ID so
+    The Chunks that meet `eligibility` and `restriction` are chosen first,
+    in a `MATERIALIZED` common table expression, which PostgreSQL computes
+    once and never merges into the ranking; only those are then ordered by
+    distance and cut by the limit. So no Chunk the reader may not see is
+    ranked, and the work does not grow with them. The space must still be
+    current when the statement runs, so it never reads a space a migration
+    has just switched away from. Ties in distance are broken by Chunk ID so
     that equal inputs always return the same order. A stored vector with no
     direction gives a NaN distance, which is not a distance, so its row is
     left out; PostgreSQL treats NaN as equal to NaN.
     """
+    visible = (
+        sa.select(chunks.c.chunk_id)
+        .select_from(chunks)
+        .join(documents, documents.c.document_id == chunks.c.document_id)
+        .where(eligibility, restriction)
+        .cte("visible")
+        .prefix_with("MATERIALIZED")
+    )
     distance = chunk_embeddings.c.embedding.cosine_distance(list(query))
     return (
         sa.select(
@@ -205,6 +224,7 @@ def vector_search_statement(
             chunks.c.text,
         )
         .select_from(chunk_embeddings)
+        .join(visible, visible.c.chunk_id == chunk_embeddings.c.chunk_id)
         .join(chunks, chunks.c.chunk_id == chunk_embeddings.c.chunk_id)
         .join(documents, documents.c.document_id == chunks.c.document_id)
         .where(
@@ -213,8 +233,6 @@ def vector_search_statement(
                 embedding_spaces.c.space_id == space_id.value,
                 embedding_spaces.c.is_current,
             ),
-            eligibility,
-            restriction,
             distance != float("nan"),
         )
         .order_by(distance, chunks.c.chunk_id)

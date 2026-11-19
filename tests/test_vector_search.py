@@ -154,6 +154,29 @@ def test_the_reader_and_the_query_are_bound_parameters() -> None:
     assert [DOCUMENT.value] in values
 
 
+def test_the_reader_s_chunks_are_settled_before_any_ranking() -> None:
+    # A MATERIALIZED step is computed on its own and never merged into the
+    # ranking, so the grants are read for every Chunk once, whatever its
+    # distance, and the time of a search cannot count hidden near Chunks.
+    statement = vector_search_statement(
+        space_id=EmbeddingSpaceId.new(),
+        query=(1.0, 0.0, 0.0),
+        eligibility=eligible_chunks_predicate(AuthorizationContext(user_id=USER)),
+        restriction=metadata_predicate(()),
+        limit=5,
+    )
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    visible, ranked = sql.split(")\n SELECT", 1)
+
+    assert visible.startswith("WITH visible AS MATERIALIZED")
+    assert "access_grants" in visible
+    assert "access_grants" not in ranked
+    assert "<=>" not in visible
+    assert "JOIN visible" in ranked
+    assert "ORDER BY" in ranked
+
+
 def test_a_candidate_repr_shows_no_document_text() -> None:
     candidate = VectorCandidate(
         rank=1,

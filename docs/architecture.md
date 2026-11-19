@@ -290,7 +290,9 @@ the database. Stored vectors and the query both have length 1, and cosine
 distance runs from 0 (same direction) to 2 (opposite). Optional metadata
 filters (Source, Document, media type, language, modified since) are typed
 conditions from a fixed list; they are added to the same WHERE and only
-narrow it.
+narrow it. Since M07-T11 the statement settles the reader's Chunks in a
+`MATERIALIZED` step before it ranks any, so its work, and its time, does not
+grow with hidden Chunks near the question.
 
 ```mermaid
 sequenceDiagram
@@ -303,7 +305,7 @@ sequenceDiagram
     alt not current
         Search-->>Caller: NoCurrentEmbeddingSpace
     else current
-        Search->>DB: one SELECT: space still current AND available AND a matching Access Grant AND every filter AND a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
+        Search->>DB: one SELECT: first the Chunks that are available, granted, and match every filter (MATERIALIZED), then of those, in the current space with a real distance, ORDER BY distance, Chunk ID, LIMIT k + 1
         DB-->>Search: eligible Chunks with provenance and distance
         alt no rows and the space is no longer current
             Search-->>Caller: NoCurrentEmbeddingSpace (a migration switched meanwhile)

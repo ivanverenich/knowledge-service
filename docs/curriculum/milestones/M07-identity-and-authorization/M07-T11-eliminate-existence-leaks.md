@@ -7,7 +7,7 @@ depends_on: ["M07-T10"]
 estimate: 75m
 topics: ["oidc","authorization","security"]
 deliverables: ["existence-leak policy"]
-status: planned
+status: completed
 ---
 
 # M07-T11 — Eliminate existence leaks
