@@ -19,7 +19,13 @@ from knowledge_service.access import (
     granted_subjects,
 )
 from knowledge_service.documents import DocumentAvailability
-from knowledge_service.identifiers import AccessGrantId, DocumentId, GroupId, UserId
+from knowledge_service.identifiers import (
+    AccessGrantId,
+    DocumentId,
+    GroupId,
+    SourceId,
+    UserId,
+)
 from knowledge_service.persistence.schema import access_grants, chunks, documents
 
 
@@ -140,3 +146,56 @@ async def load_access_grants(
     )
     records = (await connection.execute(statement)).mappings().all()
     return tuple(_grant_from(dict(record)) for record in records)
+
+
+async def load_readers(
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+    external_ids: Sequence[str],
+) -> dict[str, frozenset[Subject]]:
+    """The readers each available Document of these source items has now.
+
+    One statement for all of them. An item with no stored Document, or a
+    tombstoned one, is absent; an available one with no grants maps to an
+    empty set.
+    """
+    if not external_ids:
+        return {}
+    statement = (
+        sa.select(
+            documents.c.external_id,
+            access_grants.c.subject_kind,
+            access_grants.c.subject_id,
+        )
+        .select_from(
+            documents.outerjoin(
+                access_grants,
+                access_grants.c.document_id == documents.c.document_id,
+            )
+        )
+        .where(
+            documents.c.source_id == source_id.value,
+            documents.c.external_id.in_(sorted(set(external_ids))),
+            documents.c.availability == DocumentAvailability.AVAILABLE.value,
+        )
+    )
+    readers: dict[str, set[Subject]] = {}
+    for record in (await connection.execute(statement)).mappings():
+        found = readers.setdefault(cast(str, record["external_id"]), set())
+        if record["subject_kind"] is not None:
+            found.add(_subject_from(dict(record)))
+    return {name: frozenset(subjects) for name, subjects in readers.items()}
+
+
+def _subject_from(record: Mapping[str, object]) -> Subject:
+    try:
+        kind = SubjectKind(cast(str, record["subject_kind"]))
+    except ValueError:
+        raise InvalidGrant("stored subject kind is not a known value") from None
+    stored_id = cast("UUID | None", record["subject_id"])
+    if kind is SubjectKind.PUBLIC:
+        return Subject.public()
+    if kind is SubjectKind.USER:
+        return Subject.user(UserId(cast(UUID, stored_id)))
+    return Subject.group(GroupId(cast(UUID, stored_id)))

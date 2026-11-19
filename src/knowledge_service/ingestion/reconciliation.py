@@ -25,7 +25,7 @@ When a record cannot be normalized, its last good version stays, but
 read it can shrink then, never grow.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -219,6 +219,12 @@ async def narrow_access(
         await upsert_document(connection, document)
         await _write_grants(connection, document, kept, observed_at)
         return True
+
+
+def removes_readers(stored: Iterable[Subject], observed: Sequence[Subject]) -> bool:
+    """Whether the observed readers leave out anyone the stored ones let in."""
+    kept = tuple(stored)
+    return set(_both(kept, observed)) != set(kept)
 
 
 def _both(stored: Sequence[Subject], observed: Sequence[Subject]) -> list[Subject]:

@@ -212,16 +212,21 @@ sequenceDiagram
                 Sync->>Sync: remove its external ID from seen
             else present
                 Sync->>Sync: add its external ID to seen
-                Sync->>Norm: SourceRecord
-                Norm-->>Sync: NormalizedDocument or Quarantined
-                alt NormalizedDocument
-                    Sync->>Sync: normalize_access: mapped principals become readers, the rest are kept as unresolved
-                    Sync->>Rec: NormalizedDocument + readers
-                    Rec->>DB: one transaction: lock row, compare fingerprints, write what changed
-                else Quarantined
-                    Sync->>Sync: keep it in seen, so its last good version stays
-                    Sync->>Rec: narrow_access: keep only readers old and new access both name
-                end
+                Sync->>Sync: normalize_access: mapped principals become readers, the rest are kept as unresolved
+            end
+        end
+        loop each present record, before any is parsed
+            Sync->>Rec: narrow_access: keep only readers old and new access both name
+            Rec->>DB: one short transaction each: a removed reader loses the Document now, under a new Authorization Version
+        end
+        loop each present record
+            Sync->>Norm: SourceRecord
+            Norm-->>Sync: NormalizedDocument or Quarantined
+            alt NormalizedDocument
+                Sync->>Rec: NormalizedDocument + readers
+                Rec->>DB: one transaction: lock row, compare fingerprints, write what changed
+            else Quarantined
+                Sync->>Sync: keep it in seen, so its last good version stays, already narrowed
             end
         end
     end

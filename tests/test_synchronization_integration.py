@@ -1,8 +1,9 @@
 """Real PostgreSQL tests for one complete pass over a local Source."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -13,6 +14,7 @@ from knowledge_service.access import AuthorizationContext
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
 from knowledge_service.identifiers import SourceId
 from knowledge_service.identity.context import group_id_for, user_id_for
+from knowledge_service.ingestion import synchronization
 from knowledge_service.ingestion.directory_source import DirectorySource
 from knowledge_service.ingestion.grant_normalization import (
     PrincipalDirectory,
@@ -570,3 +572,263 @@ async def test_a_record_offered_twice_is_reported_as_last_seen(
     )
 
     assert summary.unresolved == ()
+
+
+class OnePage:
+    """A Source that offers the given records on one page."""
+
+    def __init__(self, records: Sequence[SourceRecord]) -> None:
+        self.records = tuple(records)
+
+    async def fetch_page(self, *, checkpoint: str | None, page_size: int) -> SourcePage:
+        return SourcePage(records=self.records, next_checkpoint=None)
+
+
+def a_record(name: str, text: str, *principals: str) -> SourceRecord:
+    return SourceRecord.present(
+        external_id=name,
+        version=text,
+        media_type="text/markdown",
+        content=text.encode(),
+        access=SourceAccess(public=False, principals=principals),
+        metadata=SourceMetadata(title=name, modified_at=OBSERVED_AT, size_bytes=1),
+    )
+
+
+async def readable_names(
+    runtime: DatabaseRuntime, reader: AuthorizationContext
+) -> set[str]:
+    """The Documents whose Chunks retrieval's own check lets `reader` see."""
+    statement = (
+        sa.select(documents.c.external_id)
+        .select_from(
+            chunks.join(documents, chunks.c.document_id == documents.c.document_id)
+        )
+        .where(eligible_chunks_predicate(reader))
+    )
+    async with runtime.transaction() as connection:
+        return set((await connection.execute(statement)).scalars())
+
+
+@pytest.mark.integration
+async def test_a_revocation_is_published_before_any_record_of_its_page_is_parsed(
+    runtime: DatabaseRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a.md comes first and changes its text; b.md comes second and drops
+    # engineering. b.md's revocation must not wait for a.md's parsing.
+    await synchronize_source(
+        runtime,
+        OnePage(
+            [
+                a_record("a.md", "# A\n\nFirst text.\n", "group:engineering"),
+                a_record("b.md", "# B\n\nSalaries.\n", "group:engineering"),
+            ]
+        ),
+        source_id=SOURCE_ID,
+        observed_at=OBSERVED_AT,
+        principal_directory=DIRECTORY,
+    )
+    events: list[str] = []
+    visible_at_first_reconcile: list[set[str]] = []
+    narrow, parse, reconcile = (
+        synchronization.narrow_access,
+        synchronization.normalize,
+        synchronization.reconcile_document,
+    )
+
+    async def narrowing(*args: Any, **kwargs: Any) -> bool:
+        changed = await narrow(*args, **kwargs)
+        events.append(f"narrow {kwargs['external_id']} {changed}")
+        return changed
+
+    def parsing(record: SourceRecord, *, source_id: SourceId) -> Any:
+        events.append(f"parse {record.external_id}")
+        return parse(record, source_id=source_id)
+
+    async def reconciling(*args: Any, **kwargs: Any) -> Any:
+        if not visible_at_first_reconcile:
+            visible_at_first_reconcile.append(await readable_names(runtime, ALICE))
+        return await reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(synchronization, "narrow_access", narrowing)
+    monkeypatch.setattr(synchronization, "normalize", parsing)
+    monkeypatch.setattr(synchronization, "reconcile_document", reconciling)
+
+    summary = await synchronize_source(
+        runtime,
+        OnePage(
+            [
+                a_record("a.md", "# A\n\nSecond text.\n", "group:engineering"),
+                a_record("b.md", "# B\n\nSalaries.\n", "user:carol@example.test"),
+            ]
+        ),
+        source_id=SOURCE_ID,
+        observed_at=LATER,
+        principal_directory=DIRECTORY,
+    )
+
+    # a.md removes nobody, so it is not even locked; b.md is narrowed first.
+    assert events == ["narrow b.md True", "parse a.md", "parse b.md"]
+    # When the slow work of the page starts, alice already lost b.md.
+    assert visible_at_first_reconcile == [{"a.md"}]
+    assert summary.changes == {Change.CONTENT: 1, Change.ACCESS: 1}
+    # The reader the Source added gets it with the record's reconciliation.
+    assert await readable_names(runtime, CAROL_READER) == {"b.md"}
+
+
+CAROL_READER = AuthorizationContext(user_id=user_id_for(ISSUER, CAROL))
+ENGINEERING = "group:engineering"
+CAROL_PRINCIPAL = "user:carol@example.test"
+
+
+async def one_pass(
+    runtime: DatabaseRuntime, at: datetime, *records: SourceRecord
+) -> SynchronizationSummary:
+    return await synchronize_source(
+        runtime,
+        OnePage(records),
+        source_id=SOURCE_ID,
+        observed_at=at,
+        principal_directory=DIRECTORY,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("before", "after", "change", "alice", "carol"),
+    [
+        (
+            ("# B\n\nSalaries.\n", ENGINEERING, CAROL_PRINCIPAL),
+            ("# B\n\nSalaries.\n", CAROL_PRINCIPAL),
+            Change.ACCESS,
+            set[str](),
+            {"b.md"},
+        ),
+        (
+            ("# B\n\nSalaries.\n", CAROL_PRINCIPAL),
+            ("# B\n\nNew salaries.\n", ENGINEERING),
+            Change.CONTENT_AND_ACCESS,
+            {"b.md"},
+            set[str](),
+        ),
+        (
+            ("# B\n\nSalaries.\n", ENGINEERING, CAROL_PRINCIPAL),
+            ("# B\n\nNew salaries.\n", CAROL_PRINCIPAL),
+            Change.CONTENT_AND_ACCESS,
+            set[str](),
+            {"b.md"},
+        ),
+    ],
+    ids=["reader-removed", "reader-swapped-with-new-text", "reader-removed-new-text"],
+)
+async def test_a_narrowed_record_reports_the_access_change_it_made(
+    runtime: DatabaseRuntime,
+    before: tuple[str, ...],
+    after: tuple[str, ...],
+    change: Change,
+    alice: set[str],
+    carol: set[str],
+) -> None:
+    await one_pass(runtime, OBSERVED_AT, a_record("b.md", *before))
+
+    summary = await one_pass(runtime, LATER, a_record("b.md", *after))
+
+    assert summary.changes == {change: 1}
+    assert await readable_names(runtime, ALICE) == alice
+    assert await readable_names(runtime, CAROL_READER) == carol
+
+
+@pytest.mark.integration
+async def test_a_broken_file_naming_only_unknown_readers_is_narrowed_to_nobody(
+    runtime: DatabaseRuntime,
+) -> None:
+    await one_pass(runtime, OBSERVED_AT, a_record("b.md", "# B\n\nOk.\n", ENGINEERING))
+    broken = SourceRecord.present(
+        external_id="b.md",
+        version="broken",
+        media_type="text/markdown",
+        content=b"\xff\xfe broken",
+        access=SourceAccess(public=False, principals=("group:contractors",)),
+        metadata=SourceMetadata(title="b.md", modified_at=OBSERVED_AT, size_bytes=1),
+    )
+
+    summary = await one_pass(runtime, LATER, broken)
+
+    assert summary.changes == {Change.ACCESS: 1}
+    assert len(summary.quarantined) == 1
+    assert await readable_names(runtime, ALICE) == set()
+
+
+@pytest.mark.integration
+async def test_a_record_offered_twice_in_a_page_counts_once_as_last_offered(
+    runtime: DatabaseRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = "# B\n\nSalaries.\n"
+    await one_pass(
+        runtime, OBSERVED_AT, a_record("b.md", text, ENGINEERING, CAROL_PRINCIPAL)
+    )
+    carol_saw: list[set[str]] = []
+    reconcile = synchronization.reconcile_document
+
+    async def reconciling(*args: Any, **kwargs: Any) -> Any:
+        result = await reconcile(*args, **kwargs)
+        carol_saw.append(await readable_names(runtime, CAROL_READER))
+        return result
+
+    monkeypatch.setattr(synchronization, "reconcile_document", reconciling)
+
+    summary = await one_pass(
+        runtime,
+        LATER,
+        a_record("b.md", text, CAROL_PRINCIPAL),
+        a_record("b.md", text, ENGINEERING),
+    )
+
+    # Only the last offer counts: carol, removed by it, never regains b.md.
+    assert carol_saw == [set()]
+    assert summary.changes == {Change.ACCESS: 1}
+    assert await readable_names(runtime, ALICE) == {"b.md"}
+
+
+@pytest.mark.integration
+async def test_a_pass_that_removes_no_reader_locks_no_document(
+    runtime: DatabaseRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = [
+        a_record(f"{name}.md", f"# {name}\n\nText.\n", ENGINEERING)
+        for name in ("a", "b", "c")
+    ]
+    await one_pass(runtime, OBSERVED_AT, *records)
+    calls: list[str] = []
+    narrow = synchronization.narrow_access
+
+    async def narrowing(*args: Any, **kwargs: Any) -> bool:
+        calls.append(kwargs["external_id"])
+        return await narrow(*args, **kwargs)
+
+    monkeypatch.setattr(synchronization, "narrow_access", narrowing)
+    widened = a_record("c.md", "# c\n\nText.\n", ENGINEERING, CAROL_PRINCIPAL)
+
+    summary = await one_pass(runtime, LATER, *records[:2], widened)
+
+    assert calls == []
+    assert summary.changes == {Change.UNCHANGED: 2, Change.ACCESS: 1}
+
+
+@pytest.mark.integration
+async def test_a_record_offered_then_deleted_in_one_page_is_not_reconciled(
+    runtime: DatabaseRuntime,
+) -> None:
+    text = "# B\n\nSalaries.\n"
+    await one_pass(runtime, OBSERVED_AT, a_record("b.md", text, ENGINEERING))
+
+    summary = await one_pass(
+        runtime,
+        LATER,
+        a_record("b.md", "# B\n\nRewritten.\n", ENGINEERING),
+        SourceRecord.deleted(external_id="b.md", version="gone"),
+    )
+
+    assert summary.changes == {}
+    assert [tombstone.external_id for tombstone in summary.tombstones] == ["b.md"]
+    assert await readable_names(runtime, ALICE) == set()

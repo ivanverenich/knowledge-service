@@ -7,7 +7,7 @@ depends_on: ["M07-T09"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["revocation workflow"]
-status: planned
+status: completed
 ---
 
 # M07-T10 — Prioritize permission revocation
