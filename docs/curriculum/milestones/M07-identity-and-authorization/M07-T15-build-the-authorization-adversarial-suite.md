@@ -7,7 +7,7 @@ depends_on: ["M07-T14"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["authorization regression suite"]
-status: planned
+status: completed
 ---
 
 # M07-T15 — Build the authorization adversarial suite
