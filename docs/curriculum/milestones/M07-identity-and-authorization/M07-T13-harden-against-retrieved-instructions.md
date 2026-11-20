@@ -7,7 +7,7 @@ depends_on: ["M07-T12"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["prompt-injection controls"]
-status: planned
+status: completed
 ---
 
 # M07-T13 — Harden against retrieved instructions

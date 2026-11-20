@@ -40,6 +40,11 @@ What `generate_answer` promises:
   cite at least one Evidence it was given; an abstention must give a
   reason with a visible character and cite nothing. Texts must be valid
   Unicode and within their limits.
+- **No active content, no foreign links.** Retrieved text may have told the
+  model what to write. The answer and the reason may hold no Markdown image,
+  HTML tag that loads or runs something, or mermaid block, and every link
+  in an answer must appear in an Evidence it cites (see
+  `answering.answer_content`); an abstention holds no link.
 - **Quiet.** Results hide the answer and the reason from their repr; the
   one log record per call holds IDs, counts, and names only. A reply's
   token counts must be plain integers, and a model identity that is not
@@ -55,6 +60,10 @@ from enum import StrEnum
 from typing import Protocol, cast
 from uuid import UUID
 
+from knowledge_service.answering.answer_content import (
+    has_active_content,
+    unsourced_links,
+)
 from knowledge_service.answering.citations import (
     Citation,
     InvalidCitation,
@@ -97,6 +106,8 @@ class AnswerDefect(StrEnum):
     INVALID_CITATION = "invalid_citation"
     CITED_ABSTENTION = "cited_abstention"
     NO_REASON = "no_reason"
+    ACTIVE_CONTENT = "active_content"
+    UNSOURCED_LINK = "unsourced_link"
 
 
 class InvalidAnswer(ChatModelMalformedResponse):
@@ -209,11 +220,16 @@ def checked_answer(text: object, evidence: EvidenceSet) -> CheckedAnswer:
         raise InvalidAnswer(AnswerDefect.TOO_LONG)
     if not _valid(answer) or (reason is not None and not _valid(reason)):
         raise InvalidAnswer(AnswerDefect.INVALID_TEXT)
+    texts = (answer,) if reason is None else (answer, reason)
+    if any(has_active_content(text) for text in texts):
+        raise InvalidAnswer(AnswerDefect.ACTIVE_CONTENT)
     if abstained:
         if references:
             raise InvalidAnswer(AnswerDefect.CITED_ABSTENTION)
         if reason is None or not has_visible_text(reason):
             raise InvalidAnswer(AnswerDefect.NO_REASON)
+        if any(unsourced_links(text, ()) for text in texts):
+            raise InvalidAnswer(AnswerDefect.UNSOURCED_LINK)
         return CheckedAnswer(text=answer, abstained=True, reason=reason, citations=())
     if not has_visible_text(answer):
         raise InvalidAnswer(AnswerDefect.EMPTY_ANSWER)
@@ -223,6 +239,9 @@ def checked_answer(text: object, evidence: EvidenceSet) -> CheckedAnswer:
         raise InvalidAnswer(AnswerDefect.INVALID_CITATION) from None
     if not citations:
         raise InvalidAnswer(AnswerDefect.UNCITED)
+    cited = [evidence.get(citation.evidence_id) for citation in citations]
+    if unsourced_links(answer, [item.text for item in cited if item is not None]):
+        raise InvalidAnswer(AnswerDefect.UNSOURCED_LINK)
     return CheckedAnswer(text=answer, abstained=False, reason=None, citations=citations)
 
 

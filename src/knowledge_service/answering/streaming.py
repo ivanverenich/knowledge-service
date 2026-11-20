@@ -22,7 +22,10 @@ What the stream promises:
   is then checked as `generate_answer` checks it, and the
   `AnswerFinisher` decides. The client keeps the text only if the decision
   is `answer`, and the streamed text is then exactly the checked text: a
-  missing end is sent, and any other difference abstains.
+  missing end is sent, and any other difference abstains. From the first
+  character that could start an image, a tag, or a link on, the text waits
+  for the check (see `held_from` in `answering.answer_content`), so none a
+  Document asked for reaches a client before the check refuses it.
 - **Citations after the decision.** They are sent only once the decision
   is `answer`, so the title of a Document behind an Answer the policy
   rejects never leaves the server.
@@ -81,6 +84,7 @@ from knowledge_service.answering.abstention import (
     assess_evidence,
     decide,
 )
+from knowledge_service.answering.answer_content import HELD_OVERLAP, held_from
 from knowledge_service.answering.citations import Citation
 from knowledge_service.answering.context_budget import (
     AllocatedContext,
@@ -363,6 +367,9 @@ class AnswerStreamer:
                 if context is not None and context.evidence.items:
                     reply: ModelReply | None = None
                     answer = AnswerFieldReader()
+                    # From the first marker `held_from` finds, text waits
+                    # for the check; `tail` is the end of what was sent.
+                    held, tail = False, ""
                     parts = self._model.stream(
                         context.prompt,
                         request_id=plan.request_id,
@@ -375,8 +382,12 @@ class AnswerStreamer:
                             if type(part) is not str:
                                 reply = _reply(part)
                                 continue
-                            text = answer.feed(part)
+                            text = "" if held else answer.feed(part)
+                            stop = held_from(tail + text)
+                            if stop is not None:
+                                text, held = text[: max(stop - len(tail), 0)], True
                             if text:
+                                tail = (tail + text)[-HELD_OVERLAP:]
                                 span.sent(text)
                                 yield writer.text_delta(text)
                     finally:

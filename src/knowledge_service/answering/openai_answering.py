@@ -12,6 +12,9 @@ adds what the port cannot know:
   prompt's schema, whose citations allow only this request's Evidence
   IDs. That narrows what the model can write; `checked_answer` still
   decides what counts.
+- **No tools.** The request offers the model no tool, and a reply holding
+  any output but a message, such as a tool call a Document asked for, is
+  not an answer: it is read as unreadable and billed.
 - **Nothing kept.** `store=False`, so the provider does not keep the
   response for later retrieval.
 - **A deadline without hidden retries.** The SDK's own retries are off, so
@@ -69,6 +72,8 @@ logger = logging.getLogger(__name__)
 PROVIDER = "openai"
 # How long closing a stream may take, even for a cancelled caller.
 _CLOSE_SECONDS = 1.0
+# The only output items a reply may hold: no request offers a tool.
+_OUTPUT_ITEMS = frozenset({"message", "reasoning"})
 # The events that end a stream with the whole response and its usage.
 _FINAL_EVENTS = frozenset(
     {"response.completed", "response.incomplete", "response.failed"}
@@ -305,7 +310,8 @@ def _reply(response: object) -> tuple[str | None, bool]:
     """The reply's text and whether the model refused.
 
     A refusal gives `(None, True)`. An answer cut off at its token limit,
-    or an output of the wrong shape, gives `(None, False)`; the caller
+    an output of the wrong shape, or an output item other than a message
+    or reasoning, such as a tool call, gives `(None, False)`; the caller
     still bills it. The SDK does not check a successful body, so every
     part is checked here before it is read.
     """
@@ -314,6 +320,10 @@ def _reply(response: object) -> tuple[str | None, bool]:
         return None, False
     parts: list[str] = []
     for item in cast(list[object], output):
+        item_type = getattr(item, "type", None)
+        if type(item_type) is not str or item_type not in _OUTPUT_ITEMS:
+            # A tool call, or anything else no request offered: not an answer.
+            return None, False
         content = getattr(item, "content", None)
         if content is None:
             continue
