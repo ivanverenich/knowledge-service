@@ -31,6 +31,10 @@ User's Conversation never leaves the database. They promise:
   past these functions can make its Conversation unreadable.
 - **Feedback is audited.** `rate_message` records who rated which Message,
   up or down, in the same transaction as the rating.
+- **Deletion is audited.** `delete_conversation` records one
+  `conversation.deleted` event in the same transaction: `allowed` when it
+  deleted the owner's Conversation, `denied` when there was nothing of
+  theirs to delete, whoever's ID it was.
 
 The other functions read and write without an owner, for system work such
 as retention and purge Jobs; they are never given a User's request.
@@ -550,15 +554,19 @@ async def delete_conversation(
     owner_id: UserId,
     conversation_id: ConversationId,
     now: datetime,
+    request_id: UUID | None = None,
 ) -> bool:
     """Delete the owner's Conversation now, and queue its purge.
 
     Returns True when this call deleted it, also past its deadline, and
     False when there was nothing of this owner's to delete. A caller must
     answer the same either way, so the result never tells a User whether
-    another User's Conversation exists.
+    another User's Conversation exists. Either way one audit event records
+    the attempt, with `request_id` when a request made it.
     """
     now = _utc(now)
+    if request_id is not None and type(request_id) is not UUID:
+        raise TypeError("request_id must be a UUID")
     deleted = await connection.scalar(
         sa.update(conversations)
         .where(
@@ -570,18 +578,33 @@ async def delete_conversation(
         .values(deleted_at=sa.func.greatest(now, conversations.c.last_message_at))
         .returning(conversations.c.conversation_id)
     )
-    if deleted is None:
-        return False
-    await enqueue_job(
+    if deleted is not None:
+        await enqueue_job(
+            connection,
+            Job.request(
+                job_id=JobId.new(),
+                kind=JobKind.PURGE_CONVERSATION,
+                target_id=conversation_id.value,
+                queued_at=now,
+            ),
+        )
+    await record_audit_event(
         connection,
-        Job.request(
-            job_id=JobId.new(),
-            kind=JobKind.PURGE_CONVERSATION,
+        AuditEvent(
+            event_id=AuditEventId.new(),
+            occurred_at=now,
+            actor_id=owner_id,
+            action=AuditAction.CONVERSATION_DELETED,
+            target_kind=AuditTargetKind.CONVERSATION,
             target_id=conversation_id.value,
-            queued_at=now,
+            decision=AuditDecision.DENIED if deleted is None else AuditDecision.ALLOWED,
+            outcome=AuditOutcome.FAILED if deleted is None else AuditOutcome.SUCCEEDED,
+            request_id=request_id,
+            run_id=None,
+            metadata={},
         ),
     )
-    return True
+    return deleted is not None
 
 
 def _live(

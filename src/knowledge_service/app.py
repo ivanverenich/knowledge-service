@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -24,6 +25,7 @@ from knowledge_service.errors import (
     classify_failure,
     policy_for,
 )
+from knowledge_service.identifiers import ConversationId, UserId
 from knowledge_service.identity.context import (
     AuthenticationError,
     Caller,
@@ -38,6 +40,11 @@ logger = logging.getLogger(__name__)
 ReadinessCheck = Callable[[], Awaitable[bool]]
 # A Question is at most 4,000 characters; even escaped as JSON it fits.
 MAX_BODY_BYTES = 65_536
+# The one spelling of an ID the API accepts: `UUID()` alone also reads braces,
+# `urn:uuid:`, a missing dash, a sign, or non-ASCII digits.
+CANONICAL_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
 
 
 class RequestAuthenticator(Protocol):
@@ -48,6 +55,18 @@ class RequestAuthenticator(Protocol):
     """
 
     async def authenticate(self, headers: list[str]) -> Caller: ...
+
+
+class ConversationStore(Protocol):
+    """The caller's own Conversations.
+
+    `DatabaseConversationStore` is the implementation. `delete` returns
+    nothing whether or not there was a Conversation of the owner's to delete.
+    """
+
+    async def delete(
+        self, *, owner_id: UserId, conversation_id: ConversationId, request_id: UUID
+    ) -> None: ...
 
 
 class _NotAuthenticated(Exception):
@@ -200,12 +219,13 @@ def create_app(
     workflow: AnswerWorkflow | None = None,
     streamer: AnswerStreamer | None = None,
     authenticator: RequestAuthenticator | None = None,
+    conversations: ConversationStore | None = None,
 ) -> FastAPI:
     """The HTTP application.
 
-    Both answer endpoints need a bearer token and the role that permits
-    asking: without an `authenticator` they answer 503, and the reader is
-    only ever the context it returns.
+    Every `/v1` endpoint needs a bearer token and the role that permits its
+    operation: without an `authenticator` they answer 503, and the reader or
+    owner is only ever the one in the context it returns.
     """
     app = FastAPI(title="knowledge-service")
 
@@ -386,6 +406,41 @@ def create_app(
                 "X-Request-ID": str(request_id),
             },
         )
+
+    @app.delete("/v1/conversations/{conversation_id}", status_code=204)
+    async def delete_own_conversation(
+        request: Request, conversation_id: str
+    ) -> Response:
+        # Who, then whether they may, then which Conversation: the ID is not
+        # even parsed for a caller who may not delete Conversations.
+        caller = await authenticate(request)
+        require(caller.roles, Operation.MANAGE_OWN_CONVERSATIONS)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(conversation_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        target = ConversationId.parse(conversation_id)
+        if conversations is None:
+            return error_response(
+                status_code=503,
+                code="conversations_unavailable",
+                message="Conversations are unavailable",
+                request_id=request_id,
+            )
+        try:
+            # The owner is the caller; nothing in the request can name another.
+            await conversations.delete(
+                owner_id=caller.reader.user_id,
+                conversation_id=target,
+                request_id=request_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Only the type: the message may name the Conversation or its text.
+            logger.error("conversation delete failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        # The same whether it was deleted, missing, or another User's.
+        return Response(status_code=204)
 
     return app
 

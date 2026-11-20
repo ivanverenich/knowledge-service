@@ -16,17 +16,53 @@ control and a test owner.
 
 ## Trust zones
 
+Each arrow that enters a zone crosses a boundary, and the label says what
+may cross it. The numbers mark the three checks every request meets, in
+order: who the caller is, whether their role permits the operation, and
+which records they may touch.
+
 ```mermaid
 flowchart TB
-    Public[Browser / public internet] --> Edge[Open WebUI + TLS edge]
-    Edge --> Private[Private API tasks]
-    Private --> Data[(Private PostgreSQL / Redis)]
-    Private --> Providers[Approved external AI providers]
-    Worker[Private workers] --> Data
-    Worker --> Sources[Configured content sources]
-    IdP[OIDC identity provider] --> Edge
-    IdP --> Private
+    subgraph Public["Public internet: untrusted"]
+        Browser["Browser"]
+    end
+    subgraph Edge["Edge"]
+        WebUI["Open WebUI + TLS"]
+    end
+    IdP["OIDC identity provider<br/>users, groups, realm roles"]
+    subgraph Private["Private zone"]
+        API["API tasks<br/>1 identity: OidcVerifier, Authenticator<br/>2 role: require operation"]
+        Worker["Workers<br/>synchronization, purge"]
+    end
+    subgraph Data["Private data"]
+        PG[("PostgreSQL<br/>3 grants: eligible_chunks_predicate<br/>owner in every Conversation query a request reaches<br/>audit_events")]
+        Redis[("Redis<br/>coordination only")]
+    end
+    Providers["Approved AI providers"]
+    Sources["Configured Sources<br/>untrusted content"]
+
+    Browser -->|"bearer token"| WebUI
+    IdP -->|"signed tokens: sub, groups, roles"| WebUI
+    IdP -->|"public signing keys"| API
+    WebUI -->|"bearer token"| API
+    API -->|"reads and writes as the caller: User and Group IDs"| PG
+    API -->|"Question and eligible Evidence under opaque IDs"| Providers
+    Providers -->|"replies, untrusted data"| API
+    API --> Redis
+    Worker -->|"Access Grants and Chunks, one transaction"| PG
+    Worker --> Redis
+    Sources -->|"content and permissions"| Worker
 ```
+
+- **Identity** says who is asking: the User and Groups in a verified token,
+  turned into an Authorization Context. Nothing else in a request names
+  them.
+- **Roles** say which operations the caller may run, such as asking or
+  deleting their own Conversation. A role never lets anyone read a
+  Document.
+- **Grants** say which Documents a reader may see. They come from each
+  Source's permissions and are checked inside PostgreSQL, in the same
+  query that finds the Chunks.
 
 ## Threat-driven controls
 

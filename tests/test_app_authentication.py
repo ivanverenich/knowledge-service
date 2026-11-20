@@ -8,6 +8,7 @@ an endpoint needs is refused before anything runs.
 
 import logging
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -435,8 +436,13 @@ ROUTES: dict[tuple[str, str], Operation | None] = {
     ("GET", "/redoc"): None,
     ("POST", "/v1/answer"): Operation.ASK_QUESTIONS,
     ("POST", "/v1/answer/stream"): Operation.ASK_QUESTIONS,
+    ("DELETE", "/v1/conversations/{conversation_id}"): (
+        Operation.MANAGE_OWN_CONVERSATIONS
+    ),
 }
 PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
+# The routes that read a body, to check none is read before the role.
+WITH_BODY = [path for (method, path), _ in PROTECTED if method == "POST"]
 
 
 class Counting:
@@ -450,14 +456,28 @@ class Counting:
         raise RuntimeError("reached")
 
 
+class Deleting:
+    """A Conversation store that records each deletion it is asked for."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def delete(self, **request: Any) -> None:
+        self.calls.append(request)
+
+
 def full_app(
-    source: Source, workflow: Any = None, tokens: dict[str, Any] | None = None
+    source: Source,
+    workflow: Any = None,
+    tokens: dict[str, Any] | None = None,
+    conversations: Deleting | None = None,
 ) -> Any:
-    """The app with both answer endpoints wired, so every route is real."""
+    """The app with every endpoint wired, so every route is real."""
     return create_app(
         workflow=cast(AnswerWorkflow, workflow or Counting()),
         streamer=streamer(Model(), source=source),
         authenticator=Authenticator(Verifier(tokens or TOKENS), POLICY),
+        conversations=conversations or Deleting(),
     )
 
 
@@ -482,25 +502,25 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
     operation: Operation,
     roles: frozenset[ApplicationRole],
 ) -> None:
-    source, workflow = Source(), Counting()
+    source, workflow, conversations = Source(), Counting(), Deleting()
     token = verified(realm_access={"roles": sorted(roles)})
-    app = full_app(source, workflow, {"token": token})
+    app = full_app(source, workflow, {"token": token}, conversations)
     method, path = route
 
     async with client(app) as http:
         response = await http.request(
             method,
-            path,
+            path.replace("{conversation_id}", str(uuid4())),
             json={"text": QUESTION.text},
             headers={"Authorization": "Bearer token"},
         )
 
     allowed = bool(roles & MATRIX[operation])
     assert (response.status_code == 403) is not allowed
-    assert bool(source.readers or workflow.calls) is allowed
+    assert bool(source.readers or workflow.calls or conversations.calls) is allowed
 
 
-@pytest.mark.parametrize("path", [path for (_, path), _ in PROTECTED])
+@pytest.mark.parametrize("path", WITH_BODY)
 async def test_the_role_is_checked_before_the_body_is_read(path: str) -> None:
     read: list[int] = []
     sent: list[dict[str, Any]] = []

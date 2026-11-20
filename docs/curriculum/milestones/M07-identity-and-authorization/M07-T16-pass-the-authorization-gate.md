@@ -7,7 +7,7 @@ depends_on: ["M07-T15"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["M07 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M07-T16 — Pass the authorization understanding gate

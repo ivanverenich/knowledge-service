@@ -72,6 +72,11 @@ at the top level. Among them, `roles` holds the Application Roles policy:
 an operation no role lists is denied, and no role permits reading a
 Document. Both answer endpoints `require` the `ask_questions` operation
 before they read the body, and refuse with 403 otherwise.
+`DELETE /v1/conversations/{conversation_id}` requires
+`manage_own_conversations` before it parses the ID, and deletes through
+`DatabaseConversationStore` (`answering.conversation_store`), which passes
+the token's User as the owner and returns nothing, so the response is the same whether the
+Conversation was deleted, missing, or another User's.
 
 `telemetry` decides what leaves the process as logs. `configure_telemetry`
 installs one root handler that writes JSON lines, and its `TelemetryFilter`
