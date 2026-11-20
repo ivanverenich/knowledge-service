@@ -59,6 +59,16 @@ What the stream promises:
   replied, how its reply was judged (`answered`, `abstained`, `refused`,
   `invalid`) and the rule an invalid one broke, such as
   `invalid_citation`. Never text.
+- **One audit event per stream, before its end.** Each stream records one
+  `question.asked` audit event through its `AuditTrail`: the reader, the
+  request ID, the audit outcome, the phase, and how many Citations were
+  sent, never text. A decision is recorded before its Citations, usage,
+  and completion are sent; if the record cannot be written within
+  `AUDIT_SECONDS`, none of them are, and the stream ends with an `error`
+  event instead. A failure or a client that leaves is recorded as it ends;
+  the write runs as a task of its own, so cancelling the stream does not
+  cut it short. If that record fails, only the telemetry record says so
+  (`audited: false`).
 """
 
 import asyncio
@@ -68,6 +78,7 @@ import re
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Protocol, cast
 from uuid import UUID
 
@@ -108,19 +119,26 @@ from knowledge_service.answering.generation import (
 )
 from knowledge_service.answering.prompt import EvidencePrompt
 from knowledge_service.answering.stream_failures import (
-    AuditOutcome,
     PartialText,
     StreamPhase,
     finished_outcome,
     stream_failure,
 )
 from knowledge_service.answering.support import SupportJudge, check_support
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+)
 from knowledge_service.contracts import Question, Usage
 from knowledge_service.errors import (
     AnswerDeadlineExceeded,
     FailureKind,
     classify_failure,
 )
+from knowledge_service.identifiers import AuditEventId, UserId
 from knowledge_service.language import Language
 from knowledge_service.model import ChatModelMalformedResponse
 from knowledge_service.telemetry import DIAGNOSTIC, diagnostics_enabled
@@ -144,6 +162,8 @@ _ESCAPES = {
 }
 # How long closing the model's stream may take, even after the deadline.
 CLOSE_SECONDS = 1.0
+# How long writing the stream's audit event may take, even when cancelled.
+AUDIT_SECONDS = 2.0
 # The longest escape that may still be arriving: a surrogate pair.
 _LONGEST_ESCAPE = 12
 
@@ -211,6 +231,12 @@ class CitationCheck(Protocol):
     async def confirm(
         self, result: AnswerResult, *, reader: AuthorizationContext, request_id: UUID
     ) -> AnswerResult: ...
+
+
+class AuditTrail(Protocol):
+    """Where the stream's audit event is written, in its own transaction."""
+
+    async def record(self, event: AuditEvent) -> None: ...
 
 
 class AnswerFinisher(Protocol):
@@ -284,6 +310,7 @@ class AnswerStreamer:
         budget: ContextBudget,
         *,
         citations: CitationCheck,
+        audit: AuditTrail,
         timeout_seconds: float,
     ) -> None:
         if not positive_seconds(timeout_seconds):
@@ -291,6 +318,7 @@ class AnswerStreamer:
         self._source = source
         self._model = model
         self._citations = citations
+        self._audit = audit
         self._finisher = finisher
         self._policy = policy
         self._budget = budget
@@ -306,7 +334,12 @@ class AnswerStreamer:
         errors of `assess_evidence` and `allocate_context`. Its record ends
         here as `failed` or `cancelled` when it does.
         """
-        span = _Span(request_id, question=question.text)
+        span = _Span(
+            request_id,
+            self._audit,
+            actor_id=reader.user_id if type(reader) is AuthorizationContext else None,
+            question=question.text,
+        )
         try:
             if type(reader) is not AuthorizationContext:
                 raise InvalidAnswerRequest("reader must be an AuthorizationContext")
@@ -335,14 +368,14 @@ class AnswerStreamer:
             if context is not None:
                 span.evidence = tuple(item.text for item in context.evidence.items)
         except asyncio.CancelledError:
-            span.end()
+            await span.close()
             raise
         except Exception as error:
             failed = stream_failure(classify_failure(error), StreamPhase.BEFORE_HEADERS)
             span.failure = type(error).__name__
             span.outcome = "failed"
             span.audit_outcome = failed.audit_outcome
-            span.end()
+            await span.close()
             raise
         plan = _Plan(
             request_id=request_id,
@@ -404,6 +437,15 @@ class AnswerStreamer:
                 failure = classify_failure(error)
                 span.failure = type(error).__name__
             decision = None if failure is not None else self._decision(plan, finished)
+            if decision is not None:
+                cited = len(finished.result.citations) if finished is not None else 0
+                sent = cited if decision.decision is Decision.ANSWER else 0
+                if not await span.record(
+                    finished_outcome(decision.decision), citations=sent
+                ):
+                    # Nothing of the decision leaves before its audit record.
+                    decision, failure = None, FailureKind.DEPENDENCY
+                    span.failure = "AuditNotRecorded"
             try:
                 if (
                     decision is not None
@@ -447,9 +489,10 @@ class AnswerStreamer:
                 span.outcome = "failed"
                 span.audit_outcome = failed.audit_outcome
                 span.partial_text = failed.partial_text
+                await span.record(failed.audit_outcome, citations=span.citations)
                 yield error_event
         finally:
-            span.end()
+            await span.close()
 
     async def _finished(
         self,
@@ -525,7 +568,7 @@ class AnswerStream:
         try:
             await self._events.aclose()
         finally:
-            self._span.end()
+            await self._span.close()
 
 
 class AnswerFieldReader:
@@ -627,6 +670,8 @@ class _Span:
     """The record of one stream: counts, tokens, timing, how it ended."""
 
     request_id: UUID
+    audit: AuditTrail = field(repr=False)
+    actor_id: UserId | None = None
     started_at: float = field(default_factory=time.perf_counter)
     text: list[str] = field(default_factory=list[str], repr=False)
     # Raw text for development diagnostics only; never in the default record.
@@ -646,6 +691,8 @@ class _Span:
     audit_outcome: AuditOutcome = AuditOutcome.CANCELLED
     # What a client that left holds; a decision or an error sets it.
     partial_text: PartialText = PartialText.ABANDONED
+    # None until the audit event is tried; then whether it was written.
+    audited: bool | None = None
     ended: bool = False
 
     def __post_init__(self) -> None:
@@ -658,6 +705,69 @@ class _Span:
         self.text.append(text)
         self.characters += len(text)
         self.deltas += 1
+
+    async def record(self, outcome: AuditOutcome, *, citations: int) -> bool:
+        """Write this request's one audit event; False if it was not written.
+
+        Tried once: a second call returns whether the first was written.
+        The write runs as its own task, so a cancelled caller still waits
+        for it, at most `AUDIT_SECONDS`, and is then cancelled again, by
+        the same cancellation.
+        """
+        if self.audited is not None:
+            return self.audited
+        event = AuditEvent(
+            event_id=AuditEventId.new(),
+            occurred_at=datetime.now(UTC),
+            actor_id=self.actor_id,
+            action=AuditAction.QUESTION_ASKED,
+            target_kind=AuditTargetKind.REQUEST,
+            target_id=self.request_id,
+            decision=(
+                AuditDecision.DENIED
+                if outcome is AuditOutcome.DENIED
+                else AuditDecision.ALLOWED
+            ),
+            outcome=outcome,
+            request_id=self.request_id,
+            run_id=None,
+            metadata={"phase": str(self.phase), "citations": citations},
+        )
+        self.audited = False
+        # A task of its own: cancelling the stream does not cancel the write,
+        # which is waited for until the deadline. The shield keeps anyio's
+        # cancel scopes from cancelling every wait again; a cancellation by
+        # asyncio still arrives, once, and is raised again after the write.
+        writing = asyncio.ensure_future(self.audit.record(event))
+        writing.add_done_callback(_retrieved)
+        caught: asyncio.CancelledError | None = None
+        with anyio.CancelScope(shield=True):
+            deadline = asyncio.get_running_loop().time() + AUDIT_SECONDS
+            while not writing.done():
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    writing.cancel()
+                    break
+                try:
+                    await asyncio.wait({writing}, timeout=remaining)
+                except asyncio.CancelledError as cancelled:
+                    caught = cancelled
+        self.audited = (
+            writing.done() and not writing.cancelled() and writing.exception() is None
+        )
+        if caught is not None:
+            # The same exception, so whoever cancelled it still recognises it.
+            raise caught
+        # A cancel scope that was cancelled meanwhile cancels at the next await.
+        return self.audited
+
+    async def close(self) -> None:
+        """Record the stream as it ended, unless that was tried, then end it."""
+        try:
+            if not self.ended and self.audited is None:
+                await self.record(self.audit_outcome, citations=self.citations)
+        finally:
+            self.end()
 
     def end(self) -> None:
         if self.ended:
@@ -679,6 +789,7 @@ class _Span:
             "reason": None if self.reason is None else str(self.reason),
             "reply": None if self.reply is None else str(self.reply),
             "defect": None if self.defect is None else str(self.defect),
+            "audited": self.audited,
         }
         if self.usage is not None:
             fields["input_tokens"] = self.usage.input_tokens
@@ -692,6 +803,12 @@ class _Span:
             }
         level = logging.INFO if self.outcome == "completed" else logging.WARNING
         logger.log(level, "answer stream ended", extra=extra)
+
+
+def _retrieved(task: asyncio.Future[None]) -> None:
+    """Read a finished write's error, so asyncio does not log it as lost."""
+    if not task.cancelled():
+        task.exception()
 
 
 async def _close(parts: AsyncGenerator[str | ModelReply]) -> None:

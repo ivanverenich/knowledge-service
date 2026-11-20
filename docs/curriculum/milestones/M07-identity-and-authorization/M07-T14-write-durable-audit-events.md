@@ -7,7 +7,7 @@ depends_on: ["M07-T13"]
 estimate: 90m
 topics: ["oidc","authorization","security"]
 deliverables: ["audit writer"]
-status: planned
+status: completed
 ---
 
 # M07-T14 — Write durable audit events

@@ -23,6 +23,12 @@ metadata are written together and committed once.
 When a record cannot be normalized, its last good version stays, but
 `narrow_access` keeps it only for readers the Source still names: who may
 read it can shrink then, never grow.
+
+Every write of a Document's Access Grants, when it is created, when its
+readers change, and when it is narrowed, records a
+`document.access_changed` audit event in the same transaction, with the new
+Authorization Version, how many readers it has, and the Synchronization
+Run it belongs to; never who the readers are.
 """
 
 from collections.abc import Iterable, Sequence
@@ -41,7 +47,14 @@ from knowledge_service.documents import (
     DocumentMetadata,
     InvalidDocument,
 )
-from knowledge_service.identifiers import AccessGrantId, ChunkId, DocumentId, SourceId
+from knowledge_service.identifiers import (
+    AccessGrantId,
+    ChunkId,
+    DocumentId,
+    SourceId,
+    SynchronizationRunId,
+)
+from knowledge_service.ingestion.audit_events import access_event
 from knowledge_service.ingestion.chunking import chunk_by_structure
 from knowledge_service.ingestion.deletions import availability_event
 from knowledge_service.ingestion.fingerprints import (
@@ -93,12 +106,14 @@ async def reconcile_document(
     *,
     readers: Sequence[Subject],
     observed_at: datetime,
+    run_id: SynchronizationRunId | None = None,
 ) -> Reconciliation:
     """Publish one observation of a document, writing only what changed.
 
     `readers` are the normalized subjects who may read it; an empty sequence
-    means nobody may. An observation older than the stored version raises
-    `InvalidDocument`, and nothing is written.
+    means nobody may. `run_id` names the Synchronization Run in the audit
+    event of a grant change. An observation older than the stored version
+    raises `InvalidDocument`, and nothing is written.
     """
     provenance = normalized.provenance
     content = content_fingerprint(normalized.parsed)
@@ -127,7 +142,9 @@ async def reconcile_document(
             )
             if await insert_document(connection, created):
                 await _write_chunks(connection, normalized, created)
-                await _write_grants(connection, created, readers, observed_at)
+                await _write_grants(
+                    connection, created, readers, observed_at, run_id=run_id
+                )
                 await _write_metadata(connection, normalized, created, observed_at)
                 return Reconciliation(document=created, change=Change.CREATED)
             # Another run created it after the lookup; decide against its row.
@@ -166,7 +183,9 @@ async def reconcile_document(
         if content_changed or restored:
             await _write_chunks(connection, normalized, document)
         if access_changed:
-            await _write_grants(connection, document, readers, observed_at)
+            await _write_grants(
+                connection, document, readers, observed_at, run_id=run_id
+            )
     return Reconciliation(
         document=document,
         change=_change(
@@ -185,6 +204,7 @@ async def narrow_access(
     external_id: str,
     readers: Sequence[Subject],
     observed_at: datetime,
+    run_id: SynchronizationRunId | None = None,
 ) -> bool:
     """Keep a stored Document only for readers both old and new access name.
 
@@ -217,7 +237,7 @@ async def narrow_access(
         # The fingerprint records the narrowed readers, so the next good
         # observation compares against what is really stored.
         await upsert_document(connection, document)
-        await _write_grants(connection, document, kept, observed_at)
+        await _write_grants(connection, document, kept, observed_at, run_id=run_id)
         return True
 
 
@@ -327,11 +347,15 @@ async def _write_grants(
     document: Document,
     readers: Sequence[Subject],
     observed_at: datetime,
+    *,
+    run_id: SynchronizationRunId | None,
 ) -> None:
+    grant_run = _grants(document.document_id, readers, observed_at)
     await replace_access_grants(
-        connection,
-        document_id=document.document_id,
-        grant_run=_grants(document.document_id, readers, observed_at),
+        connection, document_id=document.document_id, grant_run=grant_run
+    )
+    await record_audit_event(
+        connection, access_event(document, readers=len(grant_run), run_id=run_id)
     )
 
 

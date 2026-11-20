@@ -27,8 +27,9 @@ What every failure settles:
   stream, which a reader refuses. Nothing streamed means nothing to keep.
 - **The audit outcome.** Each stream ends with exactly one outcome from a
   closed list: answered, abstained, one of the M01 telemetry outcomes for
-  a failure, or cancelled. It is recorded with the phase and what happened
-  to the partial text, never a text.
+  a failure, or cancelled (`AuditOutcome`, shared with every audit event in
+  `knowledge_service.audit`). It is recorded with the phase and what
+  happened to the partial text, never a text.
 - **Cancellation is not an error.** A client that left gets no status and
   no event; the outcome is `cancelled`.
 """
@@ -37,6 +38,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from knowledge_service.answering.abstention import Decision
+from knowledge_service.audit import AuditOutcome
 from knowledge_service.errors import FailureKind, RetryOwner, policy_for
 
 # How long a client should wait before sending the Question again, when
@@ -49,19 +51,6 @@ class StreamPhase(StrEnum):
 
     BEFORE_HEADERS = "before_headers"
     AFTER_HEADERS = "after_headers"
-
-
-class AuditOutcome(StrEnum):
-    """How one streamed Answer ended, for the audit trail."""
-
-    ANSWERED = "answered"
-    ABSTAINED = "abstained"
-    REJECTED = "rejected"
-    DENIED = "denied"
-    DEPENDENCY_ERROR = "dependency_error"
-    THROTTLED = "throttled"
-    CANCELLED = "cancelled"
-    INTERNAL_ERROR = "internal_error"
 
 
 class PartialText(StrEnum):

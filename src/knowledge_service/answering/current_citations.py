@@ -32,6 +32,11 @@ What `confirm_citations` promises:
 - **Same answer to every failure.** A deleted Chunk, a new version, a
   tombstoned Document, and a revoked grant all give `WITHDRAWN`, so the
   client cannot learn which one happened, or that a Document exists.
+- **Every read audited.** In the same transaction, each cited Document
+  gets one `document.read` audit event for this reader and request:
+  `allowed` when all its Citations were confirmed, `denied` when one
+  failed. The event names the Document by ID and counts its Citations; the
+  client still learns nothing, since only the server keeps the trail.
 - **Quiet.** One log record per check holds the request ID and counts;
   never a title, a link, or text.
 
@@ -42,6 +47,7 @@ for the answer stream: it opens the transaction only once the model is done.
 
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -59,11 +65,19 @@ from knowledge_service.answering.evidence import (
     EvidenceSet,
 )
 from knowledge_service.answering.generation import AnswerOutcome, AnswerResult
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+)
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import ContentVersion
-from knowledge_service.identifiers import ChunkId, DocumentId, SourceId
+from knowledge_service.identifiers import AuditEventId, ChunkId, DocumentId, SourceId
 from knowledge_service.ingestion.provenance import display_excerpt, display_text
 from knowledge_service.persistence.access import eligible_chunks_predicate
+from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.schema import chunks, documents
 
 logger = logging.getLogger(__name__)
@@ -100,6 +114,7 @@ async def confirm_citations(
         _current(citation, rows.get(citation.chunk_id.value)) for citation in cited
     ]
     withdrawn = sum(citation is None for citation in confirmed)
+    await _record_reads(connection, context, cited, confirmed, request_id=request_id)
     if withdrawn:
         result = AnswerResult(
             outcome=AnswerOutcome.WITHDRAWN,
@@ -197,6 +212,42 @@ def current_citations_statement(
             eligibility,
         )
     )
+
+
+async def _record_reads(
+    connection: AsyncConnection,
+    context: AuthorizationContext,
+    cited: Sequence[Citation],
+    confirmed: Sequence[Citation | None],
+    *,
+    request_id: UUID,
+) -> None:
+    """One `document.read` event per cited Document, in Citation order."""
+    occurred_at = datetime.now(UTC)
+    counts: dict[DocumentId, int] = {}
+    denied: set[DocumentId] = set()
+    for citation, current in zip(cited, confirmed, strict=True):
+        counts[citation.document_id] = counts.get(citation.document_id, 0) + 1
+        if current is None:
+            denied.add(citation.document_id)
+    for document_id, count in counts.items():
+        refused = document_id in denied
+        await record_audit_event(
+            connection,
+            AuditEvent(
+                event_id=AuditEventId.new(),
+                occurred_at=occurred_at,
+                actor_id=context.user_id,
+                action=AuditAction.DOCUMENT_READ,
+                target_kind=AuditTargetKind.DOCUMENT,
+                target_id=document_id.value,
+                decision=AuditDecision.DENIED if refused else AuditDecision.ALLOWED,
+                outcome=AuditOutcome.DENIED if refused else AuditOutcome.SUCCEEDED,
+                request_id=request_id,
+                run_id=None,
+                metadata={"citations": count},
+            ),
+        )
 
 
 def _checked(citations: object) -> tuple[Citation, ...]:

@@ -45,6 +45,7 @@ from knowledge_service.answering.streaming import (
     AnswerFieldReader,
     AnswerFinisher,
     AnswerStreamer,
+    AuditTrail,
     CitationCheck,
     FinishedAnswer,
     FoundEvidence,
@@ -53,6 +54,7 @@ from knowledge_service.answering.streaming import (
 )
 from knowledge_service.answering.support import LexicalSupportJudge
 from knowledge_service.app import create_app
+from knowledge_service.audit import AuditEvent
 from knowledge_service.contracts import Question, Usage
 from knowledge_service.errors import AnswerDeadlineExceeded, AuthorizationDenied
 from knowledge_service.identifiers import ChunkId, DocumentId
@@ -231,6 +233,28 @@ class Citations:
         return result
 
 
+class Trail:
+    """An `AuditTrail` that keeps every event it is given.
+
+    `error` fails every write, and `delay` slows it, as a database that is
+    down or stuck would; `started` is set when a write begins.
+    """
+
+    def __init__(self, *, error: Exception | None = None, delay: float = 0) -> None:
+        self.events: list[AuditEvent] = []
+        self.error = error
+        self.delay = delay
+        self.started = asyncio.Event()
+
+    async def record(self, event: AuditEvent) -> None:
+        self.started.set()
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        self.events.append(event)
+
+
 class SlowFinisher:
     """Never decides."""
 
@@ -249,6 +273,7 @@ def streamer(
     policy: AbstentionPolicy = POLICY,
     timeout_seconds: float = 5.0,
     citations: CitationCheck | None = None,
+    audit: AuditTrail | None = None,
 ) -> AnswerStreamer:
     return AnswerStreamer(
         source or Source(),
@@ -257,6 +282,7 @@ def streamer(
         policy,
         AnswerSettings().budget,
         citations=citations or Citations(),
+        audit=audit or Trail(),
         timeout_seconds=timeout_seconds,
     )
 
@@ -775,7 +801,7 @@ async def test_the_stream_record_holds_no_text(
 
 
 def test_the_stream_record_hides_the_text_it_counts() -> None:
-    span = _Span(REQUEST_ID)  # pyright: ignore[reportPrivateUsage]
+    span = _Span(REQUEST_ID, Trail())  # pyright: ignore[reportPrivateUsage]
     span.sent(MARKER)
 
     assert MARKER not in repr(span)

@@ -24,15 +24,35 @@ content. A record offered twice in a page counts once, as last offered.
 Two kinds of removal still wait: a revocation on a later page waits for the
 earlier pages' work, and a Document the Source deletes, or no longer lists,
 becomes unavailable only when the pass tombstones it at the end.
+
+Every pass has a Synchronization Run ID. Each grant change it writes names
+it, and when the pass ends it records one `synchronization.finished` audit
+event against the Source: `succeeded` with counts, or `failed` with the
+error's type name, in a transaction of its own. A pass that is cancelled
+records nothing; a failed pass whose record cannot be written logs that and
+raises its own error.
 """
 
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+    AuditValue,
+)
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.identifiers import JobId, SourceId
+from knowledge_service.identifiers import (
+    AuditEventId,
+    JobId,
+    SourceId,
+    SynchronizationRunId,
+)
 from knowledge_service.ingestion.deletions import (
     Tombstone,
     requeue_unfinished_purges,
@@ -58,6 +78,7 @@ from knowledge_service.ingestion.sources import (
     SourceRecordState,
 )
 from knowledge_service.persistence.access import load_readers
+from knowledge_service.persistence.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +100,7 @@ class UnresolvedAccess:
 class SynchronizationSummary:
     """What one complete pass did."""
 
+    run_id: SynchronizationRunId
     changes: Counter[Change]
     quarantined: tuple[Quarantined, ...]
     tombstones: tuple[Tombstone, ...]
@@ -94,13 +116,108 @@ async def synchronize_source(
     observed_at: datetime,
     principal_directory: PrincipalDirectory | None,
     page_size: int = PAGE_SIZE,
+    run_id: SynchronizationRunId | None = None,
 ) -> SynchronizationSummary:
     """Publish every record the Source offers, then tombstone the rest.
 
     Readers come from `principal_directory`, which every caller names: with
     None, only public items are readable. A Source that returns a checkpoint
     it returned before raises `InvalidSource` instead of paging forever.
+    The pass runs as `run_id`, or as a new run, and records how it ended.
     """
+    run = SynchronizationRunId.new() if run_id is None else run_id
+    try:
+        summary = await _publish(
+            runtime,
+            source,
+            source_id=source_id,
+            observed_at=observed_at,
+            principal_directory=principal_directory,
+            page_size=page_size,
+            run_id=run,
+        )
+    except Exception as error:
+        # The pass's own error is raised either way; its record holds only
+        # its type. A database that cannot take the record is logged.
+        try:
+            await _record_finished(
+                runtime,
+                source_id=source_id,
+                run_id=run,
+                observed_at=observed_at,
+                outcome=AuditOutcome.FAILED,
+                metadata={"failure": type(error).__name__},
+            )
+        except Exception as unrecorded:
+            # Identifiers and type names only, as the other warnings here.
+            logger.warning(
+                "failed synchronization run %s of source %s not audited: %s",
+                str(run.value),
+                str(source_id.value),
+                type(unrecorded).__name__,
+            )
+        raise
+    await _record_finished(
+        runtime,
+        source_id=source_id,
+        run_id=run,
+        observed_at=observed_at,
+        outcome=AuditOutcome.SUCCEEDED,
+        metadata={
+            "changed": sum(
+                count
+                for change, count in summary.changes.items()
+                if change is not Change.UNCHANGED
+            ),
+            "unchanged": summary.changes[Change.UNCHANGED],
+            "quarantined": len(summary.quarantined),
+            "tombstoned": len(summary.tombstones),
+            "unresolved": len(summary.unresolved),
+        },
+    )
+    return summary
+
+
+async def _record_finished(
+    runtime: DatabaseRuntime,
+    *,
+    source_id: SourceId,
+    run_id: SynchronizationRunId,
+    observed_at: datetime,
+    outcome: AuditOutcome,
+    metadata: dict[str, AuditValue],
+) -> None:
+    async with runtime.transaction() as connection:
+        await record_audit_event(
+            connection,
+            AuditEvent(
+                event_id=AuditEventId.new(),
+                # When the pass ended, not the time it observed the Source.
+                occurred_at=max(datetime.now(UTC), observed_at),
+                actor_id=None,
+                action=AuditAction.SYNCHRONIZATION_FINISHED,
+                target_kind=AuditTargetKind.SOURCE,
+                target_id=source_id.value,
+                decision=AuditDecision.ALLOWED,
+                outcome=outcome,
+                request_id=None,
+                run_id=run_id.value,
+                metadata=metadata,
+            ),
+        )
+
+
+async def _publish(
+    runtime: DatabaseRuntime,
+    source: SourcePort,
+    *,
+    source_id: SourceId,
+    observed_at: datetime,
+    principal_directory: PrincipalDirectory | None,
+    page_size: int,
+    run_id: SynchronizationRunId,
+) -> SynchronizationSummary:
+    """One pass: every page, then the tombstones and requeued purges."""
     seen: set[str] = set()
     used: set[str] = set()
     changes: Counter[Change] = Counter()
@@ -134,6 +251,7 @@ async def synchronize_source(
             list(planned.values()),
             source_id=source_id,
             observed_at=observed_at,
+            run_id=run_id,
         )
         for record, access in planned.values():
             outcome = normalize(record, source_id=source_id)
@@ -149,6 +267,7 @@ async def synchronize_source(
                 outcome,
                 readers=access.readers,
                 observed_at=observed_at,
+                run_id=run_id,
             )
             changes[
                 _counted(result.change, narrowed=record.external_id in narrowed)
@@ -173,6 +292,7 @@ async def synchronize_source(
             len(unresolved),
         )
     return SynchronizationSummary(
+        run_id=run_id,
         changes=changes,
         quarantined=tuple(quarantined),
         tombstones=tombstones,
@@ -187,6 +307,7 @@ async def _revoke_first(
     *,
     source_id: SourceId,
     observed_at: datetime,
+    run_id: SynchronizationRunId,
 ) -> set[str]:
     """Narrow every record whose new access leaves a reader out.
 
@@ -212,6 +333,7 @@ async def _revoke_first(
             external_id=record.external_id,
             readers=access.readers,
             observed_at=observed_at,
+            run_id=run_id,
         ):
             narrowed.add(record.external_id)
     return narrowed

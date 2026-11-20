@@ -12,6 +12,12 @@ and opens its own short transactions (ADR 0012):
 
 Search never needs to know a migration is running: it reads the current
 space only, and exactly one space is current at every moment.
+
+Starting a migration and switching search to the new space are
+administration: each records an audit event (`embedding_migration.started`,
+`embedding_migration.switched`) in the same transaction as the change, with
+the administrator who asked, or None for the service itself. A start or
+switch that is refused changes nothing and records nothing.
 """
 
 import math
@@ -21,6 +27,13 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+)
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.embeddings.index_configuration import (
     InvalidIndexConfiguration,
@@ -47,10 +60,13 @@ from knowledge_service.embeddings.publication import (
     publish_document_embeddings,
 )
 from knowledge_service.identifiers import (
+    AuditEventId,
     DocumentId,
     EmbeddingMigrationId,
     EmbeddingSpaceId,
+    UserId,
 )
+from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.embedding_migrations import (
     count_chunks_missing_from_target,
     insert_embedding_migration,
@@ -126,11 +142,13 @@ async def start_embedding_migration(
     target: EmbeddingModelIdentity,
     *,
     now: datetime,
+    actor_id: UserId | None = None,
 ) -> EmbeddingMigration:
     """Create the target space, not current, and start dual-writing.
 
     The current space's row stays locked until the commit, so two starts run
-    one after the other and the second sees the first.
+    one after the other and the second sees the first. `actor_id` is the
+    administrator recorded in the audit event.
     """
     try:
         configuration = current_index_configuration(target)
@@ -167,6 +185,12 @@ async def start_embedding_migration(
             updated_at=now,
         )
         await insert_embedding_migration(connection, migration)
+        await record_audit_event(
+            connection,
+            _administration_event(
+                migration, AuditAction.EMBEDDING_MIGRATION_STARTED, actor_id
+            ),
+        )
     return migration
 
 
@@ -283,6 +307,7 @@ async def switch_to_target_space(
     *,
     migration_id: EmbeddingMigrationId,
     now: datetime,
+    actor_id: UserId | None = None,
 ) -> EmbeddingMigration:
     """Make the target space current, if it has every vector the source has.
 
@@ -290,6 +315,7 @@ async def switch_to_target_space(
     while the check and the switch run; search sees the old space until the
     commit and the new one after it. Raises `IncompleteBackfill`, and
     switches nothing, while any searchable Chunk lacks a target vector.
+    `actor_id` is the administrator recorded in the audit event.
     """
     async with runtime.transaction() as connection:
         migration = await _load(connection, migration_id, for_update=True)
@@ -312,7 +338,32 @@ async def switch_to_target_space(
         await make_embedding_space_current(connection, retired=source, current=target)
         switched = replace(migration, state=after, updated_at=now)
         await save_embedding_migration(connection, switched)
+        await record_audit_event(
+            connection,
+            _administration_event(
+                switched, AuditAction.EMBEDDING_MIGRATION_SWITCHED, actor_id
+            ),
+        )
     return switched
+
+
+def _administration_event(
+    migration: EmbeddingMigration, action: AuditAction, actor_id: UserId | None
+) -> AuditEvent:
+    """Record one administrative step of a migration, by its state only."""
+    return AuditEvent(
+        event_id=AuditEventId.new(),
+        occurred_at=migration.updated_at,
+        actor_id=actor_id,
+        action=action,
+        target_kind=AuditTargetKind.EMBEDDING_MIGRATION,
+        target_id=migration.migration_id.value,
+        decision=AuditDecision.ALLOWED,
+        outcome=AuditOutcome.SUCCEEDED,
+        request_id=None,
+        run_id=None,
+        metadata={"state": migration.state.value},
+    )
 
 
 async def clean_up_source_space(

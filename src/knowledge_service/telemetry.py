@@ -149,6 +149,7 @@ TELEMETRY_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "reason",
                 "reply",
                 "defect",
+                "audited",
                 "input_tokens",
                 "output_tokens",
             }

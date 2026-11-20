@@ -458,16 +458,32 @@ audit_events = sa.Table(
     sa.Column("target_kind", sa.String(length=24), nullable=False),
     sa.Column("target_id", sa.Uuid(), nullable=False),
     sa.Column("metadata", JSONB, nullable=False),
+    sa.Column("decision", sa.String(length=16), nullable=False),
+    sa.Column("outcome", sa.String(length=24), nullable=False),
+    sa.Column("request_id", sa.Uuid(), nullable=True),
+    sa.Column("run_id", sa.Uuid(), nullable=True),
     sa.CheckConstraint(
         "action in ('source.registered', 'document.availability_changed',"
         " 'conversation.deleted', 'job.queued', 'job.failed',"
-        " 'evaluation_run.started')",
+        " 'evaluation_run.started', 'question.asked', 'document.read',"
+        " 'document.access_changed', 'synchronization.finished',"
+        " 'message.rated', 'embedding_migration.started',"
+        " 'embedding_migration.switched')",
         name="ck_audit_events_action",
     ),
     sa.CheckConstraint(
         "target_kind in ('source', 'document', 'conversation', 'job',"
-        " 'evaluation_run')",
+        " 'evaluation_run', 'request', 'message', 'embedding_migration')",
         name="ck_audit_events_target_kind",
+    ),
+    sa.CheckConstraint(
+        "decision in ('allowed', 'denied')", name="ck_audit_events_decision"
+    ),
+    sa.CheckConstraint(
+        "outcome in ('succeeded', 'failed', 'answered', 'abstained', 'rejected',"
+        " 'denied', 'dependency_error', 'throttled', 'cancelled',"
+        " 'internal_error')",
+        name="ck_audit_events_outcome",
     ),
     sa.CheckConstraint(
         "pg_column_size(metadata) <= 1024", name="ck_audit_events_metadata_size"
@@ -477,6 +493,13 @@ audit_events = sa.Table(
         "target_id",
         "occurred_at",
         "event_id",
+    ),
+    sa.Index(
+        "ix_audit_events_request_occurred_at",
+        "request_id",
+        "occurred_at",
+        "event_id",
+        postgresql_where=sa.text("request_id is not null"),
     ),
 )
 

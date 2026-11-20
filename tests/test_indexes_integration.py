@@ -13,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from database_fixtures import SYNC_DRIVER
 from knowledge_service.persistence.access import subject_grants_statement
-from knowledge_service.persistence.audit import audit_trail_statement
+from knowledge_service.persistence.audit import (
+    audit_trail_statement,
+    request_trail_statement,
+)
 from knowledge_service.persistence.conversations import due_conversations_statement
 from knowledge_service.persistence.sources import source_runs_statement
 
@@ -74,9 +77,12 @@ SEED: tuple[tuple[str, dict[str, object]], ...] = (
     ),
     (
         "INSERT INTO audit_events (event_id, occurred_at, actor_id, action,"
-        " target_kind, target_id, metadata) SELECT gen_random_uuid(),"
-        " now() - (i || ' seconds')::interval, NULL, 'job.queued', 'job',"
-        " (:prefix || lpad((mod(i, :sources) + 1)::text, 12, '0'))::uuid, '{}'::jsonb"
+        " target_kind, target_id, metadata, decision, outcome, request_id) SELECT"
+        " gen_random_uuid(), now() - (i || ' seconds')::interval, NULL,"
+        " 'job.queued', 'job',"
+        " (:prefix || lpad((mod(i, :sources) + 1)::text, 12, '0'))::uuid,"
+        " '{}'::jsonb, 'allowed', 'succeeded',"
+        " (:prefix || lpad((mod(i, :sources) + 1)::text, 12, '0'))::uuid"
         " FROM generate_series(1, :rows) AS i",
         {"prefix": TARGET_PREFIX, "sources": SOURCE_COUNT, "rows": TABLE_ROWS},
     ),
@@ -140,6 +146,7 @@ def statements_by_index() -> dict[str, sa.Select[Any]]:
             datetime.now(UTC), 10
         ),
         "ix_audit_events_target_occurred_at": audit_trail_statement(TARGET_ID, 10),
+        "ix_audit_events_request_occurred_at": request_trail_statement(TARGET_ID, 10),
         "ix_synchronization_runs_source_started_at": source_runs_statement(
             SOURCE_ID, 5
         ),

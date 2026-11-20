@@ -2,7 +2,8 @@
 
 A Document is published when its row, its Chunks, and its Access Grants all
 describe the same content version. This module builds that unit of work; the
-caller owns the transaction it runs in.
+caller owns the transaction it runs in. Writing the Access Grants records a
+`document.access_changed` audit event in that same transaction.
 """
 
 from collections.abc import Sequence
@@ -15,7 +16,9 @@ from knowledge_service.chunks import Chunk
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document
 from knowledge_service.identifiers import DocumentId
+from knowledge_service.ingestion.audit_events import access_event
 from knowledge_service.persistence.access import replace_access_grants
+from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.chunks import replace_chunks
 from knowledge_service.persistence.documents import upsert_document
 
@@ -60,6 +63,10 @@ async def publish_document(
     await replace_chunks(connection, document=stored_document, chunk_run=chunk_run)
     await replace_access_grants(
         connection, document_id=stored_id, grant_run=publication.grants
+    )
+    await record_audit_event(
+        connection,
+        access_event(stored_document, readers=len(publication.grants), run_id=None),
     )
     return stored_id
 

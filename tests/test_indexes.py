@@ -14,6 +14,7 @@ ACCESS_PATTERN_INDEXES = {
     "ix_embedding_migrations_target_configuration_id",
     "ix_embedding_migrations_target_space_id",
     "ix_audit_events_target_occurred_at",
+    "ix_audit_events_request_occurred_at",
     "ix_conversations_retention_deadline",
     "ix_synchronization_runs_source_started_at",
     "uq_embedding_spaces_current",

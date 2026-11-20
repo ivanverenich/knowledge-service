@@ -10,7 +10,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from knowledge_service.audit import AuditAction, AuditEvent, AuditTargetKind
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+)
 from knowledge_service.evaluation import EvaluationRun, EvaluationStatus
 from knowledge_service.identifiers import (
     AuditEventId,
@@ -34,8 +40,9 @@ DATASET_ID = EvaluationDatasetId.parse("00000000-0000-0000-0000-000000000060")
 
 INSERT_RAW_AUDIT = text(
     "INSERT INTO audit_events (event_id, occurred_at, actor_id, action, target_kind,"
-    " target_id, metadata) VALUES (:event_id, now(), NULL, 'job.queued', 'job',"
-    " :target_id, CAST(:metadata AS jsonb))"
+    " target_id, metadata, decision, outcome) VALUES (:event_id, now(), NULL,"
+    " 'job.queued', 'job', :target_id, CAST(:metadata AS jsonb), 'allowed',"
+    " 'succeeded')"
 )
 
 INSERT_RAW_RUN = text(
@@ -102,6 +109,10 @@ async def test_records_survive_their_state_machines_and_refuse_raw_content(
                     action=AuditAction.JOB_QUEUED,
                     target_kind=AuditTargetKind.JOB,
                     target_id=target_id,
+                    decision=AuditDecision.ALLOWED,
+                    outcome=AuditOutcome.SUCCEEDED,
+                    request_id=None,
+                    run_id=None,
                     metadata={"kind": "synchronize_source"},
                 ),
             )
@@ -114,6 +125,10 @@ async def test_records_survive_their_state_machines_and_refuse_raw_content(
                     action=AuditAction.JOB_FAILED,
                     target_kind=AuditTargetKind.JOB,
                     target_id=target_id,
+                    decision=AuditDecision.ALLOWED,
+                    outcome=AuditOutcome.SUCCEEDED,
+                    request_id=None,
+                    run_id=None,
                     metadata={"attempt": 1},
                 ),
             )

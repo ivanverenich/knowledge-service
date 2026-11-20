@@ -23,7 +23,13 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from knowledge_service.audit import AuditAction, AuditEvent, AuditTargetKind
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+)
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document, DocumentAvailability
 from knowledge_service.identifiers import AuditEventId, DocumentId, JobId, SourceId
@@ -168,6 +174,10 @@ def availability_event(document: Document) -> AuditEvent:
         action=AuditAction.DOCUMENT_AVAILABILITY_CHANGED,
         target_kind=AuditTargetKind.DOCUMENT,
         target_id=document.document_id.value,
+        decision=AuditDecision.ALLOWED,
+        outcome=AuditOutcome.SUCCEEDED,
+        request_id=None,
+        run_id=None,
         metadata={"availability": document.availability.value},
     )
 

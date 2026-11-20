@@ -29,6 +29,8 @@ User's Conversation never leaves the database. They promise:
 - **Only through the store.** The rules a Message checks, such as "an
   Answer cites Chunks", live in Python, not in the database; a row written
   past these functions can make its Conversation unreadable.
+- **Feedback is audited.** `rate_message` records who rated which Message,
+  up or down, in the same transaction as the rating.
 
 The other functions read and write without an owner, for system work such
 as retention and purge Jobs; they are never given a User's request.
@@ -45,6 +47,13 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from knowledge_service.audit import (
+    AuditAction,
+    AuditDecision,
+    AuditEvent,
+    AuditOutcome,
+    AuditTargetKind,
+)
 from knowledge_service.conversations import (
     Conversation,
     ConversationFull,
@@ -61,6 +70,7 @@ from knowledge_service.conversations import (
 )
 from knowledge_service.documents import ContentVersion
 from knowledge_service.identifiers import (
+    AuditEventId,
     ChunkId,
     ConversationId,
     DocumentId,
@@ -69,6 +79,7 @@ from knowledge_service.identifiers import (
     UserId,
 )
 from knowledge_service.jobs import Job, JobKind
+from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.jobs import enqueue_job
 from knowledge_service.persistence.schema import (
     conversations,
@@ -294,7 +305,13 @@ async def load_messages(
 async def rate_message(
     connection: AsyncConnection, *, feedback: MessageFeedback
 ) -> MessageFeedback:
-    """Store one rating per Message per User, replacing any earlier rating."""
+    """Store one rating per Message per User, replacing any earlier rating.
+
+    Each rating also records a `message.rated` audit event in the same
+    transaction: who rated which Message, up or down, and when.
+    """
+    if type(feedback) is not MessageFeedback:
+        raise TypeError("feedback must be a MessageFeedback")
     statement = insert(message_feedback).values(_feedback_row(feedback))
     statement = statement.on_conflict_do_update(
         index_elements=["message_id", "user_id"],
@@ -304,6 +321,22 @@ async def rate_message(
         },
     )
     await connection.execute(statement)
+    await record_audit_event(
+        connection,
+        AuditEvent(
+            event_id=AuditEventId.new(),
+            occurred_at=feedback.rated_at,
+            actor_id=feedback.user_id,
+            action=AuditAction.MESSAGE_RATED,
+            target_kind=AuditTargetKind.MESSAGE,
+            target_id=feedback.message_id.value,
+            decision=AuditDecision.ALLOWED,
+            outcome=AuditOutcome.SUCCEEDED,
+            request_id=None,
+            run_id=None,
+            metadata={"rating": feedback.rating.value},
+        ),
+    )
     return feedback
 
 

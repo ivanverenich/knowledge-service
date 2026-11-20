@@ -146,8 +146,13 @@ async def test_deleted_content_disappears_from_reads_before_chunk_cleanup(
             connection, target_id=retired.document_id.value, limit=10
         )
         job = await load_job(connection, job_id=tombstones[0].purge_job_id)
+    # Publishing wrote its readers; the deletion pass then tombstoned it.
     assert [(e.action, dict(e.metadata)) for e in events] == [
-        (AuditAction.DOCUMENT_AVAILABILITY_CHANGED, {"availability": "tombstoned"})
+        (
+            AuditAction.DOCUMENT_ACCESS_CHANGED,
+            {"authorization_version": 1, "readers": 1},
+        ),
+        (AuditAction.DOCUMENT_AVAILABILITY_CHANGED, {"availability": "tombstoned"}),
     ]
     assert job is not None
     assert (job.kind, job.status, job.target_id) == (
@@ -221,7 +226,12 @@ async def test_a_document_updated_after_the_pass_began_is_kept(
     async with runtime.transaction() as connection:
         jobs = (await connection.execute(text("SELECT count(*) FROM jobs"))).scalar()
         events = (
-            await connection.execute(text("SELECT count(*) FROM audit_events"))
+            await connection.execute(
+                text(
+                    "SELECT count(*) FROM audit_events"
+                    " WHERE action = 'document.availability_changed'"
+                )
+            )
         ).scalar()
     assert (jobs, events) == (0, 0)
 
@@ -292,7 +302,11 @@ async def test_a_restored_document_keeps_its_chunks_when_an_old_purge_runs(
         events = await load_audit_events(
             connection, target_id=retired.document_id.value, limit=10
         )
-    assert [e.metadata["availability"] for e in events] == ["tombstoned", "available"]
+    assert [
+        e.metadata["availability"]
+        for e in events
+        if e.action is AuditAction.DOCUMENT_AVAILABILITY_CHANGED
+    ] == ["tombstoned", "available"]
     assert job.status is JobStatus.SUCCEEDED
     assert any("retired" in chunk for chunk in await searchable_text(runtime))
 
