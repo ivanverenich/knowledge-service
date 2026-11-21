@@ -7,7 +7,7 @@ depends_on: ["M07-T16"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["worker runtime","Redis broker configuration"]
-status: planned
+status: completed
 ---
 
 # M08-T01 — Introduce Dramatiq and Redis

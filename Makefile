@@ -8,7 +8,7 @@
 # Bare `make` shows the command menu.
 .DEFAULT_GOAL := do_good
 
-.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check keycloak-up keycloak-down keycloak-reset check hooks-install hooks docs-check
+.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check keycloak-up keycloak-down keycloak-reset redis-up redis-down worker worker-ready worker-ping check hooks-install hooks docs-check
 
 # ---------------------------------------------------------------------------
 # Command menu
@@ -80,7 +80,10 @@ test-unit: ## Run fast deterministic unit tests (no network)
 # Integration tests skip themselves without KNOWLEDGE_SERVICE_TEST_DATABASE_URL.
 # When it is unset, the URL is built from the local Docker container, so the
 # password is read at run time and never stored in a file.
+# The Redis tests use the local container's database 15 unless
+# KNOWLEDGE_SERVICE_TEST_REDIS_URL says otherwise, so run `make redis-up` first.
 TEST_DB_CONTAINER ?= knowledge-service-postgres
+TEST_REDIS_URL ?= redis://127.0.0.1:6380/15
 
 test-integration: ## Run integration tests (needs services)
 	@url="$$KNOWLEDGE_SERVICE_TEST_DATABASE_URL"; \
@@ -91,7 +94,9 @@ test-integration: ## Run integration tests (needs services)
 		echo "No test database: set KNOWLEDGE_SERVICE_TEST_DATABASE_URL or start the $(TEST_DB_CONTAINER) container."; \
 		exit 1; \
 	fi; \
-	KNOWLEDGE_SERVICE_TEST_DATABASE_URL="$$url" uv run pytest -m "integration and not live"
+	KNOWLEDGE_SERVICE_TEST_DATABASE_URL="$$url" \
+	KNOWLEDGE_SERVICE_TEST_REDIS_URL="$${KNOWLEDGE_SERVICE_TEST_REDIS_URL:-$(TEST_REDIS_URL)}" \
+	uv run pytest -m "integration and not live"
 
 ml-check: ## Type-check and test the local BGE-M3 and reranker servers (Python 3.12)
 	cd ml/bge_m3_server && uv run pyright && uv run pytest -q
@@ -123,6 +128,38 @@ keycloak-down: ## Stop the local Keycloak and keep its users and keys
 keycloak-reset: ## Remove the local Keycloak, its volume, and its secrets
 	docker compose -p $(KEYCLOAK_PROJECT) down -v
 	rm -f deploy/keycloak/.env
+
+# ---------------------------------------------------------------------------
+# Local queue: Redis and the worker
+# ---------------------------------------------------------------------------
+
+# Redis for local work only (M08-T01). It holds no secret and listens on
+# 127.0.0.1 only. The worker reads KNOWLEDGE_SERVICE_REDIS_URL, which
+# defaults here to that container.
+REDIS_COMPOSE = docker compose -f deploy/redis/compose.yaml
+REDIS_PROJECT = knowledge-service-redis
+LOCAL_REDIS_URL ?= redis://127.0.0.1:6380/0
+WORKER_ENV = KNOWLEDGE_SERVICE_REDIS_URL="$${KNOWLEDGE_SERVICE_REDIS_URL:-$(LOCAL_REDIS_URL)}"
+
+redis-up: ## Start the local Redis for the worker queue
+	$(REDIS_COMPOSE) up -d --wait
+
+redis-down: ## Stop the local Redis; its queues are emptied
+	docker compose -p $(REDIS_PROJECT) down
+
+# The worker runs from .venv directly, not through `uv run`: uv passes Ctrl+C
+# on to Dramatiq, which already got it from the terminal, and a second signal
+# makes Dramatiq kill its worker instead of stopping it gracefully. The sync
+# first keeps .venv current, as `uv run` would.
+worker: ## Run one worker process that reads every queue
+	@uv sync --locked --quiet
+	@$(WORKER_ENV) .venv/bin/dramatiq knowledge_service.worker.main --processes 1 --threads 2
+
+worker-ready: ## Exit 0 only when the worker's Redis broker answers
+	@$(WORKER_ENV) uv run python -m knowledge_service.worker.health
+
+worker-ping: ## Queue one harmless ping for a running worker
+	@$(WORKER_ENV) uv run python -m knowledge_service.worker.actors
 
 # ---------------------------------------------------------------------------
 # Combined checks and git hooks

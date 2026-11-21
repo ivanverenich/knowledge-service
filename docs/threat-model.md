@@ -51,10 +51,11 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 | `POST /v1/answer` | Any client that reaches the API | The M01 walking skeleton: needs a bearer token and the `user` role, then sends the Question straight to the model, with no retrieval, Evidence, Citations, or output limit, and without asking the provider not to keep it. The versioned Question route replaces it (M09-T01) |
 | `DELETE /v1/conversations/{conversation_id}` | Any client that reaches the API | Deletes the caller's own Conversation. Needs a bearer token and the `manage_own_conversations` operation (the `user` role), both checked before the ID is parsed; the owner is the token's User, and only the canonical spelling of an ID is accepted; the answer is 204 whether the Conversation was deleted, missing, or another User's |
 | `GET /health/live`, `GET /health/ready` | Load balancers | Return status only |
+| Local Redis, `127.0.0.1:6380` | Developers and local workers | Bound to 127.0.0.1, with no password: anyone on this machine can read or write its queues, so a worker checks every message argument again. It never evicts a key and keeps nothing across a restart |
 | Local Keycloak, `http://localhost:8180` | Developers and, later, Open WebUI | Bound to 127.0.0.1. One application client, `open-webui`: the code flow with S256 PKCE, one exact redirect URI, no optional scopes, and only the four application roles in its tokens. No client in the realm gives a token for a password alone. The master realm's admin console shares the port, behind the generated bootstrap admin. Non-production demo users with fixed IDs |
 | Source adapters | Workers | The local directory Source; Confluence in M08 |
 | Model replies | The API | Answer, rewrite, ranking, and support replies, each checked on the server |
-| Jobs | Workers | Stored jobs with typed errors; the Redis queue in M08 |
+| Jobs | Workers | Stored jobs with typed errors. The Redis queue carries only the harmless `ping` job so far, as JSON, never pickle |
 | Scripts | Developers | Retrieval and rewrite evaluations over `datasets/` |
 | OpenAI-compatible adapter, Open WebUI | Users | M09 |
 | MCP server and agent tools | Agents | M11 |

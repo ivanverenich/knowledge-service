@@ -1,0 +1,29 @@
+# Local, non-production Redis for the worker queue (M08-T01).
+#
+# Start it with `make redis-up`. Redis only carries messages between the API
+# and workers; PostgreSQL holds every durable record (ADR 0011). The port is
+# published on 127.0.0.1 only, so nothing outside this machine can reach it.
+name: knowledge-service-redis
+
+services:
+  redis:
+    # Redis 8.2.3, pinned by digest so every machine runs the same image.
+    image: redis:8.2.3-alpine@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
+    command:
+      - redis-server
+      # Never evict a key to free memory: an evicted key is a lost message.
+      - --maxmemory-policy
+      - noeviction
+      # No snapshots or append-only file: a restart empties the queues, and
+      # the stored Jobs in PostgreSQL say what still has to run.
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

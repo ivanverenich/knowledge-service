@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     database_pool_timeout: float = Field(default=10.0, gt=0.0, allow_inf_nan=False)
     database_connect_timeout_seconds: int = Field(default=5, gt=0)
     database_statement_timeout_ms: int = Field(default=10_000, gt=0)
+    # The Redis broker that carries worker messages; it may hold a password.
+    redis_url: SecretStr | None = None
+    redis_health_timeout_seconds: float = Field(
+        default=2.0, ge=0.05, le=30.0, allow_inf_nan=False
+    )
 
     @model_validator(mode="after")
     def require_production_secret(self) -> Self:
