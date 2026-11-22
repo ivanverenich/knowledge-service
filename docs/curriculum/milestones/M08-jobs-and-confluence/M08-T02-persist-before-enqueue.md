@@ -7,7 +7,7 @@ depends_on: ["M08-T01"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["job submission workflow"]
-status: planned
+status: completed
 ---
 
 # M08-T02 — Persist before enqueue

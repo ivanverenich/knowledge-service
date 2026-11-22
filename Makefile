@@ -8,7 +8,7 @@
 # Bare `make` shows the command menu.
 .DEFAULT_GOAL := do_good
 
-.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check keycloak-up keycloak-down keycloak-reset redis-up redis-down worker worker-ready worker-ping check hooks-install hooks docs-check
+.PHONY: do_good setup format format-check lint typecheck test-unit test-integration ml-check keycloak-up keycloak-down keycloak-reset redis-up redis-down worker worker-ready worker-ping worker-relay check hooks-install hooks docs-check
 
 # ---------------------------------------------------------------------------
 # Command menu
@@ -140,6 +140,10 @@ REDIS_COMPOSE = docker compose -f deploy/redis/compose.yaml
 REDIS_PROJECT = knowledge-service-redis
 LOCAL_REDIS_URL ?= redis://127.0.0.1:6380/0
 WORKER_ENV = KNOWLEDGE_SERVICE_REDIS_URL="$${KNOWLEDGE_SERVICE_REDIS_URL:-$(LOCAL_REDIS_URL)}"
+# Running Jobs and relaying them reads PostgreSQL too. When
+# KNOWLEDGE_SERVICE_DATABASE_URL is unset, the URL is built from the local
+# container at run time, so its password never lands in a file.
+WORKER_DB_ENV = KNOWLEDGE_SERVICE_DATABASE_URL="$${KNOWLEDGE_SERVICE_DATABASE_URL:-$$(uv run python scripts/test_database_url.py $(TEST_DB_CONTAINER))}"
 
 redis-up: ## Start the local Redis for the worker queue
 	$(REDIS_COMPOSE) up -d --wait
@@ -153,13 +157,16 @@ redis-down: ## Stop the local Redis; its queues are emptied
 # first keeps .venv current, as `uv run` would.
 worker: ## Run one worker process that reads every queue
 	@uv sync --locked --quiet
-	@$(WORKER_ENV) .venv/bin/dramatiq knowledge_service.worker.main --processes 1 --threads 2
+	@$(WORKER_ENV) $(WORKER_DB_ENV) .venv/bin/dramatiq knowledge_service.worker.main --processes 1 --threads 2
 
 worker-ready: ## Exit 0 only when the worker's Redis broker answers
 	@$(WORKER_ENV) uv run python -m knowledge_service.worker.health
 
 worker-ping: ## Queue one harmless ping for a running worker
 	@$(WORKER_ENV) uv run python -m knowledge_service.worker.actors
+
+worker-relay: ## Publish stored Jobs that no message names yet (one pass)
+	@$(WORKER_ENV) $(WORKER_DB_ENV) uv run python -m knowledge_service.worker.relay
 
 # ---------------------------------------------------------------------------
 # Combined checks and git hooks

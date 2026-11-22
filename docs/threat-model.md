@@ -55,7 +55,7 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 | Local Keycloak, `http://localhost:8180` | Developers and, later, Open WebUI | Bound to 127.0.0.1. One application client, `open-webui`: the code flow with S256 PKCE, one exact redirect URI, no optional scopes, and only the four application roles in its tokens. No client in the realm gives a token for a password alone. The master realm's admin console shares the port, behind the generated bootstrap admin. Non-production demo users with fixed IDs |
 | Source adapters | Workers | The local directory Source; Confluence in M08 |
 | Model replies | The API | Answer, rewrite, ranking, and support replies, each checked on the server |
-| Jobs | Workers | Stored jobs with typed errors. The Redis queue carries only the harmless `ping` job so far, as JSON, never pickle |
+| Jobs | Workers | Stored jobs with typed errors. A queue message, JSON and never pickle, carries only the harmless `ping` token or one canonical Job ID; the worker reads what to do from PostgreSQL. A stored Job is committed before any message names it, and a Job that is no longer queued is not run again. A Job whose message was sent but then lost (a Redis restart, a message dead-lettered before the Job was claimed, or one dropped by the one-day age limit) stays queued and published until M08-T08 |
 | Scripts | Developers | Retrieval and rewrite evaluations over `datasets/` |
 | OpenAI-compatible adapter, Open WebUI | Users | M09 |
 | MCP server and agent tools | Agents | M11 |

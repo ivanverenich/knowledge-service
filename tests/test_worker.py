@@ -255,12 +255,16 @@ def test_worker_entry_point_declares_ping_on_its_global_broker(
     monkeypatch.setenv(
         "KNOWLEDGE_SERVICE_REDIS_URL", f"redis://127.0.0.1:{closed_port()}/0"
     )
+    monkeypatch.setenv(
+        "KNOWLEDGE_SERVICE_DATABASE_URL",
+        f"postgresql+psycopg://user:pass@127.0.0.1:{closed_port()}/db",
+    )
     monkeypatch.delitem(sys.modules, "knowledge_service.worker.main", raising=False)
 
     entry = importlib.import_module("knowledge_service.worker.main")
     try:
         assert dramatiq.get_broker() is entry.broker
-        assert entry.broker.get_declared_actors() == {"ping"}
+        assert entry.broker.get_declared_actors() == {"ping", "run_maintenance_job"}
     finally:
         entry.broker.close()
         dramatiq.set_broker(StubBroker())

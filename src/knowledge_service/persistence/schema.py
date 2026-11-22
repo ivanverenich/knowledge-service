@@ -423,6 +423,8 @@ jobs = sa.Table(
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_error_code", sa.String(length=64), nullable=True),
+    # When a message naming this queued attempt was handed to the queue.
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
     sa.CheckConstraint(
         "kind in ('synchronize_source', 'purge_conversation', 'purge_document_chunks')",
         name="ck_jobs_kind",
@@ -445,6 +447,12 @@ jobs = sa.Table(
     sa.CheckConstraint(
         "(status = 'failed') = (last_error_code is not null)",
         name="ck_jobs_last_error_code",
+    ),
+    sa.Index(
+        "ix_jobs_unpublished_queued_at",
+        "queued_at",
+        "job_id",
+        postgresql_where=sa.text("status = 'queued' and published_at is null"),
     ),
 )
 
