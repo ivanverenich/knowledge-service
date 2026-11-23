@@ -33,6 +33,11 @@ from knowledge_service.audit import (
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document, DocumentAvailability
 from knowledge_service.identifiers import AuditEventId, DocumentId, JobId, SourceId
+from knowledge_service.job_failures import (
+    DEFAULT_RETRY_POLICY,
+    RetryPolicy,
+    fail_attempt,
+)
 from knowledge_service.jobs import (
     InvalidJob,
     Job,
@@ -49,8 +54,6 @@ from knowledge_service.persistence.documents import (
     upsert_document,
 )
 from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
-
-PURGE_FAILED = "chunk_purge_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,36 +143,98 @@ async def purge_document_chunks(
     *,
     job_id: JobId,
     now: datetime,
+    retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
 ) -> Job:
     """Run one queued purge Job and return it as stored afterwards.
 
     The Chunks are deleted only if the Document is still tombstoned; a
     Document restored in the meantime keeps its new Chunks. If deleting fails,
-    nothing is deleted, the Job is stored as failed with `PURGE_FAILED`, and
-    `Job.retry` can queue it again. Either way the outcome commits with the
-    claim, so another delivery waiting on the claim sees it, never `queued`.
+    nothing is deleted, and the Job is stored as failed with the failure's
+    code; `fail_attempt` schedules a retry only for a failure that may pass.
+    The outcome commits with the claim, so another delivery waiting on the
+    claim sees it, never `queued`.
+
+    If the claim's own transaction dies, as when the database drops the
+    connection, its row lock dies with it; the attempt is then recorded in a
+    new transaction, by the error that started it. A cancellation or the
+    actor's time limit is not an `Exception`: it rolls back the attempt and
+    leaves the Job queued, with its message spent, for M08-T08 to find.
+    """
+    # The first error of the attempt, so a dead connection is not blamed on
+    # the errors it causes later, such as a pending rollback.
+    cause: Exception | None = None
+    # The attempt this delivery claimed, so a lost one is never recorded
+    # against a later attempt another delivery started meanwhile.
+    claimed_attempt: int | None = None
+    try:
+        async with runtime.transaction() as connection:
+            job = await _claim(connection, job_id=job_id, now=now)
+            claimed_attempt = job.attempt
+            try:
+                # A savepoint: a failed delete is undone, while the claim
+                # keeps its row lock until the failure below is stored.
+                async with connection.begin_nested():
+                    # Lock the row, so a restore cannot interleave with the delete.
+                    document = await load_document_by_id(
+                        connection,
+                        document_id=DocumentId(job.target_id),
+                        for_update=True,
+                    )
+                    if (
+                        document is not None
+                        and document.availability is DocumentAvailability.TOMBSTONED
+                    ):
+                        await delete_chunks(
+                            connection, document_id=document.document_id
+                        )
+            except Exception as error:
+                cause = error
+                failed = fail_attempt(job, error, now=now, policy=retry_policy)
+                return await save_job(connection, job=failed)
+            return await save_job(connection, job=job.succeed(finished_at=now))
+    except InvalidJob:
+        raise
+    except Exception as error:
+        return await _record_lost_attempt(
+            runtime,
+            job_id=job_id,
+            cause=cause or error,
+            claimed_attempt=claimed_attempt,
+            now=now,
+            retry_policy=retry_policy,
+        )
+
+
+async def _record_lost_attempt(
+    runtime: DatabaseRuntime,
+    *,
+    job_id: JobId,
+    cause: Exception,
+    claimed_attempt: int | None,
+    now: datetime,
+    retry_policy: RetryPolicy,
+) -> Job:
+    """Record an attempt whose transaction could not commit its outcome.
+
+    Its lock is gone, so another delivery may have run the Job meanwhile,
+    or even a later attempt of it; then that outcome stands. If this
+    transaction fails too, the error propagates and the Job stays queued for
+    M08-T08.
     """
     async with runtime.transaction() as connection:
-        job = await _claim(connection, job_id=job_id, now=now)
-        try:
-            # A savepoint: a failed delete is undone, while the claim keeps
-            # its row lock until the failure below is stored.
-            async with connection.begin_nested():
-                # Lock the row, so a restore cannot interleave with the delete.
-                document = await load_document_by_id(
-                    connection,
-                    document_id=DocumentId(job.target_id),
-                    for_update=True,
-                )
-                if (
-                    document is not None
-                    and document.availability is DocumentAvailability.TOMBSTONED
-                ):
-                    await delete_chunks(connection, document_id=document.document_id)
-        except Exception:
-            failed = job.fail(error_code=PURGE_FAILED, finished_at=now)
-            return await save_job(connection, job=failed)
-        return await save_job(connection, job=job.succeed(finished_at=now))
+        stored = await load_job(connection, job_id=job_id, for_update=True)
+        if stored is None:
+            raise cause
+        if stored.status is not JobStatus.QUEUED:
+            raise JobAlreadyClaimed(stored)
+        if claimed_attempt is not None and stored.attempt != claimed_attempt:
+            raise JobAlreadyClaimed(
+                stored, "another delivery already ran the attempt this one lost"
+            )
+        failed = fail_attempt(
+            stored.start(started_at=now), cause, now=now, policy=retry_policy
+        )
+        return await save_job(connection, job=failed)
 
 
 def availability_event(document: Document) -> AuditEvent:

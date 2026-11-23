@@ -7,7 +7,7 @@ depends_on: ["M08-T03"]
 estimate: 75m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["retry policy"]
-status: planned
+status: completed
 ---
 
 # M08-T04 — Assign retry and timeout ownership

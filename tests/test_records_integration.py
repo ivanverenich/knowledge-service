@@ -76,6 +76,7 @@ async def test_records_survive_their_state_machines_and_refuse_raw_content(
             failed = running.fail(
                 error_code="source_unreachable",
                 finished_at=OBSERVED_AT + timedelta(seconds=2),
+                retry_at=OBSERVED_AT + timedelta(seconds=3),
             )
             await save_job(connection, job=failed)
 
@@ -86,6 +87,7 @@ async def test_records_survive_their_state_machines_and_refuse_raw_content(
         assert stored_job.status is JobStatus.FAILED
         assert stored_job.attempt == 1
         assert stored_job.last_error_code == "source_unreachable"
+        assert stored_job.retry_at == OBSERVED_AT + timedelta(seconds=3)
 
         async with engine.begin() as connection:
             retried = failed.retry(queued_at=OBSERVED_AT + timedelta(seconds=3))

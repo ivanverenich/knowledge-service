@@ -19,6 +19,7 @@ from knowledge_service.documents import (
     InvalidDocument,
 )
 from knowledge_service.identifiers import DocumentId, SourceId
+from knowledge_service.job_failures import JobFailure
 from knowledge_service.jobs import JobKind
 from knowledge_service.language import Language
 from knowledge_service.persistence.jobs import open_job
@@ -170,6 +171,10 @@ async def load_available_documents(
     return tuple(as_document(dict(record)) for record in records)
 
 
+# Codes of a purge failure that a new attempt would only repeat.
+_PERMANENT_FAILURES = [failure.value for failure in JobFailure if not failure.transient]
+
+
 async def load_unpurged_documents(
     connection: AsyncConnection,
     *,
@@ -177,13 +182,25 @@ async def load_unpurged_documents(
 ) -> tuple[Document, ...]:
     """Read tombstoned Documents that still hold Chunks and no purge can delete.
 
-    A purge Job counts while it is queued, running, or failed with attempts
-    left; a Document whose last purge used every attempt is returned.
+    A purge Job counts while it is open: queued, running, or failed with a
+    retry scheduled. A Document whose last purge ran out of attempts on a
+    passing failure is returned, so a later pass tries again. One whose last
+    purge failed permanently is not: asking again would only repeat the
+    refusal or the bug, so a person asks once the cause is fixed.
     """
-    open_purge = sa.exists().where(
+    purge_of_document = sa.and_(
         jobs.c.kind == JobKind.PURGE_DOCUMENT_CHUNKS.value,
         jobs.c.target_id == documents.c.document_id,
-        open_job(),
+    )
+    open_purge = sa.exists().where(purge_of_document, open_job())
+    last_purge_error = (
+        sa.select(jobs.c.last_error_code)
+        .where(purge_of_document)
+        # Open purges are excluded, so every row here has finished. Finish
+        # times come from the attempts themselves; queue times do not.
+        .order_by(jobs.c.finished_at.desc(), jobs.c.job_id.desc())
+        .limit(1)
+        .scalar_subquery()
     )
     statement = (
         sa.select(documents)
@@ -192,6 +209,7 @@ async def load_unpurged_documents(
             documents.c.availability == DocumentAvailability.TOMBSTONED.value,
             sa.exists().where(chunks.c.document_id == documents.c.document_id),
             ~open_purge,
+            sa.func.coalesce(last_purge_error, "").not_in(_PERMANENT_FAILURES),
         )
         .order_by(documents.c.external_id)
     )

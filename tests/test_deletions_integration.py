@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from job_fixtures import database_went_away
 from knowledge_service.access import Subject
 from knowledge_service.audit import AuditAction
 from knowledge_service.database import DatabaseRuntime, create_database_runtime
@@ -15,7 +16,6 @@ from knowledge_service.documents import Document, DocumentAvailability
 from knowledge_service.identifiers import DocumentId, JobId, SourceId
 from knowledge_service.ingestion import deletions
 from knowledge_service.ingestion.deletions import (
-    PURGE_FAILED,
     purge_document_chunks,
     requeue_unfinished_purges,
     tombstone_missing,
@@ -23,6 +23,7 @@ from knowledge_service.ingestion.deletions import (
 from knowledge_service.ingestion.normalization import NormalizedDocument, normalize
 from knowledge_service.ingestion.reconciliation import Change, reconcile_document
 from knowledge_service.ingestion.sources import SourceAccess, SourceRecord
+from knowledge_service.job_failures import JobFailure
 from knowledge_service.jobs import InvalidJob, Job, JobKind, JobNotRetryable, JobStatus
 from knowledge_service.persistence.access import load_access_grants
 from knowledge_service.persistence.audit import load_audit_events
@@ -248,7 +249,7 @@ async def test_a_failed_purge_keeps_chunks_and_can_be_retried(
     async def broken_delete(
         connection: AsyncConnection, *, document_id: DocumentId
     ) -> int:
-        raise ConnectionError("the database went away")
+        raise database_went_away()
 
     with monkeypatch.context() as patch:
         patch.setattr(deletions, "delete_chunks", broken_delete)
@@ -259,8 +260,9 @@ async def test_a_failed_purge_keeps_chunks_and_can_be_retried(
     assert (failed.status, failed.attempt, failed.last_error_code) == (
         JobStatus.FAILED,
         1,
-        PURGE_FAILED,
+        JobFailure.DATABASE_UNAVAILABLE,
     )
+    assert failed.retry_at is not None
     assert await stored_chunk_count(runtime, retired.document_id) > 0
     assert await searchable_text(runtime) == []
 
@@ -352,7 +354,7 @@ async def test_a_purge_that_used_every_attempt_is_queued_again(
     async def broken_delete(
         connection: AsyncConnection, *, document_id: DocumentId
     ) -> int:
-        raise ConnectionError("the database went away")
+        raise database_went_away()
 
     with monkeypatch.context() as patch:
         patch.setattr(deletions, "delete_chunks", broken_delete)
@@ -365,11 +367,15 @@ async def test_a_purge_that_used_every_attempt_is_queued_again(
             == ()
         )
         for _ in range(failed.max_attempts - 1):
+            assert failed.retry_at is not None
+            due = failed.retry_at
             async with runtime.transaction() as connection:
-                await save_job(connection, job=failed.retry(queued_at=LATER))
+                await save_job(connection, job=failed.retry(queued_at=due))
             failed = await purge_document_chunks(
-                runtime, job_id=tombstone.purge_job_id, now=LATER
+                runtime, job_id=tombstone.purge_job_id, now=due
             )
+    # The last attempt used the budget, so no retry is scheduled.
+    assert (failed.attempt, failed.retry_at) == (failed.max_attempts, None)
     with pytest.raises(JobNotRetryable):
         failed.retry(queued_at=LATEST)
 

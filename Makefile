@@ -165,7 +165,7 @@ worker-ready: ## Exit 0 only when the worker's Redis broker answers
 worker-ping: ## Queue one harmless ping for a running worker
 	@$(WORKER_ENV) uv run python -m knowledge_service.worker.actors
 
-worker-relay: ## Publish stored Jobs that no message names yet (one pass)
+worker-relay: ## Queue due retries, then publish Jobs no message names yet (one pass)
 	@$(WORKER_ENV) $(WORKER_DB_ENV) uv run python -m knowledge_service.worker.relay
 
 # ---------------------------------------------------------------------------

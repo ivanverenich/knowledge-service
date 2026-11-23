@@ -24,7 +24,11 @@ class IllegalJobTransition(InvalidJob):
 
 
 class JobNotRetryable(InvalidJob):
-    """A failed Job has already used every attempt it is allowed."""
+    """A failed Job may not be queued again, or not yet.
+
+    It used every attempt, its failure was permanent, or its retry time has
+    not come.
+    """
 
 
 class JobAlreadyClaimed(InvalidJob):
@@ -34,8 +38,8 @@ class JobAlreadyClaimed(InvalidJob):
     earlier delivery already produced, or is producing.
     """
 
-    def __init__(self, job: Job) -> None:
-        super().__init__(f"only a queued job can run, not a {job.status} one")
+    def __init__(self, job: Job, reason: str | None = None) -> None:
+        super().__init__(reason or f"only a queued job can run, not a {job.status} one")
         self.job = job
 
 
@@ -90,6 +94,8 @@ class Job:
     started_at: datetime | None
     finished_at: datetime | None
     last_error_code: str | None
+    # When a failed Job may be queued again; None means it never will be.
+    retry_at: datetime | None = None
 
     def __post_init__(self) -> None:
         _require_utc(self.queued_at, "queued_at")
@@ -113,17 +119,25 @@ class Job:
             raise InvalidJob("only a failed job carries an error code")
         if self.last_error_code is not None and not self.last_error_code.strip():
             raise InvalidJob("an error code must not be empty")
+        if self.retry_at is not None:
+            _require_utc(self.retry_at, "retry_at")
+            if self.status is not JobStatus.FAILED:
+                raise InvalidJob("only a failed job carries a retry time")
+            if self.attempt >= self.max_attempts:
+                raise InvalidJob("a job with no attempts left has no retry time")
+            if self.finished_at is not None and self.retry_at < self.finished_at:
+                raise InvalidJob("retry_at must not be earlier than finished_at")
 
     @property
     def is_open(self) -> bool:
         """Whether this Job can still do its work.
 
         A Job is open while it is queued or running, and while it has failed
-        with attempts left, because it may still be queued again. At most one
+        with a retry scheduled, because it will be queued again. At most one
         open Job exists per kind and target.
         """
         if self.status is JobStatus.FAILED:
-            return self.attempt < self.max_attempts
+            return self.retry_at is not None
         return self.status is not JobStatus.SUCCEEDED
 
     @classmethod
@@ -160,8 +174,17 @@ class Job:
         _check_transition(self.status, JobStatus.SUCCEEDED)
         return replace(self, status=JobStatus.SUCCEEDED, finished_at=finished_at)
 
-    def fail(self, *, error_code: str, finished_at: datetime) -> Job:
-        """Finish the Job unsuccessfully, recording a short error code."""
+    def fail(
+        self,
+        *,
+        error_code: str,
+        finished_at: datetime,
+        retry_at: datetime | None = None,
+    ) -> Job:
+        """Finish the attempt unsuccessfully, recording a short error code.
+
+        `retry_at` schedules the next attempt; None makes the failure final.
+        """
         _check_transition(self.status, JobStatus.FAILED)
         if not error_code.strip():
             raise InvalidJob("an error code must not be empty")
@@ -175,15 +198,20 @@ class Job:
             attempt=self.attempt + 1,
             finished_at=finished_at,
             last_error_code=error_code,
+            retry_at=retry_at,
         )
 
     def retry(self, *, queued_at: datetime) -> Job:
-        """Queue the Job again for one more attempt."""
+        """Queue the Job again for one more attempt, once its retry time came."""
         _check_transition(self.status, JobStatus.QUEUED)
         if self.attempt >= self.max_attempts:
             raise JobNotRetryable(
                 f"the job already used all {self.max_attempts} attempts"
             )
+        if self.retry_at is None:
+            raise JobNotRetryable("the job failed permanently")
+        if queued_at < self.retry_at:
+            raise JobNotRetryable("the job may not be retried before its retry time")
         return replace(
             self,
             status=JobStatus.QUEUED,
@@ -191,4 +219,5 @@ class Job:
             started_at=None,
             finished_at=None,
             last_error_code=None,
+            retry_at=None,
         )

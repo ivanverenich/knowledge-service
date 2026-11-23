@@ -24,6 +24,7 @@ from job_fixtures import (
     OBSERVED_AT,
     SOURCE_ID,
     chunk_count,
+    database_went_away,
     insert_source,
     offer_retired,
     stored_job,
@@ -33,12 +34,17 @@ from knowledge_service.database import DatabaseRuntime, create_database_runtime
 from knowledge_service.identifiers import DocumentId, JobId
 from knowledge_service.ingestion import deletions
 from knowledge_service.ingestion.deletions import (
-    PURGE_FAILED,
     purge_document_chunks,
     requeue_unfinished_purges,
     tombstone_missing,
 )
-from knowledge_service.job_dispatch import PublishFailed, Submission, submit_job
+from knowledge_service.job_dispatch import (
+    PublishFailed,
+    Submission,
+    requeue_due_retries,
+    submit_job,
+)
+from knowledge_service.job_failures import JobFailure
 from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
 from knowledge_service.persistence import jobs as job_store
 from knowledge_service.persistence.jobs import (
@@ -97,7 +103,7 @@ async def enqueue(runtime: DatabaseRuntime, job: Job) -> Enqueued:
 
 
 async def broken_delete(connection: AsyncConnection, *, document_id: DocumentId) -> int:
-    raise ConnectionError("the database went away")
+    raise database_went_away()
 
 
 async def stored_job_ids(runtime: DatabaseRuntime) -> list[JobId]:
@@ -277,43 +283,43 @@ async def test_only_a_new_queued_job_can_be_enqueued(runtime: DatabaseRuntime) -
     assert await stored_job_ids(runtime) == []
 
 
-async def test_asking_again_after_a_failed_attempt_queues_the_job_again(
+async def test_asking_again_after_a_failed_attempt_waits_for_its_retry_time(
     runtime: DatabaseRuntime,
 ) -> None:
     job = (await enqueue(runtime, new_job())).job
+    failed = job.start(started_at=NOW).fail(
+        error_code="boom", finished_at=NOW, retry_at=LATER
+    )
     async with runtime.transaction() as connection:
-        await save_job(
-            connection,
-            job=job.start(started_at=NOW).fail(error_code="boom", finished_at=NOW),
-        )
+        await save_job(connection, job=failed)
 
     again = await enqueue(runtime, new_job())
 
+    # The same Job comes back, still waiting: a request does not hurry it.
     assert not again.created
-    assert (again.job.job_id, again.job.status, again.job.attempt) == (
-        job.job_id,
-        JobStatus.QUEUED,
-        1,
-    )
-    assert await stored_job(runtime, job.job_id) == again.job
+    assert again.job == failed
+    assert await stored_job(runtime, job.job_id) == failed
 
 
-async def test_a_document_tombstoned_again_after_a_failed_purge_is_purged(
+async def test_a_document_tombstoned_again_after_a_failed_purge_is_purged_when_due(
     runtime: DatabaseRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document, purge_id = await tombstoned_with_purge(runtime)
     with monkeypatch.context() as patch:
         patch.setattr(deletions, "delete_chunks", broken_delete)
         failed = await purge_document_chunks(runtime, job_id=purge_id, now=NOW)
-    assert failed.status is JobStatus.FAILED
+    assert failed.retry_at is not None
     await offer_retired(runtime, observed_at=NOW)
 
     [again] = await tombstone_missing(
-        runtime, source_id=SOURCE_ID, seen=set(), observed_at=LATER
+        runtime, source_id=SOURCE_ID, seen=set(), observed_at=NOW
     )
-    purged = await purge_document_chunks(runtime, job_id=again.purge_job_id, now=LATER)
-
     assert again.purge_job_id == purge_id
+    # Nothing runs it before its retry time; the retry pass does after.
+    assert await requeue_due_retries(runtime, now=NOW) == ()
+    assert await requeue_due_retries(runtime, now=failed.retry_at) == (purge_id,)
+    purged = await purge_document_chunks(runtime, job_id=purge_id, now=failed.retry_at)
+
     assert (purged.status, purged.attempt) == (JobStatus.SUCCEEDED, 1)
     assert await chunk_count(runtime, document.document_id) == 0
 
@@ -330,7 +336,7 @@ async def test_two_messages_at_once_for_a_failing_attempt_run_it_once(
         calls.append(document_id)
         # Long enough for the other messages to queue up behind the claim.
         await asyncio.sleep(0.2)
-        raise ConnectionError("the database went away")
+        raise database_went_away()
 
     monkeypatch.setattr(deletions, "delete_chunks", slow_broken_delete)
     results = await asyncio.gather(
@@ -344,7 +350,7 @@ async def test_two_messages_at_once_for_a_failing_attempt_run_it_once(
     assert (stored.status, stored.attempt, stored.last_error_code) == (
         JobStatus.FAILED,
         1,
-        PURGE_FAILED,
+        JobFailure.DATABASE_UNAVAILABLE,
     )
 
 

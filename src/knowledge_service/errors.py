@@ -111,7 +111,7 @@ POLICIES = {
 _UNAVAILABLE_STATES = frozenset({"08", "40", "53", "57"})
 
 
-def _database_unavailable(error: BaseException) -> bool:
+def database_unavailable(error: BaseException) -> bool:
     """True when sending the request again later may work."""
     # The pool had no free connection in time.
     if isinstance(error, database_errors.TimeoutError):
@@ -142,7 +142,7 @@ def classify_failure(error: BaseException) -> FailureKind:
         return FailureKind.DEPENDENCY
     # The database is down, unreachable, too slow, or out of connections.
     # Any other database error, such as a broken constraint, is a bug.
-    if _database_unavailable(error):
+    if database_unavailable(error):
         return FailureKind.DEPENDENCY
     return FailureKind.INTERNAL
 

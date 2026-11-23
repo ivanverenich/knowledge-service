@@ -410,10 +410,10 @@ message_feedback = sa.Table(
 )
 
 
-# A Job that can still do its work: queued, running, or failed with attempts
-# left. At most one such Job exists per kind and target (its intent).
+# A Job that can still do its work: queued, running, or failed with a retry
+# scheduled. At most one such Job exists per kind and target (its intent).
 OPEN_JOB_PREDICATE = (
-    "status in ('queued', 'running') or (status = 'failed' and attempt < max_attempts)"
+    "status in ('queued', 'running') or (status = 'failed' and retry_at is not null)"
 )
 
 jobs = sa.Table(
@@ -431,6 +431,8 @@ jobs = sa.Table(
     sa.Column("last_error_code", sa.String(length=64), nullable=True),
     # When a message naming this queued attempt was handed to the queue.
     sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+    # When a failed Job may be queued again; null when it never will be.
+    sa.Column("retry_at", sa.DateTime(timezone=True), nullable=True),
     sa.CheckConstraint(
         "kind in ('synchronize_source', 'purge_conversation', 'purge_document_chunks')",
         name="ck_jobs_kind",
@@ -454,6 +456,11 @@ jobs = sa.Table(
         "(status = 'failed') = (last_error_code is not null)",
         name="ck_jobs_last_error_code",
     ),
+    sa.CheckConstraint(
+        "retry_at is null or (status = 'failed' and attempt < max_attempts"
+        " and retry_at >= finished_at)",
+        name="ck_jobs_retry_at",
+    ),
     sa.Index(
         "ix_jobs_unpublished_queued_at",
         "queued_at",
@@ -466,6 +473,12 @@ jobs = sa.Table(
         "target_id",
         unique=True,
         postgresql_where=sa.text(OPEN_JOB_PREDICATE),
+    ),
+    sa.Index(
+        "ix_jobs_due_retry",
+        "retry_at",
+        "job_id",
+        postgresql_where=sa.text("retry_at is not null"),
     ),
 )
 

@@ -25,6 +25,7 @@ from knowledge_service.persistence.jobs import (
     load_unpublished_job_ids,
     lock_unpublished_job,
     mark_job_published,
+    requeue_due_jobs,
 )
 
 logger = logging.getLogger(__name__)
@@ -201,3 +202,19 @@ async def publish_pending_jobs(
         failed=0,
         untried=0,
     )
+
+
+async def requeue_due_retries(
+    runtime: DatabaseRuntime, *, now: datetime, limit: int = 100
+) -> tuple[JobId, ...]:
+    """Queue again failed Jobs whose retry time has come, oldest first.
+
+    This is the only place a failed Job goes back to the queue. Each one is
+    then unpublished, so the next `publish_pending_jobs` sends its message.
+    """
+    _require_utc(now)
+    if type(limit) is not int or not 1 <= limit <= MAX_RELAY_BATCH:
+        raise ValueError(f"limit must be an integer from 1 to {MAX_RELAY_BATCH}")
+    async with runtime.transaction() as connection:
+        requeued = await requeue_due_jobs(connection, now=now, limit=limit)
+    return tuple(job.job_id for job in requeued)

@@ -20,6 +20,7 @@ ACCESS_PATTERN_INDEXES = {
     "ix_synchronization_runs_source_started_at",
     "uq_embedding_spaces_current",
     "uq_jobs_open_intent",
+    "ix_jobs_due_retry",
     "uq_synchronization_runs_running_source",
 }
 

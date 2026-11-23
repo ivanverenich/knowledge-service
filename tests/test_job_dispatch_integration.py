@@ -300,7 +300,9 @@ async def test_a_job_queued_again_needs_a_new_message(
     job = new_job()
     await submit_job(runtime, job, publisher=FakePublisher(), now=NOW)
     async with runtime.transaction() as connection:
-        failed = job.start(started_at=NOW).fail(error_code="boom", finished_at=NOW)
+        failed = job.start(started_at=NOW).fail(
+            error_code="boom", finished_at=NOW, retry_at=LATER
+        )
         await save_job(connection, job=failed)
         await save_job(connection, job=failed.retry(queued_at=LATER))
     assert await published_at(runtime, job.job_id) is None

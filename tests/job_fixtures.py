@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from knowledge_service.access import Subject
 from knowledge_service.database import DatabaseRuntime
@@ -69,3 +70,10 @@ async def tombstoned_with_purge(runtime: DatabaseRuntime) -> tuple[Document, Job
 async def chunk_count(runtime: DatabaseRuntime, document_id: DocumentId) -> int:
     async with runtime.transaction() as connection:
         return len(await load_chunks(connection, document_id=document_id))
+
+
+def database_went_away() -> OperationalError:
+    """A database error that may pass: the connection was lost mid-statement."""
+    return OperationalError(
+        "DELETE FROM chunks", None, ConnectionError("the database went away")
+    )

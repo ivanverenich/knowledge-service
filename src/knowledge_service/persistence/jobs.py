@@ -43,6 +43,7 @@ def _job_row(job: Job) -> dict[str, object]:
         "started_at": job.started_at,
         "finished_at": job.finished_at,
         "last_error_code": job.last_error_code,
+        "retry_at": job.retry_at,
     }
 
 
@@ -64,6 +65,7 @@ def _job_from(record: Mapping[str, object]) -> Job:
         started_at=cast("datetime | None", record["started_at"]),
         finished_at=cast("datetime | None", record["finished_at"]),
         last_error_code=cast("str | None", record["last_error_code"]),
+        retry_at=cast("datetime | None", record["retry_at"]),
     )
 
 
@@ -73,24 +75,18 @@ def open_job() -> sa.ColumnElement[bool]:
         jobs.c.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
         sa.and_(
             jobs.c.status == JobStatus.FAILED.value,
-            jobs.c.attempt < jobs.c.max_attempts,
+            jobs.c.retry_at.is_not(None),
         ),
     )
 
 
 async def load_open_job(
-    connection: AsyncConnection,
-    *,
-    kind: JobKind,
-    target_id: UUID,
-    for_update: bool = False,
+    connection: AsyncConnection, *, kind: JobKind, target_id: UUID
 ) -> Job | None:
     """The open Job of this kind for this target, if there is one."""
     statement = sa.select(jobs).where(
         jobs.c.kind == kind.value, jobs.c.target_id == target_id, open_job()
     )
-    if for_update:
-        statement = statement.with_for_update()
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None
@@ -103,8 +99,7 @@ async def enqueue_job(connection: AsyncConnection, job: Job) -> Enqueued:
     The intent is the Job's kind and target. When an open Job for it exists,
     that Job is returned and `job` is not stored, so asking twice for the
     same work, even at the same moment, leaves one Job to do it. An open Job
-    that failed with attempts left is queued again for its next attempt,
-    because the new request still wants the work done.
+    that failed waits for its retry time; a new request does not hurry it.
     """
     if job.status is not JobStatus.QUEUED or job.attempt != 0:
         raise InvalidJob("only a new queued job can be enqueued")
@@ -123,8 +118,6 @@ async def enqueue_job(connection: AsyncConnection, job: Job) -> Enqueued:
         existing = await load_open_job(
             connection, kind=job.kind, target_id=job.target_id
         )
-        if existing is not None and existing.status is JobStatus.FAILED:
-            existing = await _queue_again(connection, job)
         if existing is not None:
             return Enqueued(job=existing, created=False)
     raise JobIntentContended(f"the open {job.kind} job kept changing")
@@ -160,15 +153,28 @@ async def save_job(connection: AsyncConnection, *, job: Job) -> Job:
     return job
 
 
-async def _queue_again(connection: AsyncConnection, job: Job) -> Job | None:
-    """Queue the failed open Job for `job`'s intent again, under its row lock."""
-    existing = await load_open_job(
-        connection, kind=job.kind, target_id=job.target_id, for_update=True
+async def requeue_due_jobs(
+    connection: AsyncConnection, *, now: datetime, limit: int
+) -> tuple[Job, ...]:
+    """Queue again up to `limit` failed Jobs whose retry time has come.
+
+    Oldest retry time first. Rows another transaction has locked are skipped,
+    so two passes at once never queue the same Job twice.
+    """
+    statement = (
+        sa.select(jobs)
+        .where(jobs.c.status == JobStatus.FAILED.value, jobs.c.retry_at <= now)
+        .order_by(jobs.c.retry_at, jobs.c.job_id)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
     )
-    if existing is None or existing.status is not JobStatus.FAILED:
-        # Another request queued it again first, or it is gone: use what is.
-        return existing
-    return await save_job(connection, job=existing.retry(queued_at=job.queued_at))
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(
+        [
+            await save_job(connection, job=_job_from(dict(record)).retry(queued_at=now))
+            for record in records
+        ]
+    )
 
 
 def _unpublished() -> sa.ColumnElement[bool]:
