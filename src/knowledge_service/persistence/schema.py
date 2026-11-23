@@ -18,6 +18,9 @@ sources = sa.Table(
     sa.Column("checkpoint", sa.Text(), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    # The observation time of the newest pass that claimed this Source; only
+    # that pass may write its Documents (`ingestion.synchronization`).
+    sa.Column("synchronization_fence", sa.DateTime(timezone=True), nullable=True),
     sa.UniqueConstraint("kind", "location", name="uq_sources_kind_location"),
 )
 

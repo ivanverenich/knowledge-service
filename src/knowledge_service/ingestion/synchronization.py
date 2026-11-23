@@ -31,12 +31,30 @@ event against the Source: `succeeded` with counts, or `failed` with the
 error's type name, in a transaction of its own. A pass that is cancelled
 records nothing; a failed pass whose record cannot be written logs that and
 raises its own error.
+
+A caller may pass a `heartbeat`, awaited after every page and so also just
+before the tombstones. Raising from it stops the pass there, as a failure:
+nothing is tombstoned. `synchronize_source_exclusively` uses it to keep its
+lease.
+
+Every pass is fenced. Before it reads anything it claims the Source's fence
+with its observation time, which works only when that time is newer than
+every earlier pass's, and every transaction that writes a Document (each
+narrowing, each reconciliation, the tombstones) first checks, under a share
+lock on the Source's row, that it still holds the fence. A newer claim
+waits for those writes, and after it the older pass's writes are refused
+with `SynchronizationSuperseded`. So an older pass that finishes late can
+never undo a newer one. A pass observed more than `MAX_CLOCK_SKEW` in the
+future is refused, so a bad clock cannot hold the fence for long.
 """
 
 import logging
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.audit import (
     AuditAction,
@@ -58,6 +76,7 @@ from knowledge_service.ingestion.deletions import (
     requeue_unfinished_purges,
     tombstone_missing,
 )
+from knowledge_service.ingestion.fencing import WriteGuard
 from knowledge_service.ingestion.grant_normalization import (
     NormalizedAccess,
     PrincipalDirectory,
@@ -76,13 +95,21 @@ from knowledge_service.ingestion.sources import (
     SourcePort,
     SourceRecord,
     SourceRecordState,
+    SynchronizationSuperseded,
 )
 from knowledge_service.persistence.access import load_readers
 from knowledge_service.persistence.audit import record_audit_event
+from knowledge_service.persistence.sources import (
+    claim_synchronization_fence,
+    synchronization_fence_holds,
+)
 
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 100
+# How far ahead of this machine's clock an observation may be. A fence set
+# far in the future would refuse every real pass until that time came.
+MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +144,7 @@ async def synchronize_source(
     principal_directory: PrincipalDirectory | None,
     page_size: int = PAGE_SIZE,
     run_id: SynchronizationRunId | None = None,
+    heartbeat: Callable[[], Awaitable[None]] | None = None,
 ) -> SynchronizationSummary:
     """Publish every record the Source offers, then tombstone the rest.
 
@@ -124,8 +152,18 @@ async def synchronize_source(
     None, only public items are readable. A Source that returns a checkpoint
     it returned before raises `InvalidSource` instead of paging forever.
     The pass runs as `run_id`, or as a new run, and records how it ended.
+    Raises `SynchronizationSuperseded`, before reading and recording
+    anything, when a pass with the same or a later `observed_at` started.
     """
     run = SynchronizationRunId.new() if run_id is None else run_id
+    await _claim_fence(runtime, source_id=source_id, observed_at=observed_at)
+
+    async def guard(connection: AsyncConnection) -> None:
+        if not await synchronization_fence_holds(
+            connection, source_id=source_id, observed_at=observed_at
+        ):
+            raise SynchronizationSuperseded("a newer synchronization pass started")
+
     try:
         summary = await _publish(
             runtime,
@@ -135,6 +173,8 @@ async def synchronize_source(
             principal_directory=principal_directory,
             page_size=page_size,
             run_id=run,
+            heartbeat=heartbeat,
+            guard=guard,
         )
     except Exception as error:
         # The pass's own error is raised either way; its record holds only
@@ -178,6 +218,20 @@ async def synchronize_source(
     return summary
 
 
+async def _claim_fence(
+    runtime: DatabaseRuntime, *, source_id: SourceId, observed_at: datetime
+) -> None:
+    if observed_at.utcoffset() != timedelta(0):
+        raise InvalidSource("observed_at must be a UTC-aware timestamp")
+    if observed_at > datetime.now(UTC) + MAX_CLOCK_SKEW:
+        raise InvalidSource("observed_at is too far in the future to fence on")
+    async with runtime.transaction() as connection:
+        if not await claim_synchronization_fence(
+            connection, source_id=source_id, observed_at=observed_at
+        ):
+            raise SynchronizationSuperseded("a newer synchronization pass started")
+
+
 async def _record_finished(
     runtime: DatabaseRuntime,
     *,
@@ -216,6 +270,8 @@ async def _publish(
     principal_directory: PrincipalDirectory | None,
     page_size: int,
     run_id: SynchronizationRunId,
+    heartbeat: Callable[[], Awaitable[None]] | None,
+    guard: WriteGuard | None,
 ) -> SynchronizationSummary:
     """One pass: every page, then the tombstones and requeued purges."""
     seen: set[str] = set()
@@ -252,6 +308,7 @@ async def _publish(
             source_id=source_id,
             observed_at=observed_at,
             run_id=run_id,
+            guard=guard,
         )
         for record, access in planned.values():
             outcome = normalize(record, source_id=source_id)
@@ -268,10 +325,14 @@ async def _publish(
                 readers=access.readers,
                 observed_at=observed_at,
                 run_id=run_id,
+                guard=guard,
             )
             changes[
                 _counted(result.change, narrowed=record.external_id in narrowed)
             ] += 1
+        if heartbeat is not None:
+            # After the last page this runs just before the tombstones.
+            await heartbeat()
         if page.next_checkpoint is None:
             break
         if page.next_checkpoint in used:
@@ -279,7 +340,7 @@ async def _publish(
         used.add(page.next_checkpoint)
         checkpoint = page.next_checkpoint
     tombstones = await tombstone_missing(
-        runtime, source_id=source_id, seen=seen, observed_at=observed_at
+        runtime, source_id=source_id, seen=seen, observed_at=observed_at, guard=guard
     )
     requeued = await requeue_unfinished_purges(
         runtime, source_id=source_id, now=observed_at
@@ -308,6 +369,7 @@ async def _revoke_first(
     source_id: SourceId,
     observed_at: datetime,
     run_id: SynchronizationRunId,
+    guard: WriteGuard | None,
 ) -> set[str]:
     """Narrow every record whose new access leaves a reader out.
 
@@ -334,6 +396,7 @@ async def _revoke_first(
             readers=access.readers,
             observed_at=observed_at,
             run_id=run_id,
+            guard=guard,
         ):
             narrowed.add(record.external_id)
     return narrowed

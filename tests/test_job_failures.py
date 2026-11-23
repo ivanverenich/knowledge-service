@@ -14,7 +14,11 @@ from knowledge_service.embeddings.port import (
     RejectionReason,
 )
 from knowledge_service.identifiers import JobId
-from knowledge_service.ingestion.sources import SourceUnauthorized, SourceUnavailable
+from knowledge_service.ingestion.sources import (
+    SourceUnauthorized,
+    SourceUnavailable,
+    SynchronizationSuperseded,
+)
 from knowledge_service.job_failures import (
     JobFailure,
     RetryPolicy,
@@ -55,6 +59,7 @@ def database_error(
     [
         (SourceUnavailable("the wiki is down"), JobFailure.SOURCE_UNAVAILABLE),
         (SourceUnauthorized("token expired"), JobFailure.SOURCE_REFUSED),
+        (SynchronizationSuperseded("newer pass"), JobFailure.SUPERSEDED),
         (
             OperationalError("SELECT 1", None, ConnectionError("lost")),
             JobFailure.DATABASE_UNAVAILABLE,

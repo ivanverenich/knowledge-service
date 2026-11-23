@@ -33,6 +33,7 @@ from knowledge_service.audit import (
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document, DocumentAvailability
 from knowledge_service.identifiers import AuditEventId, DocumentId, JobId, SourceId
+from knowledge_service.ingestion.fencing import WriteGuard
 from knowledge_service.job_failures import (
     DEFAULT_RETRY_POLICY,
     RetryPolicy,
@@ -74,17 +75,21 @@ async def tombstone_missing(
     source_id: SourceId,
     seen: Collection[str],
     observed_at: datetime,
+    guard: WriteGuard | None = None,
 ) -> tuple[Tombstone, ...]:
     """Tombstone every available Document of a Source whose ID is not in `seen`.
 
     `seen` must hold every external ID of one complete pass over the Source;
     after a partial pass, documents that were simply not reached yet would be
     tombstoned. A Document updated after `observed_at` was seen by a later
-    observation, so it is kept.
+    observation, so it is kept. `guard` runs first in the transaction;
+    raising from it tombstones nothing.
     """
     seen = frozenset(seen)
     tombstones: list[Tombstone] = []
     async with runtime.transaction() as connection:
+        if guard is not None:
+            await guard(connection)
         available = await load_available_documents(connection, source_id=source_id)
         for candidate in available:
             if candidate.provenance.external_id in seen:

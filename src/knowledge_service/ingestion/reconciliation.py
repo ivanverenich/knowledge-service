@@ -57,6 +57,7 @@ from knowledge_service.identifiers import (
 from knowledge_service.ingestion.audit_events import access_event
 from knowledge_service.ingestion.chunking import chunk_by_structure
 from knowledge_service.ingestion.deletions import availability_event
+from knowledge_service.ingestion.fencing import WriteGuard
 from knowledge_service.ingestion.fingerprints import (
     authorization_fingerprint,
     content_fingerprint,
@@ -107,13 +108,15 @@ async def reconcile_document(
     readers: Sequence[Subject],
     observed_at: datetime,
     run_id: SynchronizationRunId | None = None,
+    guard: WriteGuard | None = None,
 ) -> Reconciliation:
     """Publish one observation of a document, writing only what changed.
 
     `readers` are the normalized subjects who may read it; an empty sequence
     means nobody may. `run_id` names the Synchronization Run in the audit
     event of a grant change. An observation older than the stored version
-    raises `InvalidDocument`, and nothing is written.
+    raises `InvalidDocument`, and nothing is written. `guard` runs first in
+    the transaction; raising from it writes nothing.
     """
     provenance = normalized.provenance
     content = content_fingerprint(normalized.parsed)
@@ -123,6 +126,8 @@ async def reconcile_document(
         document_id=provisional, grants=_grants(provisional, readers, observed_at)
     )
     async with runtime.transaction() as connection:
+        if guard is not None:
+            await guard(connection)
         # Lock the stored row: a concurrent run of the same document waits
         # here until this one commits, then decides from what it committed.
         stored = await load_document(
@@ -205,6 +210,7 @@ async def narrow_access(
     readers: Sequence[Subject],
     observed_at: datetime,
     run_id: SynchronizationRunId | None = None,
+    guard: WriteGuard | None = None,
 ) -> bool:
     """Keep a stored Document only for readers both old and new access name.
 
@@ -214,6 +220,8 @@ async def narrow_access(
     normalizes again. Returns whether the Access Grants changed.
     """
     async with runtime.transaction() as connection:
+        if guard is not None:
+            await guard(connection)
         stored = await load_document(
             connection, source_id=source_id, external_id=external_id, for_update=True
         )

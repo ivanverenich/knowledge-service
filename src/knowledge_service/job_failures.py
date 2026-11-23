@@ -26,7 +26,11 @@ from knowledge_service.embeddings.port import (
     EmbeddingRequestRefused,
 )
 from knowledge_service.errors import database_unavailable
-from knowledge_service.ingestion.sources import SourceUnauthorized, SourceUnavailable
+from knowledge_service.ingestion.sources import (
+    SourceUnauthorized,
+    SourceUnavailable,
+    SynchronizationSuperseded,
+)
 from knowledge_service.jobs import Job
 from knowledge_service.model import (
     ChatModelError,
@@ -48,6 +52,8 @@ class JobFailure(StrEnum):
     MODEL_UNAVAILABLE = "model_unavailable"
     MODEL_REFUSED = "model_refused"
     PROGRAMMING_ERROR = "programming_error"
+    # A newer run of the same work has started; there is nothing to redo.
+    SUPERSEDED = "superseded"
 
     @property
     def transient(self) -> bool:
@@ -74,6 +80,8 @@ _MODEL_REFUSALS: Final = (
 
 def classify_job_failure(error: Exception) -> JobFailure:
     """The failure an attempt's error stands for; unknown errors are bugs."""
+    if isinstance(error, SynchronizationSuperseded):
+        return JobFailure.SUPERSEDED
     if isinstance(error, SourceUnavailable):
         return JobFailure.SOURCE_UNAVAILABLE
     if isinstance(error, SourceUnauthorized):

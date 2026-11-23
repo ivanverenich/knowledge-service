@@ -28,6 +28,14 @@ class SourceUnauthorized(SourceError):
     """The Source refused the configured credentials."""
 
 
+class SynchronizationSuperseded(SourceError):
+    """A pass that observed the Source at the same time or later has started.
+
+    This pass writes nothing more, and trying it again cannot help: only a
+    pass with a newer observation time may write the Source's Documents.
+    """
+
+
 class SourceKind(StrEnum):
     """The kind of origin a Source reads from."""
 

@@ -7,7 +7,7 @@ depends_on: ["M08-T04"]
 estimate: 75m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["coordination-lock module"]
-status: planned
+status: completed
 ---
 
 # M08-T05 — Coordinate with expiring locks

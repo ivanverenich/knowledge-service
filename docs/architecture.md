@@ -58,7 +58,7 @@ Each module above has its own package under `src/knowledge_service/`
 
 | Package | Module | Main entry points |
 |---|---|---|
-| `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source`, `normalize`, `reconcile_document`, `normalize_access` (`grant_normalization`, a Source's `user:<id>` and `group:<id>` principals to Access Grant subjects through its `PrincipalDirectory`, as the same UUIDv5 IDs the Authorization Context uses, and only to subjects and paths a token could carry; distinct, in a stable order, and failing closed: an unmapped or malformed principal grants nothing and is reported), `narrow_access` (a record that fails to normalize keeps its last good version only for readers its old and new access both name) |
+| `ingestion` | Source synchronization, Document normalization, Indexing | `synchronize_source` (claims the Source's fence and checks it in every write; an optional `heartbeat` runs after every page), `synchronize_source_exclusively` (`exclusive_sync`, the same pass while holding the Source's lease), `normalize`, `reconcile_document`, `normalize_access` (`grant_normalization`, a Source's `user:<id>` and `group:<id>` principals to Access Grant subjects through its `PrincipalDirectory`, as the same UUIDv5 IDs the Authorization Context uses, and only to subjects and paths a token could carry; distinct, in a stable order, and failing closed: an unmapped or malformed principal grants nothing and is reported), `narrow_access` (a record that fails to normalize keeps its last good version only for readers its old and new access both name) |
 | `ingestion.parsers` | Document normalization | `parse_text`, `parse_markdown`, `parse_html`, `parse_pdf` |
 | `embeddings` | Indexing (vectors) | `EmbeddingModel` (`port`), `OpenAIEmbeddingModel` (managed), `LocalEmbeddingModel` (BGE-M3 over HTTP, pinned revision), `SparseModel` (`sparse`, the port for sparse term weights; M05-T10 prototype only), `publish_document_embeddings`, the migration workflow |
 | `retrieval` | Retrieval | `search_similar_chunks`, `search_lexical_chunks` (routes each Question to English, `simple`, or both; `simple` reads a Question's topic words, without Ukrainian stop words, and needs two of them), `search_english_chunks`, `search_ukrainian_chunks`, `Candidate` (the fields every branch returns), `fuse_ranked_candidates` (Reciprocal Rank Fusion of branch Candidates), `retrieve_hybrid` (both branches at once under one deadline, fused, with per-branch diagnostics), `MetadataCondition`, `load_dataset` / `verify_corpus` / `run_dataset` / `compare_branches` (the bilingual seed Evaluation Dataset in `datasets/bilingual-seed/`, run lexical, dense, and fused), `recall_at` / `reciprocal_rank` (Recall@k and MRR), `compare_sparse` with `search_sparse_chunks` (M05-T10 prototype: BGE-M3 sparse weights against PostgreSQL word search; no default uses it), `Reranker` (`reranking`, the port for cross-encoder scores) with `rerank_candidates` (reorders eligible Candidates within the reranker's limits under one deadline) and `LocalReranker` (`local_reranker`, bge-reranker-v2-m3 over HTTP, pinned revision), `compare_reranking` (fused retrieval before and after reranking; no default reranks yet), `RankingModel` (`llm_reranking`, the port for a language model that returns a ranking) with `rerank_with_llm` (orders the top eligible Candidates under opaque IDs within a candidate and token budget, checks the ranking, keeps retrieval's order on any failure, and returns the billed usage) and `OpenAIRankingModel` (`openai_ranking`, a pinned model over the Responses API with Structured Outputs), `compare_llm_reranking` (the same comparison with fallbacks and cost), `compare_reranking_strategies` (no reranker, the cross-encoder, and the language model on the same Candidates of each case, with quality, latency, and cost per case), `classify_question` (`rewrite_classes`, one rewrite class per Question and the words any rewrite must keep; any word with a digit, or with `_`, `@`, `/`, `.`, `:`, or a backslash inside it, is `exact_identifier` and never rewritten) with `load_rewrite_cases` / `score_rewrite_cases` (`rewrite_cases`, the verified labels in `datasets/bilingual-seed/rewrite-classes.json` and how often the rules agree), `rewrite_question` (`query_rewriting`, the `RewriteModel` port: a Question is sent only when its class is switched on in a `RewritePolicy`, and its rewrite is used only when it keeps every word to keep, every typed identifier, and the stated language, and adds no search operator; otherwise the Question is searched as typed) with `OpenAIRewriteModel` (`openai_rewriting`, a pinned model over the Responses API; `QUERY_REWRITE_CLASSES` is the policy flag, empty by default), and `compare_rewriting` with `score_rewriting` / `check_rollout` (`rewrite_evaluation`, the gain per class on `datasets/bilingual-seed/rewrite-retrieval.json`; a class that harms a case, was not fully measured, or does not gain is not rolled out) |
@@ -107,7 +107,7 @@ The stored Job is the one layer that retries. Dramatiq retries nothing, model
 adapters keep their SDK retries off, and repository code never loops.
 `fail_attempt` (`job_failures`) classifies a failed attempt by its error as a
 Source, database, or model that is unavailable (transient) or refused
-(permanent), or a programming error (permanent), and stores that code. Only a
+(permanent), a programming error (permanent), or a pass superseded by a newer synchronization pass (permanent), and stores that code. Only a
 transient failure with attempts left gets a `retry_at`: half of a doubling
 backoff (30 seconds, capped at 15 minutes) plus a random share of the other
 half. `requeue_due_retries`, run first by every `make worker-relay` pass, is
@@ -122,6 +122,30 @@ and a cancellation are only backstops: the attempt's transaction rolls back
 and the Job waits as queued for M08-T08. A tombstoned Document whose last
 purge failed permanently is not given a new purge by later synchronization
 passes; one that ran out of attempts on a passing failure is.
+
+`leases` holds short-lived, owned locks in Redis. A lease is a key that
+expires on its own, holding its holder's random token; renewing and
+releasing compare that token inside Redis, so a holder whose lease expired
+cannot touch the next holder's. Only synchronization takes one, through
+`synchronize_source_exclusively` (`ingestion.exclusive_sync`): it stops a
+second pass of one Source from starting, so the Source is not paged and
+parsed twice. The lease is renewed after every page through
+`synchronize_source`'s `heartbeat` and given up however the pass ends.
+Correctness never depends on it: an older pass that finishes late could
+re-grant a reader a newer pass removed, roll content back, or tombstone a
+Document the newer pass saw, so every `synchronize_source` pass, leased or
+not, claims the Source's fence (`sources.synchronization_fence`) with its
+observation time, which works only when that time is newer than the fence,
+and every write of the pass (each narrowing, each reconciliation, the
+tombstones) first checks under a share lock on the Source's row that it
+still holds the fence. A newer claim waits for those writes, and every later
+write of the older pass is refused with `SynchronizationSuperseded`, which
+is never retried. An observation more than five minutes in the future is
+refused, so a bad clock cannot hold the fence. Purges, retries, the relay,
+and `enqueue_job` take no lease, because row locks, `SKIP LOCKED`, and the
+open-intent index already give them one effect. The lease errors are
+`SourceUnavailable`, so a Job that meets one is retried later, with a new
+observation time.
 
 `telemetry` decides what leaves the process as logs. `configure_telemetry`
 installs one root handler that writes JSON lines, and its `TelemetryFilter`
@@ -493,6 +517,6 @@ sequenceDiagram
 
 - LangGraph and multi-agent orchestration do not replace ordinary question answering.
 - MCP is an additional protocol adapter, not the owner of search logic.
-- Redis is not the durable record for conversations, jobs, or Documents.
+- Redis is not the durable record for conversations, jobs, or Documents, and a lease is a hint: correctness comes from PostgreSQL, such as a Source's synchronization fence, never from holding a lease.
 - Generated-answer caching is excluded until permission and staleness behavior is proven.
 - Kubernetes does not change application module interfaces.
