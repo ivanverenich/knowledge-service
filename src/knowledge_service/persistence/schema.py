@@ -2,7 +2,7 @@
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 
 metadata = sa.MetaData()
 
@@ -488,6 +488,55 @@ jobs = sa.Table(
         "retry_at",
         "job_id",
         postgresql_where=sa.text("retry_at is not null"),
+    ),
+)
+
+# One row per attempt of a Job: how far it got, and how it ended.
+job_attempts = sa.Table(
+    "job_attempts",
+    metadata,
+    sa.Column(
+        "job_id",
+        sa.Uuid(),
+        sa.ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("attempt", sa.Integer(), primary_key=True),
+    sa.Column("stage", sa.String(length=16), nullable=False),
+    sa.Column("processed", sa.BigInteger(), nullable=False),
+    sa.Column("changed", sa.BigInteger(), nullable=False),
+    sa.Column("skipped", sa.BigInteger(), nullable=False),
+    sa.Column("warnings", ARRAY(sa.String(length=32)), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("outcome", sa.String(length=32), nullable=True),
+    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint("attempt >= 1", name="ck_job_attempts_attempt"),
+    sa.CheckConstraint(
+        "stage in ('starting', 'reading', 'writing', 'cleaning_up')",
+        name="ck_job_attempts_stage",
+    ),
+    sa.CheckConstraint(
+        "processed >= 0 and changed >= 0 and skipped >= 0",
+        name="ck_job_attempts_counters",
+    ),
+    sa.CheckConstraint(
+        "warnings <@ array['unresolved_readers', 'quarantined_items']::varchar[]",
+        name="ck_job_attempts_warnings",
+    ),
+    sa.CheckConstraint(
+        "outcome is null or outcome in ('succeeded', 'succeeded_with_warnings',"
+        " 'retry_scheduled', 'superseded', 'failed')",
+        name="ck_job_attempts_outcome",
+    ),
+    sa.CheckConstraint(
+        "(outcome is null) = (finished_at is null)",
+        name="ck_job_attempts_finished_at",
+    ),
+    sa.CheckConstraint(
+        "heartbeat_at >= started_at and (finished_at is null"
+        " or finished_at >= heartbeat_at)",
+        name="ck_job_attempts_times",
     ),
 )
 

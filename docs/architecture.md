@@ -78,6 +78,11 @@ before they read the body, and refuse with 403 otherwise.
 `DatabaseConversationStore` (`answering.conversation_store`), which passes
 the token's User as the owner and returns nothing, so the response is the same whether the
 Conversation was deleted, missing, or another User's.
+`GET /v1/jobs/{job_id}` requires `start_synchronization_runs` before it
+parses the ID, and shows a synchronization Job with its newest attempt
+through `DatabaseJobReports` (`job_reporting`), read from one snapshot. A
+missing Job and a Job of any other kind give the same 404, so a purge's
+target, such as a Conversation, is never shown.
 
 `job_dispatch` puts a Job on the queue without ever losing it. `submit_job`
 commits the Job to PostgreSQL first, then sends one message naming only its
@@ -122,6 +127,24 @@ and a cancellation are only backstops: the attempt's transaction rolls back
 and the Job waits as queued for M08-T08. A tombstoned Document whose last
 purge failed permanently is not given a new purge by later synchronization
 passes; one that ran out of attempts on a passing failure is.
+
+Each attempt of a Job has its own progress row (`job_progress`,
+`persistence.job_attempts`): a stage, three counters (processed, changed,
+skipped), warning codes, a heartbeat, and, once it ends, a typed outcome
+(`succeeded`, `succeeded_with_warnings`, `retry_scheduled`, `superseded`, or
+`failed`). A handler stores the row with its claim (`begin_attempt`),
+reports totals so far with `report_progress`, each report in its own
+transaction, and ends it with `finish_attempt` in the transaction that
+stores the finished Job. A report shares the lock of the Job's row only
+while the Job runs that attempt, so a worker that lost its attempt cannot
+write; counters and warnings never go down and the heartbeat never goes
+back, both in the domain and in the `UPDATE`'s own conditions; a report
+stamped more than five minutes ahead of the database's clock is refused.
+Ending never fails on what a report stored: higher counters stay, and a
+heartbeat later than the Job's finish time is pulled back to it. A worker
+presumed dead that ends an attempt its Job has moved past gets
+`AttemptNotCurrent`, so its whole transaction rolls back. Nothing here knows
+about queue messages; a later attempt never touches an earlier one's row.
 
 `leases` holds short-lived, owned locks in Redis. A lease is a key that
 expires on its own, holding its holder's random token; renewing and
@@ -261,6 +284,7 @@ The rules each table enforces:
 | `message_references` | One row per `(message_id, position)` and per `(message_id, chunk_id)`; `content_version >= 1`; removed with its Message. No foreign key to `chunks`, so a reference outlives the Chunk it names and History can tell that it is gone. |
 | `message_feedback` | One rating per `(message_id, user_id)`, replaced when the same User rates again. |
 | `jobs` | A status that agrees with the timestamps it carries; a bounded attempt count; a capped error code; a retry time only on a failed Job with attempts left, never before it finished; at most one open Job (queued, running, or failed with a retry scheduled) per kind and target. |
+| `job_attempts` | One row per `(job_id, attempt)`, removed with its Job; a known stage, warnings, and outcome; counters never below zero; an outcome exactly when it has a finish time; a heartbeat no earlier than the start and no later than the finish. |
 | `audit_events` | An action, target kind, decision (`allowed` or `denied`), and outcome from fixed lists, with optional request and Synchronization Run IDs; no raw content: metadata keys are short names, string values one plain word, and the bag is capped at 1024 bytes. Rows are only ever inserted. |
 | `evaluation_runs` | An artifact location only once the run has succeeded. |
 

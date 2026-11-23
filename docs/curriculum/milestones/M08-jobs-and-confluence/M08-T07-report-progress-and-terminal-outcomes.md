@@ -7,7 +7,7 @@ depends_on: ["M08-T06"]
 estimate: 75m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["job progress model"]
-status: planned
+status: completed
 ---
 
 # M08-T07 — Report progress and terminal outcomes

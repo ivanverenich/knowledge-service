@@ -19,19 +19,27 @@ from knowledge_service.answering.streaming import (
     AnswerStream,
     AnswerStreamer,
 )
-from knowledge_service.contracts import Answer, ErrorResponse, Question
+from knowledge_service.contracts import (
+    Answer,
+    ErrorResponse,
+    JobAttemptProgress,
+    Question,
+    SynchronizationJobReport,
+)
 from knowledge_service.errors import (
     FailureKind,
     classify_failure,
     policy_for,
 )
-from knowledge_service.identifiers import ConversationId, UserId
+from knowledge_service.identifiers import ConversationId, JobId, UserId
 from knowledge_service.identity.context import (
     AuthenticationError,
     Caller,
     Unauthenticated,
 )
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
+from knowledge_service.job_reporting import JobReport
+from knowledge_service.jobs import JobKind
 from knowledge_service.roles import Operation, PermissionDenied, require
 from knowledge_service.workflow import AnswerWorkflow
 
@@ -67,6 +75,53 @@ class ConversationStore(Protocol):
     async def delete(
         self, *, owner_id: UserId, conversation_id: ConversationId, request_id: UUID
     ) -> None: ...
+
+
+class JobReports(Protocol):
+    """Jobs and the progress of their newest attempt.
+
+    `DatabaseJobReports` is the implementation. `load` returns None for a
+    Job that does not exist or is not one of `kinds`.
+    """
+
+    async def load(
+        self, *, job_id: JobId, kinds: frozenset[JobKind]
+    ) -> JobReport | None: ...
+
+
+# The Jobs the job endpoint shows: those a Synchronization Run starter owns.
+VISIBLE_JOB_KINDS = frozenset({JobKind.SYNCHRONIZE_SOURCE})
+
+
+def synchronization_job_report(report: JobReport) -> SynchronizationJobReport:
+    """The API view of a synchronization Job and its newest attempt."""
+    job, latest = report.job, report.latest_attempt
+    return SynchronizationJobReport(
+        job_id=job.job_id.value,
+        source_id=job.target_id,
+        status=job.status.value,
+        failed_attempts=job.attempt,
+        max_attempts=job.max_attempts,
+        queued_at=job.queued_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        error_code=job.last_error_code,
+        retry_at=job.retry_at,
+        latest_attempt=None
+        if latest is None
+        else JobAttemptProgress(
+            attempt=latest.attempt,
+            stage=latest.stage.value,
+            processed=latest.counters.processed,
+            changed=latest.counters.changed,
+            skipped=latest.counters.skipped,
+            warnings=sorted(warning.value for warning in latest.warnings),
+            started_at=latest.started_at,
+            heartbeat_at=latest.heartbeat_at,
+            outcome=None if latest.outcome is None else latest.outcome.value,
+            finished_at=latest.finished_at,
+        ),
+    )
 
 
 class _NotAuthenticated(Exception):
@@ -220,6 +275,7 @@ def create_app(
     streamer: AnswerStreamer | None = None,
     authenticator: RequestAuthenticator | None = None,
     conversations: ConversationStore | None = None,
+    job_reports: JobReports | None = None,
 ) -> FastAPI:
     """The HTTP application.
 
@@ -441,6 +497,42 @@ def create_app(
             return failure_response(kind=classify_failure(error), request_id=request_id)
         # The same whether it was deleted, missing, or another User's.
         return Response(status_code=204)
+
+    @app.get("/v1/jobs/{job_id}", response_model=SynchronizationJobReport)
+    async def read_synchronization_job(
+        request: Request, job_id: str
+    ) -> SynchronizationJobReport | JSONResponse:
+        # Who, then whether they may, then which Job.
+        caller = await authenticate(request)
+        require(caller.roles, Operation.START_SYNCHRONIZATION_RUNS)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(job_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if job_reports is None:
+            return error_response(
+                status_code=503,
+                code="jobs_unavailable",
+                message="Jobs are unavailable",
+                request_id=request_id,
+            )
+        try:
+            report = await job_reports.load(
+                job_id=JobId.parse(job_id), kinds=VISIBLE_JOB_KINDS
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.error("job read failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        if report is None or report.job.kind not in VISIBLE_JOB_KINDS:
+            # The same for a missing Job and for a Job of another kind.
+            return error_response(
+                status_code=404,
+                code="job_not_found",
+                message="No such synchronization job",
+                request_id=request_id,
+            )
+        return synchronization_job_report(report)
 
     return app
 

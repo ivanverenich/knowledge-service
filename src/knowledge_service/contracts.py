@@ -1,5 +1,6 @@
 """Pydantic models for the knowledge service."""
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -52,3 +53,34 @@ class ErrorResponse(BaseModel):
     code: str
     message: str
     request_id: UUID
+
+
+class JobAttemptProgress(BaseModel):
+    """How far one attempt of a Job got, and how it ended."""
+
+    attempt: int = Field(ge=1)
+    stage: str
+    processed: int = Field(ge=0)
+    changed: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    warnings: list[str]
+    started_at: datetime
+    heartbeat_at: datetime
+    outcome: str | None
+    finished_at: datetime | None
+
+
+class SynchronizationJobReport(BaseModel):
+    """A synchronization Job and the progress of its newest attempt."""
+
+    job_id: UUID
+    source_id: UUID
+    status: str
+    failed_attempts: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_code: str | None
+    retry_at: datetime | None
+    latest_attempt: JobAttemptProgress | None

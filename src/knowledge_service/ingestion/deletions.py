@@ -39,6 +39,7 @@ from knowledge_service.job_failures import (
     RetryPolicy,
     fail_attempt,
 )
+from knowledge_service.job_progress import JobCounters
 from knowledge_service.jobs import (
     InvalidJob,
     Job,
@@ -54,6 +55,7 @@ from knowledge_service.persistence.documents import (
     load_unpurged_documents,
     upsert_document,
 )
+from knowledge_service.persistence.job_attempts import finish_attempt
 from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
 
 
@@ -185,6 +187,7 @@ async def purge_document_chunks(
                         document_id=DocumentId(job.target_id),
                         for_update=True,
                     )
+                    purged = False
                     if (
                         document is not None
                         and document.availability is DocumentAvailability.TOMBSTONED
@@ -192,11 +195,22 @@ async def purge_document_chunks(
                         await delete_chunks(
                             connection, document_id=document.document_id
                         )
+                        purged = True
             except Exception as error:
                 cause = error
                 failed = fail_attempt(job, error, now=now, policy=retry_policy)
+                await finish_attempt(connection, job=failed)
                 return await save_job(connection, job=failed)
-            return await save_job(connection, job=job.succeed(finished_at=now))
+            succeeded = job.succeed(finished_at=now)
+            # One Document looked at: purged, or skipped as restored or gone.
+            await finish_attempt(
+                connection,
+                job=succeeded,
+                counters=JobCounters(
+                    processed=1, changed=int(purged), skipped=int(not purged)
+                ),
+            )
+            return await save_job(connection, job=succeeded)
     except InvalidJob:
         raise
     except Exception as error:
@@ -239,6 +253,7 @@ async def _record_lost_attempt(
         failed = fail_attempt(
             stored.start(started_at=now), cause, now=now, policy=retry_policy
         )
+        await finish_attempt(connection, job=failed)
         return await save_job(connection, job=failed)
 
 

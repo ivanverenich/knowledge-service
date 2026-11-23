@@ -7,6 +7,7 @@ an endpoint needs is refused before anything runs.
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ import pytest
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.generation import InvalidAnswerRequest
 from knowledge_service.app import create_app
+from knowledge_service.identifiers import JobId
 from knowledge_service.identity.context import (
     Authenticator,
     Caller,
@@ -23,6 +25,8 @@ from knowledge_service.identity.context import (
     user_id_for,
 )
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
+from knowledge_service.job_reporting import JobReport
+from knowledge_service.jobs import Job, JobKind
 from knowledge_service.roles import ApplicationRole, Operation
 from knowledge_service.workflow import AnswerWorkflow
 from test_authorization_context import (
@@ -439,6 +443,7 @@ ROUTES: dict[tuple[str, str], Operation | None] = {
     ("DELETE", "/v1/conversations/{conversation_id}"): (
         Operation.MANAGE_OWN_CONVERSATIONS
     ),
+    ("GET", "/v1/jobs/{job_id}"): Operation.START_SYNCHRONIZATION_RUNS,
 }
 PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
 # The routes that read a body, to check none is read before the role.
@@ -466,11 +471,22 @@ class Deleting:
         self.calls.append(request)
 
 
+class Reading:
+    """A Job store that records each Job it is asked for, and finds none."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def load(self, **request: Any) -> None:
+        self.calls.append(request)
+
+
 def full_app(
     source: Source,
     workflow: Any = None,
     tokens: dict[str, Any] | None = None,
     conversations: Deleting | None = None,
+    jobs: Reading | None = None,
 ) -> Any:
     """The app with every endpoint wired, so every route is real."""
     return create_app(
@@ -478,6 +494,7 @@ def full_app(
         streamer=streamer(Model(), source=source),
         authenticator=Authenticator(Verifier(tokens or TOKENS), POLICY),
         conversations=conversations or Deleting(),
+        job_reports=jobs or Reading(),
     )
 
 
@@ -503,21 +520,25 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
     roles: frozenset[ApplicationRole],
 ) -> None:
     source, workflow, conversations = Source(), Counting(), Deleting()
+    jobs = Reading()
     token = verified(realm_access={"roles": sorted(roles)})
-    app = full_app(source, workflow, {"token": token}, conversations)
+    app = full_app(source, workflow, {"token": token}, conversations, jobs)
     method, path = route
 
     async with client(app) as http:
         response = await http.request(
             method,
-            path.replace("{conversation_id}", str(uuid4())),
+            path.replace("{conversation_id}", str(uuid4())).replace(
+                "{job_id}", str(uuid4())
+            ),
             json={"text": QUESTION.text},
             headers={"Authorization": "Bearer token"},
         )
 
     allowed = bool(roles & MATRIX[operation])
     assert (response.status_code == 403) is not allowed
-    assert bool(source.readers or workflow.calls or conversations.calls) is allowed
+    reached = source.readers or workflow.calls or conversations.calls or jobs.calls
+    assert bool(reached) is allowed
 
 
 @pytest.mark.parametrize("path", WITH_BODY)
@@ -613,3 +634,29 @@ async def test_a_refusal_names_no_token_text_to_the_client_or_the_log(
         "request not authenticated: signature",
         "request not authenticated: missing",
     ]
+
+
+async def test_the_job_endpoint_shows_only_synchronization_jobs() -> None:
+    purge = Job.request(
+        job_id=JobId.new(),
+        kind=JobKind.PURGE_CONVERSATION,
+        target_id=uuid4(),
+        queued_at=datetime(2026, 11, 24, 9, 0, tzinfo=UTC),
+    )
+
+    class Careless(Reading):
+        """A Job store that forgets to filter by kind."""
+
+        async def load(self, **request: Any) -> JobReport:  # type: ignore[override]
+            self.calls.append(request)
+            return JobReport(job=purge, latest_attempt=None)
+
+    app = full_app(Source(), tokens={"token": TOKENS["staff-token"]}, jobs=Careless())
+    async with client(app) as http:
+        response = await http.get(
+            f"/v1/jobs/{purge.job_id.value}", headers={"Authorization": "Bearer token"}
+        )
+
+    # A purge's target, such as a Conversation, is never shown.
+    assert response.status_code == 404
+    assert str(purge.target_id) not in response.text

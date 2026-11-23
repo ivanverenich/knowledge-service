@@ -139,6 +139,23 @@ async def load_job(
     return _job_from(dict(record))
 
 
+async def lock_running_job(connection: AsyncConnection, *, job_id: JobId) -> Job | None:
+    """Share-lock a running Job's row, or return None if it is not running.
+
+    Only a running row is locked, so a refused caller never holds back the
+    relay, whose `SKIP LOCKED` would pass over a locked failed Job.
+    """
+    statement = (
+        sa.select(jobs)
+        .where(jobs.c.job_id == job_id.value, jobs.c.status == JobStatus.RUNNING.value)
+        .with_for_update(read=True)
+    )
+    record = (await connection.execute(statement)).mappings().one_or_none()
+    if record is None:
+        return None
+    return _job_from(dict(record))
+
+
 async def save_job(connection: AsyncConnection, *, job: Job) -> Job:
     """Store the status a Job has reached.
 
