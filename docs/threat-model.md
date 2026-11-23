@@ -74,7 +74,7 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 | A file removed or unreadable deletes or keeps the wrong Documents | An unreadable folder is unavailable, not deleted; a failed pass tombstones nothing | Incremental sync (M08-T10) |
 | A Document hides control or invisible characters to steer the model | The PDF parser removes them; the text, Markdown, and HTML parsers keep them, and the prompt escapes every one; whatever the model then writes passes the Answer's content checks | None |
 | A huge, deeply nested, or compressed file exhausts a worker | Parsers refuse text over their character limit, HTML nested too deep, and PDF pages past their size limit, with typed errors | None |
-| A replayed job writes twice | Jobs are stored with typed errors and bounded retries | Job idempotency (M08-T03) |
+| A replayed job writes twice | At most one open Job per kind and target, enforced by a partial unique index; a repeated request returns the open Job; a handler claims a queued Job under a row lock and stores its outcome in the same transaction, so a duplicate or concurrent message runs nothing and reports the stored outcome | A failed Job with attempts left runs again only when the same work is requested again, until retries are owned (M08-T04); a message for an earlier attempt can start the next one (M08-T04) |
 
 ### Retrieval
 

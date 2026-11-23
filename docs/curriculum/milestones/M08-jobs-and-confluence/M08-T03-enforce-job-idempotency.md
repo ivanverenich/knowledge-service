@@ -7,7 +7,7 @@ depends_on: ["M08-T02"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["idempotency policy"]
-status: planned
+status: completed
 ---
 
 # M08-T03 — Enforce job idempotency

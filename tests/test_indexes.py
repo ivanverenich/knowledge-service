@@ -19,6 +19,7 @@ ACCESS_PATTERN_INDEXES = {
     "ix_jobs_unpublished_queued_at",
     "ix_synchronization_runs_source_started_at",
     "uq_embedding_spaces_current",
+    "uq_jobs_open_intent",
     "uq_synchronization_runs_running_source",
 }
 

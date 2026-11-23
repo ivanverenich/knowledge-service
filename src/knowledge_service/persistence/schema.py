@@ -410,6 +410,12 @@ message_feedback = sa.Table(
 )
 
 
+# A Job that can still do its work: queued, running, or failed with attempts
+# left. At most one such Job exists per kind and target (its intent).
+OPEN_JOB_PREDICATE = (
+    "status in ('queued', 'running') or (status = 'failed' and attempt < max_attempts)"
+)
+
 jobs = sa.Table(
     "jobs",
     metadata,
@@ -453,6 +459,13 @@ jobs = sa.Table(
         "queued_at",
         "job_id",
         postgresql_where=sa.text("status = 'queued' and published_at is null"),
+    ),
+    sa.Index(
+        "uq_jobs_open_intent",
+        "kind",
+        "target_id",
+        unique=True,
+        postgresql_where=sa.text(OPEN_JOB_PREDICATE),
     ),
 )
 

@@ -38,8 +38,8 @@ async def stored_job(runtime: DatabaseRuntime, job_id: JobId) -> Job:
     return job
 
 
-async def tombstoned_with_purge(runtime: DatabaseRuntime) -> tuple[Document, JobId]:
-    """A tombstoned Document that still has Chunks, and its stored purge Job."""
+async def offer_retired(runtime: DatabaseRuntime, *, observed_at: datetime) -> Document:
+    """Reconcile the one Document these tests use, as its Source offers it."""
     normalized = normalize(
         SourceRecord.present(
             external_id="retired.md",
@@ -52,12 +52,18 @@ async def tombstoned_with_purge(runtime: DatabaseRuntime) -> tuple[Document, Job
     )
     assert isinstance(normalized, NormalizedDocument)
     result = await reconcile_document(
-        runtime, normalized, readers=[Subject.public()], observed_at=OBSERVED_AT
+        runtime, normalized, readers=[Subject.public()], observed_at=observed_at
     )
+    return result.document
+
+
+async def tombstoned_with_purge(runtime: DatabaseRuntime) -> tuple[Document, JobId]:
+    """A tombstoned Document that still has Chunks, and its stored purge Job."""
+    document = await offer_retired(runtime, observed_at=OBSERVED_AT)
     [tombstone] = await tombstone_missing(
         runtime, source_id=SOURCE_ID, seen=set(), observed_at=OBSERVED_AT
     )
-    return result.document, tombstone.purge_job_id
+    return document, tombstone.purge_job_id
 
 
 async def chunk_count(runtime: DatabaseRuntime, document_id: DocumentId) -> int:

@@ -27,6 +27,18 @@ class JobNotRetryable(InvalidJob):
     """A failed Job has already used every attempt it is allowed."""
 
 
+class JobAlreadyClaimed(InvalidJob):
+    """A Job is no longer queued, so this delivery must not run it again.
+
+    `job` is the Job as stored when the claim was refused: the outcome an
+    earlier delivery already produced, or is producing.
+    """
+
+    def __init__(self, job: Job) -> None:
+        super().__init__(f"only a queued job can run, not a {job.status} one")
+        self.job = job
+
+
 class JobKind(StrEnum):
     """What a Job was queued to do."""
 
@@ -101,6 +113,18 @@ class Job:
             raise InvalidJob("only a failed job carries an error code")
         if self.last_error_code is not None and not self.last_error_code.strip():
             raise InvalidJob("an error code must not be empty")
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this Job can still do its work.
+
+        A Job is open while it is queued or running, and while it has failed
+        with attempts left, because it may still be queued again. At most one
+        open Job exists per kind and target.
+        """
+        if self.status is JobStatus.FAILED:
+            return self.attempt < self.max_attempts
+        return self.status is not JobStatus.SUCCEEDED
 
     @classmethod
     def request(

@@ -65,10 +65,16 @@ class PublishOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Submission:
-    """A stored Job, and whether its message was sent yet."""
+    """The open Job for the submitted intent, and what this call did.
+
+    `duplicate` is True when an open Job with the same kind and target
+    already existed: that Job is returned and nothing new is stored.
+    `published` is True only when this call sent its message.
+    """
 
     job_id: JobId
     published: bool
+    duplicate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +129,9 @@ async def submit_job(
     """Store a new queued Job, then try once to publish it.
 
     Once this returns, the Job is stored, whether or not it was published.
-    An unpublished Job is sent by a later `publish_pending_jobs`.
+    An unpublished Job is sent by a later `publish_pending_jobs`. When an
+    open Job with the same kind and target exists, it is returned instead,
+    and is published only if no message names it yet.
     """
     _require_utc(now)
     if job.status is not JobStatus.QUEUED or job.attempt != 0:
@@ -131,21 +139,27 @@ async def submit_job(
     if job.kind not in publisher.kinds:
         raise UnsupportedJobKind(f"no worker runs {job.kind} jobs")
     async with runtime.transaction() as connection:
-        await enqueue_job(connection, job)
+        enqueued = await enqueue_job(connection, job)
+    job_id = enqueued.job.job_id
+    duplicate = not enqueued.created
     try:
         outcome = await publish_job(
-            runtime, job_id=job.job_id, publisher=publisher, now=now
+            runtime, job_id=job_id, publisher=publisher, now=now
         )
     except Exception as error:
         # The Job is committed; the relay will publish it. Only the type is
         # logged, because a message could quote a URL or a secret.
         logger.warning(
             "job %s stored but not published: %s",
-            job.job_id.value,
+            job_id.value,
             type(error).__name__,
         )
-        return Submission(job_id=job.job_id, published=False)
-    return Submission(job_id=job.job_id, published=outcome is PublishOutcome.PUBLISHED)
+        return Submission(job_id=job_id, published=False, duplicate=duplicate)
+    return Submission(
+        job_id=job_id,
+        published=outcome is PublishOutcome.PUBLISHED,
+        duplicate=duplicate,
+    )
 
 
 async def publish_pending_jobs(

@@ -361,9 +361,11 @@ async def test_a_duplicate_message_runs_the_job_once(
     first = await run_stored_job(runtime, purge_id, now=NOW)
     second = await run_stored_job(runtime, purge_id, now=LATER)
 
-    assert first is not None
-    assert first.status is JobStatus.SUCCEEDED
-    assert second is None
+    assert not first.duplicate
+    assert first.job.status is JobStatus.SUCCEEDED
+    # The duplicate reports the outcome the first message produced.
+    assert second.duplicate
+    assert second.job == first.job
     assert await chunk_count(runtime, document.document_id) == 0
     stored = await stored_job(runtime, purge_id)
     assert (stored.status, stored.attempt, stored.finished_at) == (
@@ -383,8 +385,10 @@ async def test_two_messages_at_once_run_the_job_once(
         run_stored_job(runtime, purge_id, now=NOW),
     )
 
-    assert sum(result is not None for result in results) == 1
-    assert (await stored_job(runtime, purge_id)).status is JobStatus.SUCCEEDED
+    assert sorted(result.duplicate for result in results) == [False, True]
+    stored = await stored_job(runtime, purge_id)
+    assert stored.status is JobStatus.SUCCEEDED
+    assert [result.job for result in results] == [stored, stored]
 
 
 async def test_a_message_for_no_stored_job_is_refused(

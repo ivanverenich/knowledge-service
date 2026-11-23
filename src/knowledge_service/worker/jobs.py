@@ -21,7 +21,7 @@ from knowledge_service.database import DatabaseRuntime, create_database_runtime
 from knowledge_service.identifiers import JobId
 from knowledge_service.ingestion.deletions import purge_document_chunks
 from knowledge_service.job_dispatch import PublishFailed
-from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
+from knowledge_service.jobs import Job, JobAlreadyClaimed, JobKind, JobStatus
 from knowledge_service.persistence.jobs import load_job
 from knowledge_service.settings import Settings
 from knowledge_service.worker.broker import QueueName, WorkerConfigurationError
@@ -120,14 +120,26 @@ class DramatiqJobPublisher:
             raise PublishFailed("the queue did not accept the message") from error
 
 
+@dataclass(frozen=True, slots=True)
+class JobOutcome:
+    """A Job as stored after a message for it, and whether it was a duplicate.
+
+    For a duplicate, `job` is the outcome an earlier message produced (or is
+    producing), so every message for one Job reports the same result.
+    """
+
+    job: Job
+    duplicate: bool
+
+
 async def run_stored_job(
     runtime: DatabaseRuntime,
     job_id: JobId,
     *,
     now: datetime,
     handlers: Mapping[JobKind, JobHandler] = HANDLERS,
-) -> Job | None:
-    """Run a stored queued Job once; None when the message was a duplicate.
+) -> JobOutcome:
+    """Run a stored queued Job once, or return what an earlier message did.
 
     A Job that is no longer queued was run, or is running, because of an
     earlier message for it, so this message changes nothing.
@@ -137,23 +149,22 @@ async def run_stored_job(
     if job is None:
         raise InvalidJobMessage("the message names no stored job")
     if job.status is not JobStatus.QUEUED:
-        logger.info("job %s is %s; duplicate message ignored", job_id.value, job.status)
-        return None
+        return _duplicate(job)
     handler = handlers.get(job.kind)
     if handler is None:
         raise InvalidJobMessage(f"no handler runs {job.kind} jobs")
     try:
         ran = await handler(runtime, job_id=job_id, now=now)
-    except InvalidJob:
-        # Another message for the same Job claimed it first.
-        async with runtime.transaction() as connection:
-            current = await load_job(connection, job_id=job_id)
-        if current is not None and current.status is not JobStatus.QUEUED:
-            logger.info("job %s was claimed by another message", job_id.value)
-            return None
-        raise
+    except JobAlreadyClaimed as claimed:
+        # Another message claimed it first; the claim waited for its commit.
+        return _duplicate(claimed.job)
     logger.info("job %s (%s) ran: %s", job_id.value, ran.kind, ran.status)
-    return ran
+    return JobOutcome(job=ran, duplicate=False)
+
+
+def _duplicate(job: Job) -> JobOutcome:
+    logger.info("job %s is %s; duplicate message", job.job_id.value, job.status)
+    return JobOutcome(job=job, duplicate=True)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,16 +1,34 @@
-"""Store queued Jobs and whether a message has named them."""
+"""Store queued Jobs, at most one open Job per intent, and their messages."""
 
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Final, cast
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.identifiers import JobId
 from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
-from knowledge_service.persistence.schema import jobs
+from knowledge_service.persistence.schema import OPEN_JOB_PREDICATE, jobs
+
+# An open Job can finish between our insert and our read of it; each such
+# race costs one round, and three in a row mean something keeps closing Jobs.
+MAX_ENQUEUE_ROUNDS: Final = 3
+
+
+class JobIntentContended(RuntimeError):
+    """The open Job for an intent kept finishing while a new one was requested."""
+
+
+@dataclass(frozen=True, slots=True)
+class Enqueued:
+    """The open Job for an intent, and whether this request created it."""
+
+    job: Job
+    created: bool
 
 
 def _job_row(job: Job) -> dict[str, object]:
@@ -49,10 +67,67 @@ def _job_from(record: Mapping[str, object]) -> Job:
     )
 
 
-async def enqueue_job(connection: AsyncConnection, job: Job) -> JobId:
-    """Store a queued Job."""
-    await connection.execute(sa.insert(jobs).values(_job_row(job)))
-    return job.job_id
+def open_job() -> sa.ColumnElement[bool]:
+    """Rows of Jobs that can still do their work; see `Job.is_open`."""
+    return sa.or_(
+        jobs.c.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
+        sa.and_(
+            jobs.c.status == JobStatus.FAILED.value,
+            jobs.c.attempt < jobs.c.max_attempts,
+        ),
+    )
+
+
+async def load_open_job(
+    connection: AsyncConnection,
+    *,
+    kind: JobKind,
+    target_id: UUID,
+    for_update: bool = False,
+) -> Job | None:
+    """The open Job of this kind for this target, if there is one."""
+    statement = sa.select(jobs).where(
+        jobs.c.kind == kind.value, jobs.c.target_id == target_id, open_job()
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    record = (await connection.execute(statement)).mappings().one_or_none()
+    if record is None:
+        return None
+    return _job_from(dict(record))
+
+
+async def enqueue_job(connection: AsyncConnection, job: Job) -> Enqueued:
+    """Store new queued `job`, unless an open Job with the same intent exists.
+
+    The intent is the Job's kind and target. When an open Job for it exists,
+    that Job is returned and `job` is not stored, so asking twice for the
+    same work, even at the same moment, leaves one Job to do it. An open Job
+    that failed with attempts left is queued again for its next attempt,
+    because the new request still wants the work done.
+    """
+    if job.status is not JobStatus.QUEUED or job.attempt != 0:
+        raise InvalidJob("only a new queued job can be enqueued")
+    for _ in range(MAX_ENQUEUE_ROUNDS):
+        inserted = await connection.scalar(
+            insert(jobs)
+            .values(_job_row(job))
+            .on_conflict_do_nothing(
+                index_elements=[jobs.c.kind, jobs.c.target_id],
+                index_where=sa.text(OPEN_JOB_PREDICATE),
+            )
+            .returning(jobs.c.job_id)
+        )
+        if inserted is not None:
+            return Enqueued(job=job, created=True)
+        existing = await load_open_job(
+            connection, kind=job.kind, target_id=job.target_id
+        )
+        if existing is not None and existing.status is JobStatus.FAILED:
+            existing = await _queue_again(connection, job)
+        if existing is not None:
+            return Enqueued(job=existing, created=False)
+    raise JobIntentContended(f"the open {job.kind} job kept changing")
 
 
 async def load_job(
@@ -83,6 +158,17 @@ async def save_job(connection: AsyncConnection, *, job: Job) -> Job:
     statement = sa.update(jobs).where(jobs.c.job_id == job.job_id.value).values(values)
     await connection.execute(statement)
     return job
+
+
+async def _queue_again(connection: AsyncConnection, job: Job) -> Job | None:
+    """Queue the failed open Job for `job`'s intent again, under its row lock."""
+    existing = await load_open_job(
+        connection, kind=job.kind, target_id=job.target_id, for_update=True
+    )
+    if existing is None or existing.status is not JobStatus.FAILED:
+        # Another request queued it again first, or it is gone: use what is.
+        return existing
+    return await save_job(connection, job=existing.retry(queued_at=job.queued_at))
 
 
 def _unpublished() -> sa.ColumnElement[bool]:

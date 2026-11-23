@@ -33,7 +33,13 @@ from knowledge_service.audit import (
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.documents import Document, DocumentAvailability
 from knowledge_service.identifiers import AuditEventId, DocumentId, JobId, SourceId
-from knowledge_service.jobs import InvalidJob, Job, JobKind, JobStatus
+from knowledge_service.jobs import (
+    InvalidJob,
+    Job,
+    JobAlreadyClaimed,
+    JobKind,
+    JobStatus,
+)
 from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.chunks import delete_chunks
 from knowledge_service.persistence.documents import (
@@ -49,7 +55,10 @@ PURGE_FAILED = "chunk_purge_failed"
 
 @dataclass(frozen=True, slots=True)
 class Tombstone:
-    """One Document made unavailable, and the Job that will purge its Chunks."""
+    """One Document made unavailable, and the open Job that will purge its Chunks.
+
+    When a purge of the Document was already open, that Job is reused.
+    """
 
     document_id: DocumentId
     external_id: str
@@ -112,7 +121,11 @@ async def requeue_unfinished_purges(
     source_id: SourceId,
     now: datetime,
 ) -> tuple[JobId, ...]:
-    """Queue a new purge for each tombstoned Document no purge can still clean."""
+    """Queue a purge for each tombstoned Document no open purge can clean.
+
+    Two calls at the same moment leave one open purge per Document; both
+    return its ID.
+    """
     async with runtime.transaction() as connection:
         unpurged = await load_unpurged_documents(connection, source_id=source_id)
         queued = [
@@ -133,36 +146,30 @@ async def purge_document_chunks(
     The Chunks are deleted only if the Document is still tombstoned; a
     Document restored in the meantime keeps its new Chunks. If deleting fails,
     nothing is deleted, the Job is stored as failed with `PURGE_FAILED`, and
-    `Job.retry` can queue it again.
+    `Job.retry` can queue it again. Either way the outcome commits with the
+    claim, so another delivery waiting on the claim sees it, never `queued`.
     """
-    try:
-        async with runtime.transaction() as connection:
-            job = await _claim(connection, job_id=job_id, now=now)
-            # Lock the row, so a restore cannot interleave with the delete.
-            document = await load_document_by_id(
-                connection,
-                document_id=DocumentId(job.target_id),
-                for_update=True,
-            )
-            if (
-                document is not None
-                and document.availability is DocumentAvailability.TOMBSTONED
-            ):
-                await delete_chunks(connection, document_id=document.document_id)
-            return await save_job(connection, job=job.succeed(finished_at=now))
-    except InvalidJob:
-        raise
-    except Exception:
-        # The failed transaction rolled back; record the failure separately,
-        # unless another worker has finished the Job in the meantime.
-        async with runtime.transaction() as connection:
-            stored = await load_job(connection, job_id=job_id, for_update=True)
-            if stored is None or stored.status is not JobStatus.QUEUED:
-                raise
-            failed = stored.start(started_at=now).fail(
-                error_code=PURGE_FAILED, finished_at=now
-            )
+    async with runtime.transaction() as connection:
+        job = await _claim(connection, job_id=job_id, now=now)
+        try:
+            # A savepoint: a failed delete is undone, while the claim keeps
+            # its row lock until the failure below is stored.
+            async with connection.begin_nested():
+                # Lock the row, so a restore cannot interleave with the delete.
+                document = await load_document_by_id(
+                    connection,
+                    document_id=DocumentId(job.target_id),
+                    for_update=True,
+                )
+                if (
+                    document is not None
+                    and document.availability is DocumentAvailability.TOMBSTONED
+                ):
+                    await delete_chunks(connection, document_id=document.document_id)
+        except Exception:
+            failed = job.fail(error_code=PURGE_FAILED, finished_at=now)
             return await save_job(connection, job=failed)
+        return await save_job(connection, job=job.succeed(finished_at=now))
 
 
 def availability_event(document: Document) -> AuditEvent:
@@ -185,14 +192,14 @@ def availability_event(document: Document) -> AuditEvent:
 async def _queue_purge(
     connection: AsyncConnection, *, document_id: DocumentId, now: datetime
 ) -> Job:
+    """The open purge of this Document: a new one, or the one already open."""
     job = Job.request(
         job_id=JobId.new(),
         kind=JobKind.PURGE_DOCUMENT_CHUNKS,
         target_id=document_id.value,
         queued_at=now,
     )
-    await enqueue_job(connection, job)
-    return job
+    return (await enqueue_job(connection, job)).job
 
 
 async def _claim(connection: AsyncConnection, *, job_id: JobId, now: datetime) -> Job:
@@ -202,5 +209,5 @@ async def _claim(connection: AsyncConnection, *, job_id: JobId, now: datetime) -
     if job.kind is not JobKind.PURGE_DOCUMENT_CHUNKS:
         raise InvalidJob("the job is not a document chunk purge")
     if job.status is not JobStatus.QUEUED:
-        raise InvalidJob(f"only a queued job can run, not a {job.status} one")
+        raise JobAlreadyClaimed(job)
     return job.start(started_at=now)

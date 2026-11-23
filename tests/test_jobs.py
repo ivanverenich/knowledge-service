@@ -10,6 +10,7 @@ from knowledge_service.jobs import (
     IllegalJobTransition,
     InvalidJob,
     Job,
+    JobAlreadyClaimed,
     JobKind,
     JobNotRetryable,
     JobStatus,
@@ -72,3 +73,33 @@ def test_a_raw_error_message_is_rejected() -> None:
 
     with pytest.raises(InvalidJob, match="at most"):
         running.fail(error_code="x" * 65, finished_at=QUEUED_AT + timedelta(seconds=2))
+
+
+def test_a_job_is_open_until_it_can_do_no_more_work() -> None:
+    job = requested_job(max_attempts=2)
+    started = job.start(started_at=QUEUED_AT)
+    failed_once = started.fail(error_code="boom", finished_at=QUEUED_AT)
+    failed_twice = (
+        failed_once.retry(queued_at=QUEUED_AT)
+        .start(started_at=QUEUED_AT)
+        .fail(error_code="boom", finished_at=QUEUED_AT)
+    )
+
+    assert job.is_open
+    assert started.is_open
+    # A failed Job with attempts left may still be queued again.
+    assert failed_once.is_open
+    assert not failed_twice.is_open
+    assert not started.succeed(finished_at=QUEUED_AT).is_open
+
+
+def test_a_refused_claim_carries_the_job_as_stored() -> None:
+    finished = (
+        requested_job().start(started_at=QUEUED_AT).succeed(finished_at=QUEUED_AT)
+    )
+
+    refused = JobAlreadyClaimed(finished)
+
+    assert isinstance(refused, InvalidJob)
+    assert refused.job is finished
+    assert str(refused) == "only a queued job can run, not a succeeded one"

@@ -19,8 +19,9 @@ from knowledge_service.documents import (
     InvalidDocument,
 )
 from knowledge_service.identifiers import DocumentId, SourceId
-from knowledge_service.jobs import JobKind, JobStatus
+from knowledge_service.jobs import JobKind
 from knowledge_service.language import Language
+from knowledge_service.persistence.jobs import open_job
 from knowledge_service.persistence.schema import (
     chunks,
     document_metadata,
@@ -182,13 +183,7 @@ async def load_unpurged_documents(
     open_purge = sa.exists().where(
         jobs.c.kind == JobKind.PURGE_DOCUMENT_CHUNKS.value,
         jobs.c.target_id == documents.c.document_id,
-        sa.or_(
-            jobs.c.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
-            sa.and_(
-                jobs.c.status == JobStatus.FAILED.value,
-                jobs.c.attempt < jobs.c.max_attempts,
-            ),
-        ),
+        open_job(),
     )
     statement = (
         sa.select(documents)
