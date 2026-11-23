@@ -7,7 +7,7 @@ depends_on: ["M08-T05"]
 estimate: 75m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["sync scheduler"]
-status: planned
+status: completed
 ---
 
 # M08-T06 — Schedule incremental Synchronization Runs

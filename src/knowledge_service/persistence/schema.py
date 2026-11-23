@@ -477,6 +477,12 @@ jobs = sa.Table(
         unique=True,
         postgresql_where=sa.text(OPEN_JOB_PREDICATE),
     ),
+    # Finds each Source's synchronization Jobs for the schedule.
+    sa.Index(
+        "ix_jobs_synchronization_target",
+        "target_id",
+        postgresql_where=sa.text("kind = 'synchronize_source'"),
+    ),
     sa.Index(
         "ix_jobs_due_retry",
         "retry_at",

@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     database_pool_timeout: float = Field(default=10.0, gt=0.0, allow_inf_nan=False)
     database_connect_timeout_seconds: int = Field(default=5, gt=0)
     database_statement_timeout_ms: int = Field(default=10_000, gt=0)
+    # How often each enabled Source is synchronized (`ingestion.scheduling`).
+    synchronization_interval_minutes: int = Field(default=60, ge=1, le=7 * 24 * 60)
     # The Redis broker that carries worker messages; it may hold a password.
     redis_url: SecretStr | None = None
     redis_health_timeout_seconds: float = Field(

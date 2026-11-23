@@ -1,6 +1,7 @@
-"""Statements over Sources, their synchronization runs, and their fence."""
+"""Statements over Sources, their synchronization runs, their fence, and schedule."""
 
-from datetime import datetime
+from collections.abc import Collection
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -8,7 +9,9 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.identifiers import SourceId
-from knowledge_service.persistence.schema import sources, synchronization_runs
+from knowledge_service.jobs import JobKind
+from knowledge_service.persistence.jobs import open_job
+from knowledge_service.persistence.schema import jobs, sources, synchronization_runs
 
 
 def source_runs_statement(source_id: UUID, limit: int) -> sa.Select[Any]:
@@ -59,3 +62,79 @@ async def synchronization_fence_holds(
         .with_for_update(read=True)
     )
     return fence == observed_at
+
+
+async def load_due_source_ids(
+    connection: AsyncConnection, *, now: datetime, interval: timedelta, limit: int
+) -> tuple[SourceId, ...]:
+    """Enabled Sources with no open synchronization Job whose last one is old.
+
+    A Source is due when its newest synchronization Job, counted from when it
+    finished, or was queued if it never finished, is at least `interval`
+    before `now`, or when it never had one. However long ago that was, it is
+    due once: a missed schedule is not caught up run by run. A time later
+    than `now`, from a clock that ran ahead, is ignored: a finish time in the
+    future counts from when the Job was queued instead, and a Job queued in
+    the future does not count. The longest-waiting Sources come first, so
+    when more are due than `limit`, the rest come next pass.
+    """
+    of_source = sa.and_(
+        jobs.c.kind == JobKind.SYNCHRONIZE_SOURCE.value,
+        jobs.c.target_id == sources.c.source_id,
+    )
+    # greatest() skips the NULL a future finish time becomes here.
+    activity = sa.func.greatest(
+        jobs.c.queued_at,
+        sa.case((jobs.c.finished_at <= now, jobs.c.finished_at), else_=None),
+    )
+    candidates = (
+        sa.select(
+            sources.c.source_id,
+            sa.select(sa.func.max(activity))
+            .where(of_source, jobs.c.queued_at <= now)
+            .scalar_subquery()
+            .label("last_activity"),
+        )
+        .where(sources.c.enabled.is_(True), ~sa.exists().where(of_source, open_job()))
+        # Materialized, so each Source's last activity is computed once; a
+        # plain subquery is inlined and the planner repeats it per use.
+        .cte("candidates")
+        .prefix_with("MATERIALIZED")
+    )
+    statement = (
+        sa.select(candidates.c.source_id)
+        .where(
+            sa.or_(
+                candidates.c.last_activity.is_(None),
+                candidates.c.last_activity <= now - interval,
+            )
+        )
+        .order_by(
+            candidates.c.last_activity.asc().nulls_first(), candidates.c.source_id
+        )
+        .limit(limit)
+    )
+    rows = await connection.scalars(statement)
+    return tuple(SourceId(source_id) for source_id in rows)
+
+
+async def lock_enabled_sources(
+    connection: AsyncConnection, *, source_ids: Collection[SourceId]
+) -> frozenset[SourceId]:
+    """Those of `source_ids` that still exist and are enabled, share-locked.
+
+    Disabling or deleting one of them now waits for this transaction, so a
+    Job queued in it is queued before the change, never after.
+    """
+    if not source_ids:
+        return frozenset()
+    rows = await connection.scalars(
+        sa.select(sources.c.source_id)
+        .where(
+            sources.c.source_id.in_([source_id.value for source_id in source_ids]),
+            sources.c.enabled.is_(True),
+        )
+        .order_by(sources.c.source_id)
+        .with_for_update(read=True)
+    )
+    return frozenset(SourceId(source_id) for source_id in rows)
