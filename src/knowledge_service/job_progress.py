@@ -113,8 +113,8 @@ def attempt_number(job: Job) -> int:
     `Job.attempt` counts failed attempts, so a failed Job's last attempt is
     that count, and a running or succeeded Job's is the next one.
     """
-    if job.status is JobStatus.QUEUED:
-        raise InvalidJob("a queued job has no attempt under way")
+    if job.status in {JobStatus.QUEUED, JobStatus.CANCELLED}:
+        raise InvalidJob(f"a {job.status} job has no attempt under way")
     if job.status is JobStatus.FAILED:
         return job.attempt
     return job.attempt + 1

@@ -84,3 +84,26 @@ class SynchronizationJobReport(BaseModel):
     error_code: str | None
     retry_at: datetime | None
     latest_attempt: JobAttemptProgress | None
+
+
+class OperatorJob(BaseModel):
+    """A Job as an operator decides about it: what it is, and how it ended."""
+
+    job_id: UUID
+    kind: str
+    target_id: UUID
+    status: str
+    condition: str
+    failed_attempts: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    queued_at: datetime
+    finished_at: datetime | None
+    error_code: str | None
+    # What an operator may decide now: "retry", "cancel", both, or neither.
+    decisions: list[str]
+
+
+class JobsNeedingDecision(BaseModel):
+    """Jobs that failed for good and that no newer Job replaced, newest first."""
+
+    jobs: list[OperatorJob]

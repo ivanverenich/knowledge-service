@@ -7,7 +7,7 @@ depends_on: ["M08-T07"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["job recovery workflow"]
-status: planned
+status: completed
 ---
 
 # M08-T08 — Recover dead and stuck work

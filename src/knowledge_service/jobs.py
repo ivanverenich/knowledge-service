@@ -31,6 +31,13 @@ class JobNotRetryable(InvalidJob):
     """
 
 
+class JobStillRunning(IllegalJobTransition):
+    """A running Job cannot be cancelled: its worker may still be doing it.
+
+    Wait for it to finish, or for recovery to find it dead.
+    """
+
+
 class JobAlreadyClaimed(InvalidJob):
     """A Job is no longer queued, so this delivery must not run it again.
 
@@ -58,15 +65,20 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    # An operator closed it; nothing will run it again.
+    CANCELLED = "cancelled"
 
 
-_FINISHED = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED})
+_FINISHED = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED})
+# Statuses that always come from a claim, so they carry a started time.
+_STARTED = frozenset({JobStatus.RUNNING, JobStatus.SUCCEEDED, JobStatus.FAILED})
 
 _ALLOWED: Mapping[JobStatus, frozenset[JobStatus]] = {
-    JobStatus.QUEUED: frozenset({JobStatus.RUNNING}),
+    JobStatus.QUEUED: frozenset({JobStatus.RUNNING, JobStatus.CANCELLED}),
     JobStatus.RUNNING: frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED}),
-    JobStatus.FAILED: frozenset({JobStatus.QUEUED}),
+    JobStatus.FAILED: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED}),
     JobStatus.SUCCEEDED: frozenset(),
+    JobStatus.CANCELLED: frozenset(),
 }
 
 
@@ -111,12 +123,21 @@ class Job:
             _require_utc(self.finished_at, "finished_at")
             if self.started_at is not None and self.finished_at < self.started_at:
                 raise InvalidJob("finished_at must not be earlier than started_at")
+            if self.finished_at < self.queued_at:
+                raise InvalidJob("finished_at must not be earlier than queued_at")
         if (self.status in _FINISHED) != (self.finished_at is not None):
             raise InvalidJob("only a finished job carries a finished time")
-        if (self.status is JobStatus.QUEUED) == (self.started_at is not None):
-            raise InvalidJob("only a job that is not queued carries a started time")
-        if (self.status is JobStatus.FAILED) != (self.last_error_code is not None):
-            raise InvalidJob("only a failed job carries an error code")
+        if self.status is JobStatus.QUEUED and self.started_at is not None:
+            raise InvalidJob("a queued job carries no started time")
+        if self.status in _STARTED and self.started_at is None:
+            raise InvalidJob("a claimed job carries a started time")
+        if (self.status is JobStatus.FAILED) and self.last_error_code is None:
+            raise InvalidJob("a failed job carries an error code")
+        if self.last_error_code is not None and self.status not in {
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }:
+            raise InvalidJob("only a failed or cancelled job carries an error code")
         if self.last_error_code is not None and not self.last_error_code.strip():
             raise InvalidJob("an error code must not be empty")
         if self.retry_at is not None:
@@ -138,7 +159,7 @@ class Job:
         """
         if self.status is JobStatus.FAILED:
             return self.retry_at is not None
-        return self.status is not JobStatus.SUCCEEDED
+        return self.status in {JobStatus.QUEUED, JobStatus.RUNNING}
 
     @classmethod
     def request(
@@ -212,6 +233,35 @@ class Job:
             raise JobNotRetryable("the job failed permanently")
         if queued_at < self.retry_at:
             raise JobNotRetryable("the job may not be retried before its retry time")
+        return self._queued_again(queued_at=queued_at)
+
+    def reopen(self, *, queued_at: datetime) -> Job:
+        """Queue a Job that failed for good once more, by an operator's decision.
+
+        Only a Job with no retry planned qualifies. One that used every
+        attempt is given exactly one more; its failed attempts stay counted.
+        """
+        _check_transition(self.status, JobStatus.QUEUED)
+        if self.retry_at is not None:
+            raise JobNotRetryable("the job already has a retry planned")
+        reopened = replace(self, max_attempts=max(self.max_attempts, self.attempt + 1))
+        return reopened._queued_again(queued_at=queued_at)
+
+    def cancel(self, *, finished_at: datetime) -> Job:
+        """Close a queued or failed Job, by an operator's decision.
+
+        A failed Job keeps its error code, so the reason it failed stays
+        visible; a planned retry is dropped. A running Job is refused with
+        `JobStillRunning`.
+        """
+        if self.status is JobStatus.RUNNING:
+            raise JobStillRunning("a running job cannot be cancelled")
+        _check_transition(self.status, JobStatus.CANCELLED)
+        return replace(
+            self, status=JobStatus.CANCELLED, finished_at=finished_at, retry_at=None
+        )
+
+    def _queued_again(self, *, queued_at: datetime) -> Job:
         return replace(
             self,
             status=JobStatus.QUEUED,

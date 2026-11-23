@@ -54,6 +54,10 @@ class JobFailure(StrEnum):
     PROGRAMMING_ERROR = "programming_error"
     # A newer run of the same work has started; there is nothing to redo.
     SUPERSEDED = "superseded"
+    # Recovery found the attempt's worker silent for too long.
+    WORKER_LOST = "worker_lost"
+    # Recovery found a message that no worker took up in time.
+    DELIVERY_LOST = "delivery_lost"
 
     @property
     def transient(self) -> bool:
@@ -66,6 +70,8 @@ _TRANSIENT: Final = frozenset(
         JobFailure.SOURCE_UNAVAILABLE,
         JobFailure.DATABASE_UNAVAILABLE,
         JobFailure.MODEL_UNAVAILABLE,
+        JobFailure.WORKER_LOST,
+        JobFailure.DELIVERY_LOST,
     }
 )
 
@@ -149,7 +155,27 @@ def fail_attempt(
     A transient failure with attempts left gets a retry time; any other
     failure is final. Only the error's type is logged, never its message.
     """
-    failure = classify_job_failure(error)
+    return fail_with(
+        job,
+        classify_job_failure(error),
+        now=now,
+        policy=policy,
+        cause=type(error).__name__,
+    )
+
+
+def fail_with(
+    job: Job,
+    failure: JobFailure,
+    *,
+    now: datetime,
+    policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+    cause: str = "recovery",
+) -> Job:
+    """`job` failed with a known `failure`, retried later only if worth it.
+
+    `cause` names what reported it, for the log; it is never an error message.
+    """
     failed_attempts = job.attempt + 1
     retry_at = None
     if failure.transient and failed_attempts < job.max_attempts:
@@ -159,7 +185,7 @@ def fail_attempt(
         job.job_id.value,
         failed_attempts,
         failure.value,
-        type(error).__name__,
+        cause,
         "retry planned" if retry_at is not None else "final",
     )
     return job.fail(error_code=failure.value, finished_at=now, retry_at=retry_at)

@@ -32,6 +32,7 @@ class Operation(StrEnum):
     RUN_PAID_EVALUATION = "run_paid_evaluation"
     MANAGE_POLICY = "manage_policy"
     MANAGE_OPERATIONAL_CONFIGURATION = "manage_operational_configuration"
+    RECOVER_JOBS = "recover_jobs"
 
 
 PERMISSIONS: Mapping[ApplicationRole, frozenset[Operation]] = MappingProxyType(
@@ -46,7 +47,11 @@ PERMISSIONS: Mapping[ApplicationRole, frozenset[Operation]] = MappingProxyType(
             {Operation.MANAGE_EVALUATION_DATASETS, Operation.RUN_PAID_EVALUATION}
         ),
         ApplicationRole.ADMINISTRATOR: frozenset(
-            {Operation.MANAGE_POLICY, Operation.MANAGE_OPERATIONAL_CONFIGURATION}
+            {
+                Operation.MANAGE_POLICY,
+                Operation.MANAGE_OPERATIONAL_CONFIGURATION,
+                Operation.RECOVER_JOBS,
+            }
         ),
     }
 )

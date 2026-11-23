@@ -1,12 +1,13 @@
-"""Queue due retries and due synchronizations, then publish: one pass.
+"""Recover stuck Jobs, queue due retries and synchronizations, then publish.
 
 Run `python -m knowledge_service.worker.relay` after a crash or a Redis
-outage, and on a schedule, because it is also what brings a failed Job back
-once its retry time has come, and what queues each enabled Source's next
-synchronization. It exits 0 when every Job it found was published or
-skipped, and 1 when the queue refused a message or scheduling failed; the
-rest wait for the next pass. A failed scheduling step does not stop the
-publishing step.
+outage, and on a schedule, because it is also what fails the attempts of
+stale and orphaned Jobs, brings a failed Job back once its retry time has
+come, and queues each enabled Source's next synchronization. It exits 0
+when every Job it found was published or skipped, and 1 when the queue
+refused a message, or recovery or scheduling failed; the rest wait for the
+next pass. A failed recovery or scheduling step does not stop the steps
+after it.
 """
 
 import asyncio
@@ -28,6 +29,7 @@ from knowledge_service.job_dispatch import (
     publish_pending_jobs,
     requeue_due_retries,
 )
+from knowledge_service.job_recovery import RecoveryReport, recover_stuck_jobs
 from knowledge_service.settings import Settings
 from knowledge_service.worker.broker import broker_from_settings
 from knowledge_service.worker.jobs import (
@@ -44,6 +46,8 @@ logger = logging.getLogger(__name__)
 class RelayPass:
     """What one relay pass did, in the order it did it."""
 
+    recovered: RecoveryReport
+    recovery_failed: bool
     requeued: tuple[JobId, ...]
     scheduled: ScheduleReport
     schedule_failed: bool
@@ -57,11 +61,18 @@ async def relay_once(
     now: datetime,
     schedule: SynchronizationSchedule,
 ) -> RelayPass:
-    """Queue due retries, queue due synchronizations, then publish.
+    """Recover stuck Jobs, queue due retries and synchronizations, then publish.
 
-    A failure while scheduling is logged by type and reported; publishing
-    still runs, so other Jobs are not held up by it.
+    A failure while recovering or scheduling is logged by type and
+    reported; the later steps still run, so other Jobs are not held up by it.
     """
+    try:
+        recovered = await recover_stuck_jobs(runtime, now=now)
+        recovery_failed = bool(recovered.errors)
+    except Exception as error:
+        logger.warning("recovering stuck jobs failed: %s", type(error).__name__)
+        recovered = RecoveryReport(stale=(), orphaned=(), errors=())
+        recovery_failed = True
     requeued = await requeue_due_retries(runtime, now=now)
     try:
         scheduled = await schedule_due_synchronizations(
@@ -74,6 +85,8 @@ async def relay_once(
         schedule_failed = True
     published = await publish_pending_jobs(runtime, publisher=publisher, now=now)
     return RelayPass(
+        recovered=recovered,
+        recovery_failed=recovery_failed,
         requeued=requeued,
         scheduled=scheduled,
         schedule_failed=schedule_failed,
@@ -106,11 +119,13 @@ def main() -> int:
         broker.close()
     report = done.published
     sys.stdout.write(
+        f"stale {len(done.recovered.stale)}, orphaned {len(done.recovered.orphaned)}, "
         f"requeued {len(done.requeued)}, scheduled {len(done.scheduled.queued)}, "
         f"published {report.published}, skipped {report.skipped}, "
         f"failed {report.failed}, untried {report.untried}\n"
     )
-    return 1 if report.failed or done.schedule_failed else 0
+    failed = report.failed or done.schedule_failed or done.recovery_failed
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

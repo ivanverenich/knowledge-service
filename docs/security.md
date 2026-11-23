@@ -82,6 +82,6 @@ flowchart TB
 - **User** asks questions and manages their retained Conversations.
 - **Content manager** configures Sources and starts Synchronization Runs.
 - **Evaluator** manages approved Evaluation Datasets and runs paid evaluation.
-- **Administrator** manages policy and operational configuration.
+- **Administrator** manages policy and operational configuration, and retries or cancels Jobs that failed for good.
 
 Application Roles never imply Document access.

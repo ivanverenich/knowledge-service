@@ -83,6 +83,12 @@ parses the ID, and shows a synchronization Job with its newest attempt
 through `DatabaseJobReports` (`job_reporting`), read from one snapshot. A
 missing Job and a Job of any other kind give the same 404, so a purge's
 target, such as a Conversation, is never shown.
+`GET /v1/job-decisions`, `POST /v1/jobs/{job_id}/retry`, and
+`POST /v1/jobs/{job_id}/cancel` require `recover_jobs` (the administrator
+role) before the ID is parsed. They list the Jobs that failed for good and
+that no newer Job replaced, and retry or cancel one through
+`DatabaseJobDecisions` (`job_decisions`), which records each decision in the
+audit log with the operator as its actor.
 
 `job_dispatch` puts a Job on the queue without ever losing it. `submit_job`
 commits the Job to PostgreSQL first, then sends one message naming only its
@@ -140,6 +146,24 @@ while the Job runs that attempt, so a worker that lost its attempt cannot
 write; counters and warnings never go down and the heartbeat never goes
 back, both in the domain and in the `UPDATE`'s own conditions; a report
 stamped more than five minutes ahead of the database's clock is refused.
+
+`job_conditions` tells a slow Job from a dead one, and `job_recovery`, run
+first in every relay pass, acts on it. A running Job is alive
+while the database heard from it within `stale_after` (five minutes): each
+report stamps the attempt's `heard_at` with the database's own clock, even
+one refused for going back, so no worker's clock decides it, and a Job with
+no attempt row falls back to its start time. One silent longer is stale, and its attempt is failed with
+`worker_lost`. A queued Job whose message was sent
+`orphan_after` (30 minutes) ago and that no worker took up is orphaned, and
+the attempt the lost message stood for is failed with `delivery_lost`. Both
+codes are transient, so the stored Job plans a retry while attempts are
+left, and a message that keeps getting lost ends as `exhausted`, not in a
+loop. Each Job is judged again under its row lock, skipping a row a worker
+holds, and its attempt row is ended, never deleted. A Job that failed with
+no retry planned waits for an operator: a retry gives an exhausted Job one
+more attempt and is refused while another Job for the same work is open; a
+cancel closes a queued or failed Job as `cancelled`, and is refused for a
+running one, whose worker may still write.
 Ending never fails on what a report stored: higher counters stay, and a
 heartbeat later than the Job's finish time is pulled back to it. A worker
 presumed dead that ends an attempt its Job has moved past gets
@@ -283,8 +307,8 @@ The rules each table enforces:
 | `messages` | One Message per `(conversation_id, ordinal)`; only an assistant Message has an `outcome`: `answered`, `abstained`, or `failed`. |
 | `message_references` | One row per `(message_id, position)` and per `(message_id, chunk_id)`; `content_version >= 1`; removed with its Message. No foreign key to `chunks`, so a reference outlives the Chunk it names and History can tell that it is gone. |
 | `message_feedback` | One rating per `(message_id, user_id)`, replaced when the same User rates again. |
-| `jobs` | A status that agrees with the timestamps it carries; a bounded attempt count; a capped error code; a retry time only on a failed Job with attempts left, never before it finished; at most one open Job (queued, running, or failed with a retry scheduled) per kind and target. |
-| `job_attempts` | One row per `(job_id, attempt)`, removed with its Job; a known stage, warnings, and outcome; counters never below zero; an outcome exactly when it has a finish time; a heartbeat no earlier than the start and no later than the finish. |
+| `jobs` | A status that agrees with the timestamps it carries (a `cancelled` Job has a finish time, and keeps the start and error code it had, if any); a bounded attempt count; a capped error code; a retry time only on a failed Job with attempts left, never before it finished; at most one open Job (queued, running, or failed with a retry scheduled) per kind and target. |
+| `job_attempts` | One row per `(job_id, attempt)`, removed with its Job; a `heard_at` the database stamps on every report; a known stage, warnings, and outcome; counters never below zero; an outcome exactly when it has a finish time; a heartbeat no earlier than the start and no later than the finish. |
 | `audit_events` | An action, target kind, decision (`allowed` or `denied`), and outcome from fixed lists, with optional request and Synchronization Run IDs; no raw content: metadata keys are short names, string values one plain word, and the bag is capped at 1024 bytes. Rows are only ever inserted. |
 | `evaluation_runs` | An artifact location only once the run has succeeded. |
 

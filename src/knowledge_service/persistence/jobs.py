@@ -47,7 +47,8 @@ def _job_row(job: Job) -> dict[str, object]:
     }
 
 
-def _job_from(record: Mapping[str, object]) -> Job:
+def job_from_record(record: Mapping[str, object]) -> Job:
+    """The Job a stored `jobs` row holds."""
     try:
         kind = JobKind(cast(str, record["kind"]))
         status = JobStatus(cast(str, record["status"]))
@@ -90,7 +91,7 @@ async def load_open_job(
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None
-    return _job_from(dict(record))
+    return job_from_record(dict(record))
 
 
 async def enqueue_job(connection: AsyncConnection, job: Job) -> Enqueued:
@@ -136,7 +137,7 @@ async def load_job(
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None
-    return _job_from(dict(record))
+    return job_from_record(dict(record))
 
 
 async def lock_running_job(connection: AsyncConnection, *, job_id: JobId) -> Job | None:
@@ -153,7 +154,7 @@ async def lock_running_job(connection: AsyncConnection, *, job_id: JobId) -> Job
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None
-    return _job_from(dict(record))
+    return job_from_record(dict(record))
 
 
 async def save_job(connection: AsyncConnection, *, job: Job) -> Job:
@@ -188,7 +189,9 @@ async def requeue_due_jobs(
     records = (await connection.execute(statement)).mappings().all()
     return tuple(
         [
-            await save_job(connection, job=_job_from(dict(record)).retry(queued_at=now))
+            await save_job(
+                connection, job=job_from_record(dict(record)).retry(queued_at=now)
+            )
             for record in records
         ]
     )
@@ -233,7 +236,7 @@ async def lock_unpublished_job(
     record = (await connection.execute(statement)).mappings().one_or_none()
     if record is None:
         return None
-    return _job_from(dict(record))
+    return job_from_record(dict(record))
 
 
 async def mark_job_published(

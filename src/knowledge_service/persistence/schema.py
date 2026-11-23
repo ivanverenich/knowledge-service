@@ -441,7 +441,7 @@ jobs = sa.Table(
         name="ck_jobs_kind",
     ),
     sa.CheckConstraint(
-        "status in ('queued', 'running', 'succeeded', 'failed')",
+        "status in ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
         name="ck_jobs_status",
     ),
     sa.CheckConstraint(
@@ -449,14 +449,17 @@ jobs = sa.Table(
         name="ck_jobs_attempt",
     ),
     sa.CheckConstraint(
-        "(status in ('succeeded', 'failed')) = (finished_at is not null)",
+        "(status in ('succeeded', 'failed', 'cancelled')) = (finished_at is not null)",
         name="ck_jobs_finished_at",
     ),
+    # A cancelled Job may or may not have been claimed before.
     sa.CheckConstraint(
-        "(status = 'queued') = (started_at is null)", name="ck_jobs_started_at"
+        "status = 'cancelled' or (status = 'queued') = (started_at is null)",
+        name="ck_jobs_started_at",
     ),
+    # A cancelled Job keeps the error code of a failure before it, if any.
     sa.CheckConstraint(
-        "(status = 'failed') = (last_error_code is not null)",
+        "status = 'cancelled' or (status = 'failed') = (last_error_code is not null)",
         name="ck_jobs_last_error_code",
     ),
     sa.CheckConstraint(
@@ -489,6 +492,19 @@ jobs = sa.Table(
         "job_id",
         postgresql_where=sa.text("retry_at is not null"),
     ),
+    # Finds queued and running Jobs that recovery may find stuck.
+    sa.Index(
+        "ix_jobs_in_flight",
+        "status",
+        postgresql_where=sa.text("status in ('queued', 'running')"),
+    ),
+    # Finds Jobs that failed for good, for an operator's decision.
+    sa.Index(
+        "ix_jobs_failed_for_good",
+        "finished_at",
+        "job_id",
+        postgresql_where=sa.text("status = 'failed' and retry_at is null"),
+    ),
 )
 
 # One row per attempt of a Job: how far it got, and how it ended.
@@ -509,6 +525,14 @@ job_attempts = sa.Table(
     sa.Column("warnings", ARRAY(sa.String(length=32)), nullable=False),
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=False),
+    # When the database last heard from the attempt, by its own clock, so
+    # recovery never judges a worker by that worker's clock.
+    sa.Column(
+        "heard_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
     sa.Column("outcome", sa.String(length=32), nullable=True),
     sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
     sa.CheckConstraint("attempt >= 1", name="ck_job_attempts_attempt"),
@@ -560,7 +584,7 @@ audit_events = sa.Table(
         " 'evaluation_run.started', 'question.asked', 'document.read',"
         " 'document.access_changed', 'synchronization.finished',"
         " 'message.rated', 'embedding_migration.started',"
-        " 'embedding_migration.switched')",
+        " 'embedding_migration.switched', 'job.retried', 'job.cancelled')",
         name="ck_audit_events_action",
     ),
     sa.CheckConstraint(

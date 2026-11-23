@@ -61,6 +61,8 @@ class AuditAction(StrEnum):
     MESSAGE_RATED = "message.rated"
     EMBEDDING_MIGRATION_STARTED = "embedding_migration.started"
     EMBEDDING_MIGRATION_SWITCHED = "embedding_migration.switched"
+    JOB_RETRIED = "job.retried"
+    JOB_CANCELLED = "job.cancelled"
 
 
 class AuditTargetKind(StrEnum):

@@ -5,6 +5,7 @@ while the Job still runs. A handler calls `report_progress`; the worker and
 its queue messages are never involved.
 """
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -18,13 +19,18 @@ from knowledge_service.job_progress import (
     JobProgress,
     JobStage,
     JobWarning,
+    ProgressWentBackwards,
+    ReportFromTheFuture,
 )
 from knowledge_service.jobs import Job, JobKind
 from knowledge_service.persistence.job_attempts import (
     advance_attempt,
     load_latest_attempt,
+    record_heard,
 )
 from knowledge_service.persistence.jobs import load_job
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,19 +57,36 @@ async def report_progress(
     the same report twice changes nothing. A counter, a warning, or the
     heartbeat that would go back raises `ProgressWentBackwards`; a report
     for an attempt the Job is not running raises `AttemptNotCurrent`.
+
+    A report refused for what it says, such as one from a clock that
+    stepped back, still shows the worker is alive: the attempt is recorded
+    as heard from in a transaction of its own, then the refusal is raised.
     """
     if now.utcoffset() != timedelta(0):
         raise ValueError("now must be a UTC-aware timestamp")
-    async with runtime.transaction() as connection:
-        return await advance_attempt(
-            connection,
-            job_id=job_id,
-            attempt=attempt,
-            stage=stage,
-            counters=counters,
-            warnings=warnings,
-            now=now,
-        )
+    try:
+        async with runtime.transaction() as connection:
+            return await advance_attempt(
+                connection,
+                job_id=job_id,
+                attempt=attempt,
+                stage=stage,
+                counters=counters,
+                warnings=warnings,
+                now=now,
+            )
+    except ProgressWentBackwards, ReportFromTheFuture:
+        try:
+            async with runtime.transaction() as connection:
+                await record_heard(connection, job_id=job_id, attempt=attempt)
+        except Exception as error:
+            # The refusal is what the caller must see, not this second failure.
+            logger.warning(
+                "job %s: recording a refused report failed: %s",
+                job_id.value,
+                type(error).__name__,
+            )
+        raise
 
 
 @dataclass(frozen=True, slots=True)

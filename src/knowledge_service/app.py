@@ -3,6 +3,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -23,6 +24,8 @@ from knowledge_service.contracts import (
     Answer,
     ErrorResponse,
     JobAttemptProgress,
+    JobsNeedingDecision,
+    OperatorJob,
     Question,
     SynchronizationJobReport,
 )
@@ -38,8 +41,16 @@ from knowledge_service.identity.context import (
     Unauthenticated,
 )
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
+from knowledge_service.job_conditions import allowed_decisions, condition_of
+from knowledge_service.job_decisions import JobIntentAlreadyOpen, JobNotFound
 from knowledge_service.job_reporting import JobReport
-from knowledge_service.jobs import JobKind
+from knowledge_service.jobs import (
+    IllegalJobTransition,
+    Job,
+    JobKind,
+    JobNotRetryable,
+    JobStillRunning,
+)
 from knowledge_service.roles import Operation, PermissionDenied, require
 from knowledge_service.workflow import AnswerWorkflow
 
@@ -87,6 +98,46 @@ class JobReports(Protocol):
     async def load(
         self, *, job_id: JobId, kinds: frozenset[JobKind]
     ) -> JobReport | None: ...
+
+
+class JobDecisions(Protocol):
+    """An operator's decisions about Jobs that recovery cannot move on.
+
+    `DatabaseJobDecisions` is the implementation. `retry` and `cancel`
+    raise `JobNotFound` for a missing Job, and a domain error for a Job the
+    decision does not fit.
+    """
+
+    async def needing_decision(self, *, limit: int) -> tuple[Job, ...]: ...
+
+    async def retry(
+        self, *, job_id: JobId, operator: UserId, request_id: UUID
+    ) -> Job: ...
+
+    async def cancel(
+        self, *, job_id: JobId, operator: UserId, request_id: UUID
+    ) -> Job: ...
+
+
+# How many Jobs the decision list shows at most.
+DECISION_LIST_LIMIT = 100
+
+
+def operator_job(job: Job, *, now: datetime) -> OperatorJob:
+    """The API view of a Job for an operator, judged at `now`."""
+    return OperatorJob(
+        job_id=job.job_id.value,
+        kind=job.kind.value,
+        target_id=job.target_id,
+        status=job.status.value,
+        condition=condition_of(job, now=now).value,
+        failed_attempts=job.attempt,
+        max_attempts=job.max_attempts,
+        queued_at=job.queued_at,
+        finished_at=job.finished_at,
+        error_code=job.last_error_code,
+        decisions=[decision.value for decision in allowed_decisions(job)],
+    )
 
 
 # The Jobs the job endpoint shows: those a Synchronization Run starter owns.
@@ -276,6 +327,7 @@ def create_app(
     authenticator: RequestAuthenticator | None = None,
     conversations: ConversationStore | None = None,
     job_reports: JobReports | None = None,
+    job_decisions: JobDecisions | None = None,
 ) -> FastAPI:
     """The HTTP application.
 
@@ -534,7 +586,97 @@ def create_app(
             )
         return synchronization_job_report(report)
 
+    @app.get("/v1/job-decisions", response_model=JobsNeedingDecision)
+    async def list_jobs_needing_decision(
+        request: Request,
+    ) -> JobsNeedingDecision | JSONResponse:
+        caller = await authenticate(request)
+        require(caller.roles, Operation.RECOVER_JOBS)
+        request_id = request_id_from(request)
+        if job_decisions is None:
+            return _jobs_unavailable(request_id)
+        try:
+            jobs = await job_decisions.needing_decision(limit=DECISION_LIST_LIMIT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.error("job decision list failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        now = datetime.now(UTC)
+        return JobsNeedingDecision(jobs=[operator_job(job, now=now) for job in jobs])
+
+    @app.post("/v1/jobs/{job_id}/retry", response_model=OperatorJob)
+    async def retry_failed_job(
+        request: Request, job_id: str
+    ) -> OperatorJob | JSONResponse:
+        return await decide(request, job_id, retry=True)
+
+    @app.post("/v1/jobs/{job_id}/cancel", response_model=OperatorJob)
+    async def cancel_unfinished_job(
+        request: Request, job_id: str
+    ) -> OperatorJob | JSONResponse:
+        return await decide(request, job_id, retry=False)
+
+    async def decide(
+        request: Request, job_id: str, *, retry: bool
+    ) -> OperatorJob | JSONResponse:
+        # Who, then whether they may, then which Job.
+        caller = await authenticate(request)
+        require(caller.roles, Operation.RECOVER_JOBS)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(job_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if job_decisions is None:
+            return _jobs_unavailable(request_id)
+        decision = job_decisions.retry if retry else job_decisions.cancel
+        try:
+            decided = await decision(
+                job_id=JobId.parse(job_id),
+                operator=caller.reader.user_id,
+                request_id=request_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except JobNotFound:
+            return error_response(
+                status_code=404,
+                code="job_not_found",
+                message="No such job",
+                request_id=request_id,
+            )
+        except JobIntentAlreadyOpen:
+            return _conflict(
+                "job_already_open", "Another job for this work is open", request_id
+            )
+        except JobStillRunning:
+            return _conflict("job_running", "The job is still running", request_id)
+        except JobNotRetryable, IllegalJobTransition:
+            return _conflict(
+                "decision_not_allowed",
+                "This decision does not fit the job's status",
+                request_id,
+            )
+        except Exception as error:
+            logger.error("job decision failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        return operator_job(decided, now=datetime.now(UTC))
+
     return app
+
+
+def _jobs_unavailable(request_id: UUID) -> JSONResponse:
+    return error_response(
+        status_code=503,
+        code="jobs_unavailable",
+        message="Jobs are unavailable",
+        request_id=request_id,
+    )
+
+
+def _conflict(code: str, message: str, request_id: UUID) -> JSONResponse:
+    return error_response(
+        status_code=409, code=code, message=message, request_id=request_id
+    )
 
 
 async def read_question(request: Request) -> Question:

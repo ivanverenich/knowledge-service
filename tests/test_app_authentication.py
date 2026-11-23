@@ -25,6 +25,7 @@ from knowledge_service.identity.context import (
     user_id_for,
 )
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
+from knowledge_service.job_decisions import JobNotFound
 from knowledge_service.job_reporting import JobReport
 from knowledge_service.jobs import Job, JobKind
 from knowledge_service.roles import ApplicationRole, Operation
@@ -444,6 +445,9 @@ ROUTES: dict[tuple[str, str], Operation | None] = {
         Operation.MANAGE_OWN_CONVERSATIONS
     ),
     ("GET", "/v1/jobs/{job_id}"): Operation.START_SYNCHRONIZATION_RUNS,
+    ("GET", "/v1/job-decisions"): Operation.RECOVER_JOBS,
+    ("POST", "/v1/jobs/{job_id}/retry"): Operation.RECOVER_JOBS,
+    ("POST", "/v1/jobs/{job_id}/cancel"): Operation.RECOVER_JOBS,
 }
 PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
 # The routes that read a body, to check none is read before the role.
@@ -481,12 +485,32 @@ class Reading:
         self.calls.append(request)
 
 
+class Deciding:
+    """An operator's Job store that records each decision, and finds no Job."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def needing_decision(self, **request: Any) -> tuple[Job, ...]:
+        self.calls.append(request)
+        return ()
+
+    async def retry(self, **request: Any) -> Job:
+        self.calls.append(request)
+        raise JobNotFound("no job has this ID")
+
+    async def cancel(self, **request: Any) -> Job:
+        self.calls.append(request)
+        raise JobNotFound("no job has this ID")
+
+
 def full_app(
     source: Source,
     workflow: Any = None,
     tokens: dict[str, Any] | None = None,
     conversations: Deleting | None = None,
     jobs: Reading | None = None,
+    decisions: Deciding | None = None,
 ) -> Any:
     """The app with every endpoint wired, so every route is real."""
     return create_app(
@@ -495,6 +519,7 @@ def full_app(
         authenticator=Authenticator(Verifier(tokens or TOKENS), POLICY),
         conversations=conversations or Deleting(),
         job_reports=jobs or Reading(),
+        job_decisions=decisions or Deciding(),
     )
 
 
@@ -520,9 +545,9 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
     roles: frozenset[ApplicationRole],
 ) -> None:
     source, workflow, conversations = Source(), Counting(), Deleting()
-    jobs = Reading()
+    jobs, decisions = Reading(), Deciding()
     token = verified(realm_access={"roles": sorted(roles)})
-    app = full_app(source, workflow, {"token": token}, conversations, jobs)
+    app = full_app(source, workflow, {"token": token}, conversations, jobs, decisions)
     method, path = route
 
     async with client(app) as http:
@@ -537,7 +562,13 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
 
     allowed = bool(roles & MATRIX[operation])
     assert (response.status_code == 403) is not allowed
-    reached = source.readers or workflow.calls or conversations.calls or jobs.calls
+    reached = (
+        source.readers
+        or workflow.calls
+        or conversations.calls
+        or jobs.calls
+        or decisions.calls
+    )
     assert bool(reached) is allowed
 
 

@@ -176,6 +176,9 @@ async def purge_document_chunks(
     try:
         async with runtime.transaction() as connection:
             job = await _claim(connection, job_id=job_id, now=now)
+            # A Job queued by a clock ahead of this one starts, and ends, no
+            # earlier than it was queued.
+            now = max(now, job.queued_at)
             claimed_attempt = job.attempt
             try:
                 # A savepoint: a failed delete is undone, while the claim
@@ -250,6 +253,7 @@ async def _record_lost_attempt(
             raise JobAlreadyClaimed(
                 stored, "another delivery already ran the attempt this one lost"
             )
+        now = max(now, stored.queued_at)
         failed = fail_attempt(
             stored.start(started_at=now), cause, now=now, policy=retry_policy
         )
@@ -295,4 +299,4 @@ async def _claim(connection: AsyncConnection, *, job_id: JobId, now: datetime) -
         raise InvalidJob("the job is not a document chunk purge")
     if job.status is not JobStatus.QUEUED:
         raise JobAlreadyClaimed(job)
-    return job.start(started_at=now)
+    return job.start(started_at=max(now, job.queued_at))

@@ -164,6 +164,30 @@ async def advance_attempt(
     return advanced
 
 
+async def record_heard(
+    connection: AsyncConnection, *, job_id: JobId, attempt: int
+) -> bool:
+    """Record that the worker of a running attempt was just heard from.
+
+    Only the attempt the Job is running is touched, after the Job's row is
+    share-locked, as a report does; returns whether it was. Nothing else in
+    the attempt changes.
+    """
+    job = await lock_running_job(connection, job_id=job_id)
+    if job is None or attempt_number(job) != attempt:
+        return False
+    result = await connection.execute(
+        sa.update(job_attempts)
+        .where(
+            job_attempts.c.job_id == job_id.value,
+            job_attempts.c.attempt == attempt,
+            job_attempts.c.outcome.is_(None),
+        )
+        .values(heard_at=sa.func.clock_timestamp())
+    )
+    return result.rowcount == 1
+
+
 async def finish_attempt(
     connection: AsyncConnection,
     *,
@@ -249,8 +273,11 @@ async def _save(
     ]
     if not ending:
         conditions.append(columns.heartbeat_at <= progress.heartbeat_at)
+    # Stamped by the database, whatever the reporter's clock says, at the
+    # moment of the write rather than when the transaction began.
+    values = {**_row(progress), "heard_at": sa.func.clock_timestamp()}
     result = await connection.execute(
-        sa.update(job_attempts).where(*conditions).values(_row(progress))
+        sa.update(job_attempts).where(*conditions).values(values)
     )
     if result.rowcount != 1:
         raise ProgressWentBackwards("the stored attempt is further along")

@@ -32,6 +32,7 @@ MATRIX: dict[Operation, set[ApplicationRole]] = {
     Operation.RUN_PAID_EVALUATION: {EVALUATOR},
     Operation.MANAGE_POLICY: {ADMINISTRATOR},
     Operation.MANAGE_OPERATIONAL_CONFIGURATION: {ADMINISTRATOR},
+    Operation.RECOVER_JOBS: {ADMINISTRATOR},
 }
 ROLE_SETS = [
     frozenset(chosen)
