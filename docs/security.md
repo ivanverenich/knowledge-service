@@ -77,6 +77,12 @@ flowchart TB
 | Denial of wallet | rate limits, token/cost budgets, workflow limits | load and limit tests |
 | Supply-chain compromise | lockfile, provenance, scanning, minimal images, SBOM | CI artifacts and policy results |
 
+A synchronization pass that resumes from its checkpoint does not read the
+pages before it again. A reader the Source removed on one of those pages
+between the failed attempt and the resumed one keeps the Document until the
+next pass reads that page: at most `MAX_RESUME_AGE` (an hour) after the pass
+started, plus the synchronization interval (an hour by default).
+
 ## Application roles
 
 - **User** asks questions and manages their retained Conversations.

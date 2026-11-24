@@ -344,6 +344,19 @@ The diagram above is the target. Today one call, `synchronize_source`, runs a
 complete pass in-process, with no scheduler, queue, embeddings, or
 Synchronization Run record yet.
 
+Since M08-T09 the pass is resumable (`ingestion.checkpoints`). Its progress
+lives in PostgreSQL: `sources.pass_started_at`, `sources.checkpoint`, every
+checkpoint it stored in `synchronization_checkpoints`, and the external IDs
+it has seen in `synchronization_seen`. The checkpoint moves past a page only
+in the transaction that also stores what the page offered and forgets what
+it reported deleted, and that transaction commits only after every record of
+the page is reconciled. Nothing is tombstoned before the last page, so an
+item reported deleted and then offered again keeps its last report. A pass
+that fails resumes on its next attempt from the last committed page, and its
+final tombstones still count the pages earlier attempts saw. Progress older
+than `MAX_RESUME_AGE` (an hour, counted from the pass's first attempt) is
+dropped, and the pass starts again from the beginning.
+
 ```mermaid
 sequenceDiagram
     participant Caller
@@ -353,15 +366,18 @@ sequenceDiagram
     participant Rec as reconcile_document
     participant Del as deletions
     participant DB as PostgreSQL
+    participant Ckp as checkpoints
     Caller->>Sync: source, source_id, observed_at, principal_directory
-    loop until next_checkpoint is None (a repeated checkpoint raises)
+    Sync->>Ckp: begin_pass: claim the fence, resume the stored pass (at most an hour old) or start a new one
+    Ckp->>DB: one transaction: fence, checkpoint, pass_started_at
+    loop from the stored checkpoint until next_checkpoint is None (a repeated checkpoint raises)
         Sync->>Source: fetch_page(checkpoint, page_size)
         Source-->>Sync: records (bytes, version, access, metadata) + next checkpoint
         loop each record
             alt reported deleted
-                Sync->>Sync: remove its external ID from seen
+                Sync->>Sync: note it as deleted by this page
             else present
-                Sync->>Sync: add its external ID to seen
+                Sync->>Sync: note it as offered by this page
                 Sync->>Sync: normalize_access: mapped principals become readers, the rest are kept as unresolved
             end
         end
@@ -376,12 +392,14 @@ sequenceDiagram
                 Sync->>Rec: NormalizedDocument + readers
                 Rec->>DB: one transaction: lock row, compare fingerprints, write what changed
             else Quarantined
-                Sync->>Sync: keep it in seen, so its last good version stays, already narrowed
+                Sync->>Sync: keep it as offered, so its last good version stays, already narrowed
             end
         end
+        Sync->>Ckp: commit_page(offered, deleted, next_checkpoint)
+        Ckp->>DB: one fenced transaction: move the checkpoint (a repeated one is refused), store the offered IDs in synchronization_seen, forget the deleted ones
     end
-    Sync->>Del: tombstone_missing(seen)
-    Del->>DB: one transaction: tombstone, audit event, queue purge Job or reuse the open one
+    Sync->>Ckp: finish_pass
+    Ckp->>DB: one fenced transaction: tombstone every available Document not in synchronization_seen (audit event, purge Job), clear the progress
     Sync->>Del: requeue_unfinished_purges
     Del->>DB: queue a new purge for each exhausted one
     Sync-->>Caller: SynchronizationSummary (with unresolved principals)

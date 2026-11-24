@@ -21,7 +21,46 @@ sources = sa.Table(
     # The observation time of the newest pass that claimed this Source; only
     # that pass may write its Documents (`ingestion.synchronization`).
     sa.Column("synchronization_fence", sa.DateTime(timezone=True), nullable=True),
+    # When the pass whose progress `checkpoint` records started observing the
+    # Source; NULL when no pass is in progress (`ingestion.checkpoints`).
+    sa.Column("pass_started_at", sa.DateTime(timezone=True), nullable=True),
     sa.UniqueConstraint("kind", "location", name="uq_sources_kind_location"),
+    sa.CheckConstraint(
+        "checkpoint is null or pass_started_at is not null",
+        name="ck_sources_checkpoint_pass",
+    ),
+)
+
+# The external IDs the pass in progress has seen so far, one row each, so a
+# resumed pass still knows them when it tombstones what it did not see.
+synchronization_seen = sa.Table(
+    "synchronization_seen",
+    metadata,
+    sa.Column(
+        "source_id",
+        sa.Uuid(),
+        sa.ForeignKey("sources.source_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("external_id", sa.Text(), nullable=False),
+    sa.PrimaryKeyConstraint("source_id", "external_id", name="pk_synchronization_seen"),
+)
+
+# Every checkpoint the pass in progress has stored, so a Source that hands
+# one back is refused even by a later attempt that resumed after it.
+synchronization_checkpoints = sa.Table(
+    "synchronization_checkpoints",
+    metadata,
+    sa.Column(
+        "source_id",
+        sa.Uuid(),
+        sa.ForeignKey("sources.source_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("checkpoint", sa.Text(), nullable=False),
+    sa.PrimaryKeyConstraint(
+        "source_id", "checkpoint", name="pk_synchronization_checkpoints"
+    ),
 )
 
 synchronization_runs = sa.Table(

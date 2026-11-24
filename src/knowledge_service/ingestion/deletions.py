@@ -2,11 +2,14 @@
 
 Deletion happens in two steps:
 
-1. `tombstone_missing` runs at the end of a complete Synchronization Run. In
-   one transaction it marks every available Document the run did not see as
-   tombstoned, records an audit event, and queues a purge Job. Retrieval reads
-   only Chunks of available Documents, so the content disappears from reads at
-   that commit, while the Chunks are still stored.
+1. At the end of a complete Synchronization Run, every available Document
+   the run did not see, or last saw reported deleted, is tombstoned:
+   `tombstone_unseen` reads the seen IDs the run stored page by page;
+   `tombstone_missing` takes them as a set in memory, for callers that hold
+   a complete pass themselves. For each such Document, one transaction marks
+   it tombstoned, records an audit event, and queues a purge Job. Retrieval
+   reads only Chunks of available Documents, so the content disappears from
+   reads at that commit, while the Chunks are still stored.
 2. `purge_document_chunks` runs that Job later and deletes the Chunks. If it
    fails, the Job is recorded as failed with a short error code and can be
    queued again; reads stay correct in the meantime. When a purge has used
@@ -57,6 +60,9 @@ from knowledge_service.persistence.documents import (
 )
 from knowledge_service.persistence.job_attempts import finish_attempt
 from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
+from knowledge_service.persistence.synchronization_progress import (
+    load_unseen_available,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,33 +102,63 @@ async def tombstone_missing(
         for candidate in available:
             if candidate.provenance.external_id in seen:
                 continue
-            # Lock only the missing rows, so a concurrent reconcile of the same
-            # document waits, and decide from the row as it is now.
-            document = await load_document_by_id(
-                connection,
-                document_id=candidate.document_id,
-                for_update=True,
+            tombstone = await _tombstone(
+                connection, document_id=candidate.document_id, observed_at=observed_at
             )
-            if (
-                document is None
-                or document.availability is not DocumentAvailability.AVAILABLE
-                or document.updated_at > observed_at
-            ):
-                continue
-            tombstoned = document.tombstone(observed_at=observed_at)
-            await upsert_document(connection, tombstoned)
-            await record_audit_event(connection, availability_event(tombstoned))
-            job = await _queue_purge(
-                connection, document_id=tombstoned.document_id, now=observed_at
-            )
-            tombstones.append(
-                Tombstone(
-                    document_id=tombstoned.document_id,
-                    external_id=tombstoned.provenance.external_id,
-                    purge_job_id=job.job_id,
-                )
-            )
+            if tombstone is not None:
+                tombstones.append(tombstone)
     return tuple(tombstones)
+
+
+async def tombstone_unseen(
+    connection: AsyncConnection, *, source_id: SourceId, observed_at: datetime
+) -> tuple[Tombstone, ...]:
+    """Tombstone the available Documents the stored pass never saw.
+
+    The seen IDs are the ones every committed page of the pass stored, so a
+    pass resumed after a crash still counts the pages before it. The caller
+    owns the transaction and has checked its fence.
+    """
+    tombstones: list[Tombstone] = []
+    for document_id in await load_unseen_available(connection, source_id=source_id):
+        tombstone = await _tombstone(
+            connection, document_id=document_id, observed_at=observed_at
+        )
+        if tombstone is not None:
+            tombstones.append(tombstone)
+    return tuple(tombstones)
+
+
+async def _tombstone(
+    connection: AsyncConnection, *, document_id: DocumentId, observed_at: datetime
+) -> Tombstone | None:
+    """Tombstone one Document, deciding from its row under a lock.
+
+    None when it is gone, already tombstoned, or updated after
+    `observed_at`: a later observation saw it, so it is kept.
+    """
+    # Lock only this row, so a concurrent reconcile of the same document
+    # waits, and decide from the row as it is now.
+    document = await load_document_by_id(
+        connection, document_id=document_id, for_update=True
+    )
+    if (
+        document is None
+        or document.availability is not DocumentAvailability.AVAILABLE
+        or document.updated_at > observed_at
+    ):
+        return None
+    tombstoned = document.tombstone(observed_at=observed_at)
+    await upsert_document(connection, tombstoned)
+    await record_audit_event(connection, availability_event(tombstoned))
+    job = await _queue_purge(
+        connection, document_id=tombstoned.document_id, now=observed_at
+    )
+    return Tombstone(
+        document_id=tombstoned.document_id,
+        external_id=tombstoned.provenance.external_id,
+        purge_job_id=job.job_id,
+    )
 
 
 async def requeue_unfinished_purges(

@@ -5,6 +5,14 @@ reconciles it. Only after the last page does it tombstone the available
 Documents it did not see: a failure part-way through raises before anything
 is tombstoned, so a broken run never makes documents disappear.
 
+The pass is resumable (`ingestion.checkpoints`). After every record of a
+page is reconciled, one transaction stores the external IDs the page
+offered, forgets the ones it reported deleted, and moves the Source's
+checkpoint past it. A pass that fails resumes, on its next attempt, from
+the last committed checkpoint, with the IDs earlier attempts saw, so its
+tombstones still count every page. A page that was read but not committed
+is read and reconciled again, which changes nothing that already landed.
+
 Each Document's readers come from `normalize_access`: a principal the
 Source names but the `PrincipalDirectory` does not map grants nothing, and
 the summary reports it so someone can map it. A record that fails to
@@ -39,13 +47,14 @@ lease.
 
 Every pass is fenced. Before it reads anything it claims the Source's fence
 with its observation time, which works only when that time is newer than
-every earlier pass's, and every transaction that writes a Document (each
-narrowing, each reconciliation, the tombstones) first checks, under a share
-lock on the Source's row, that it still holds the fence. A newer claim
-waits for those writes, and after it the older pass's writes are refused
-with `SynchronizationSuperseded`. So an older pass that finishes late can
-never undo a newer one. A pass observed more than `MAX_CLOCK_SKEW` in the
-future is refused, so a bad clock cannot hold the fence for long.
+every earlier pass's, and every transaction that writes a Document or the
+pass's progress (each narrowing, each reconciliation, each page commit, the
+tombstones) first checks, under a lock on the Source's row, that it still
+holds the fence. A newer claim waits for those writes, and after it the
+older pass's writes are refused with `SynchronizationSuperseded`. So an
+older pass that finishes late can never undo a newer one. A pass observed
+more than `MAX_CLOCK_SKEW` in the future is refused, so a bad clock cannot
+hold the fence for long.
 """
 
 import logging
@@ -71,10 +80,15 @@ from knowledge_service.identifiers import (
     SourceId,
     SynchronizationRunId,
 )
+from knowledge_service.ingestion.checkpoints import (
+    MAX_RESUME_AGE,
+    begin_pass,
+    commit_page,
+    finish_pass,
+)
 from knowledge_service.ingestion.deletions import (
     Tombstone,
     requeue_unfinished_purges,
-    tombstone_missing,
 )
 from knowledge_service.ingestion.fencing import WriteGuard
 from knowledge_service.ingestion.grant_normalization import (
@@ -99,10 +113,8 @@ from knowledge_service.ingestion.sources import (
 )
 from knowledge_service.persistence.access import load_readers
 from knowledge_service.persistence.audit import record_audit_event
-from knowledge_service.persistence.sources import (
-    claim_synchronization_fence,
-    synchronization_fence_holds,
-)
+from knowledge_service.persistence.sources import synchronization_fence_holds
+from knowledge_service.persistence.synchronization_progress import PassProgress
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +145,9 @@ class SynchronizationSummary:
     tombstones: tuple[Tombstone, ...]
     requeued_purges: tuple[JobId, ...]
     unresolved: tuple[UnresolvedAccess, ...]
+    # Whether this attempt resumed a pass from its stored checkpoint; the
+    # counts above cover only the pages this attempt read.
+    resumed: bool
 
 
 async def synchronize_source(
@@ -145,6 +160,7 @@ async def synchronize_source(
     page_size: int = PAGE_SIZE,
     run_id: SynchronizationRunId | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
+    max_resume_age: timedelta = MAX_RESUME_AGE,
 ) -> SynchronizationSummary:
     """Publish every record the Source offers, then tombstone the rest.
 
@@ -152,11 +168,18 @@ async def synchronize_source(
     None, only public items are readable. A Source that returns a checkpoint
     it returned before raises `InvalidSource` instead of paging forever.
     The pass runs as `run_id`, or as a new run, and records how it ended.
-    Raises `SynchronizationSuperseded`, before reading and recording
-    anything, when a pass with the same or a later `observed_at` started.
+    It resumes the stored pass when that started at most `max_resume_age`
+    before `observed_at`. Raises `SynchronizationSuperseded`, before reading
+    and recording anything, when a pass with the same or a later
+    `observed_at` started.
     """
     run = SynchronizationRunId.new() if run_id is None else run_id
-    await _claim_fence(runtime, source_id=source_id, observed_at=observed_at)
+    progress = await _claim_fence(
+        runtime,
+        source_id=source_id,
+        observed_at=observed_at,
+        max_resume_age=max_resume_age,
+    )
 
     async def guard(connection: AsyncConnection) -> None:
         if not await synchronization_fence_holds(
@@ -175,6 +198,7 @@ async def synchronize_source(
             run_id=run,
             heartbeat=heartbeat,
             guard=guard,
+            progress=progress,
         )
     except Exception as error:
         # The pass's own error is raised either way; its record holds only
@@ -213,23 +237,29 @@ async def synchronize_source(
             "quarantined": len(summary.quarantined),
             "tombstoned": len(summary.tombstones),
             "unresolved": len(summary.unresolved),
+            "resumed": summary.resumed,
         },
     )
     return summary
 
 
 async def _claim_fence(
-    runtime: DatabaseRuntime, *, source_id: SourceId, observed_at: datetime
-) -> None:
+    runtime: DatabaseRuntime,
+    *,
+    source_id: SourceId,
+    observed_at: datetime,
+    max_resume_age: timedelta,
+) -> PassProgress:
     if observed_at.utcoffset() != timedelta(0):
         raise InvalidSource("observed_at must be a UTC-aware timestamp")
     if observed_at > datetime.now(UTC) + MAX_CLOCK_SKEW:
         raise InvalidSource("observed_at is too far in the future to fence on")
-    async with runtime.transaction() as connection:
-        if not await claim_synchronization_fence(
-            connection, source_id=source_id, observed_at=observed_at
-        ):
-            raise SynchronizationSuperseded("a newer synchronization pass started")
+    return await begin_pass(
+        runtime,
+        source_id=source_id,
+        observed_at=observed_at,
+        max_resume_age=max_resume_age,
+    )
 
 
 async def _record_finished(
@@ -271,29 +301,29 @@ async def _publish(
     page_size: int,
     run_id: SynchronizationRunId,
     heartbeat: Callable[[], Awaitable[None]] | None,
-    guard: WriteGuard | None,
+    guard: WriteGuard,
+    progress: PassProgress,
 ) -> SynchronizationSummary:
-    """One pass: every page, then the tombstones and requeued purges."""
-    seen: set[str] = set()
-    used: set[str] = set()
+    """Every page from the stored checkpoint, then the tombstones and purges."""
+    checkpoint = progress.checkpoint
     changes: Counter[Change] = Counter()
     quarantined: list[Quarantined] = []
     # By external ID, so a record offered twice is reported as last seen.
     unresolved: dict[str, UnresolvedAccess] = {}
-    checkpoint: str | None = None
     while True:
         page = await source.fetch_page(checkpoint=checkpoint, page_size=page_size)
         # By external ID, so a record offered twice in a page counts once.
         planned: dict[str, tuple[SourceRecord, NormalizedAccess]] = {}
+        # What the page reports deleted, by each item's last report.
+        deleted: set[str] = set()
         for record in page.records:
-            # A record the Source reports deleted is not seen, even if an
-            # earlier page offered it: the last report wins.
+            # The last report of an item in the page wins.
             unresolved.pop(record.external_id, None)
             planned.pop(record.external_id, None)
             if record.state is SourceRecordState.DELETED or record.access is None:
-                seen.discard(record.external_id)
+                deleted.add(record.external_id)
                 continue
-            seen.add(record.external_id)
+            deleted.discard(record.external_id)
             access = normalize_access(record.access, principal_directory)
             if access.unresolved:
                 unresolved[record.external_id] = UnresolvedAccess(
@@ -330,17 +360,25 @@ async def _publish(
             changes[
                 _counted(result.change, narrowed=record.external_id in narrowed)
             ] += 1
+        # Every record of the page is reconciled; only now may the
+        # checkpoint move past it. Quarantined records count as offered. A
+        # checkpoint the pass stored before is refused and never stored.
+        await commit_page(
+            runtime,
+            source_id=source_id,
+            observed_at=observed_at,
+            offered=planned.keys(),
+            deleted=deleted,
+            next_checkpoint=page.next_checkpoint,
+        )
         if heartbeat is not None:
             # After the last page this runs just before the tombstones.
             await heartbeat()
         if page.next_checkpoint is None:
             break
-        if page.next_checkpoint in used:
-            raise InvalidSource("the source repeated a checkpoint")
-        used.add(page.next_checkpoint)
         checkpoint = page.next_checkpoint
-    tombstones = await tombstone_missing(
-        runtime, source_id=source_id, seen=seen, observed_at=observed_at, guard=guard
+    tombstones = await finish_pass(
+        runtime, source_id=source_id, observed_at=observed_at
     )
     requeued = await requeue_unfinished_purges(
         runtime, source_id=source_id, now=observed_at
@@ -359,6 +397,7 @@ async def _publish(
         tombstones=tombstones,
         requeued_purges=requeued,
         unresolved=tuple(unresolved.values()),
+        resumed=progress.resumed,
     )
 
 
@@ -369,7 +408,7 @@ async def _revoke_first(
     source_id: SourceId,
     observed_at: datetime,
     run_id: SynchronizationRunId,
-    guard: WriteGuard | None,
+    guard: WriteGuard,
 ) -> set[str]:
     """Narrow every record whose new access leaves a reader out.
 

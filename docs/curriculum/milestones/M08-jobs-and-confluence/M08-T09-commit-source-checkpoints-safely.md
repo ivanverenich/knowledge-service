@@ -7,7 +7,7 @@ depends_on: ["M08-T08"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["checkpoint transaction"]
-status: planned
+status: completed
 ---
 
 # M08-T09 — Commit Source checkpoints safely
