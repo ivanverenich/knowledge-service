@@ -1,10 +1,13 @@
 """Statements over the stored progress of a Source's synchronization pass.
 
-The progress is four facts: when the pass in progress started
-(`sources.pass_started_at`), the checkpoint it resumes from
-(`sources.checkpoint`), every checkpoint it has stored
-(`synchronization_checkpoints`), and the external IDs it has seen so far
-(`synchronization_seen`). `advance_checkpoint` and `end_pass` check, in
+The progress is five facts: when the pass in progress started
+(`sources.pass_started_at`), whether it is incremental
+(`sources.pass_mode`), the checkpoint it resumes from (`sources.checkpoint`),
+every checkpoint it has stored (`synchronization_checkpoints`), and each
+external ID it has met so far with its last report, present or deleted
+(`synchronization_seen`). Between passes a Source keeps its change cursor
+(`sources.sync_cursor`) and when its last full pass finished
+(`sources.last_full_pass_at`). `advance_checkpoint` and `end_pass` check, in
 the same statement, that the pass still holds the Source's fence, and lock
 the Source's row; the other writes run in the transaction that checked it.
 """
@@ -31,14 +34,23 @@ from knowledge_service.persistence.schema import (
 # hold more IDs than that, so they are written this many at a time.
 BATCH_SIZE = 1000
 
+_FULL = "full"
+_INCREMENTAL = "incremental"
+
 
 @dataclass(frozen=True, slots=True)
 class PassProgress:
-    """Where a pass starts: from the beginning, or from a stored checkpoint."""
+    """Where a pass starts, and how it reads its Source.
+
+    `since` is the change cursor an incremental pass reads after; None for
+    a full pass.
+    """
 
     started_at: datetime
     checkpoint: str | None
     resumed: bool
+    incremental: bool
+    since: str | None
 
 
 async def start_or_resume_pass(
@@ -47,32 +59,73 @@ async def start_or_resume_pass(
     source_id: SourceId,
     observed_at: datetime,
     max_age: timedelta,
+    follows_changes: bool,
+    full_interval: timedelta,
 ) -> PassProgress:
     """Resume the stored pass if it started at most `max_age` ago, or start anew.
 
-    Call it in the transaction that claimed the fence, so no older pass can
-    store progress between the claim and this read. Starting anew forgets
-    everything an earlier pass stored.
+    A new pass is incremental only when the Source `follows_changes`, has a
+    stored cursor, and its last full pass finished less than `full_interval`
+    before `observed_at`; otherwise it is full. A resumed pass keeps the mode
+    it started with, unless it is incremental and the Source no longer
+    follows changes: then a full pass starts. Call it in the transaction that
+    claimed the fence, so no older pass can store progress between the claim
+    and this read. Starting anew forgets everything an earlier pass stored.
     """
     row = (
         await connection.execute(
-            sa.select(sources.c.checkpoint, sources.c.pass_started_at)
+            sa.select(
+                sources.c.checkpoint,
+                sources.c.pass_started_at,
+                sources.c.pass_mode,
+                sources.c.sync_cursor,
+                sources.c.last_full_pass_at,
+            )
             .where(sources.c.source_id == source_id.value)
             .with_for_update()
         )
     ).one()
     started_at: datetime | None = row.pass_started_at
-    if started_at is not None and started_at <= observed_at <= started_at + max_age:
+    cursor: str | None = row.sync_cursor
+    stored_incremental = row.pass_mode == _INCREMENTAL
+    if (
+        started_at is not None
+        and started_at <= observed_at <= started_at + max_age
+        # An incremental pass needs a change feed; without one, start over.
+        and (follows_changes or not stored_incremental)
+    ):
+        incremental = stored_incremental
         return PassProgress(
-            started_at=started_at, checkpoint=row.checkpoint, resumed=True
+            started_at=started_at,
+            checkpoint=row.checkpoint,
+            resumed=True,
+            incremental=incremental,
+            since=cursor if incremental else None,
         )
+    last_full: datetime | None = row.last_full_pass_at
+    incremental = (
+        follows_changes
+        and cursor is not None
+        and last_full is not None
+        and last_full <= observed_at < last_full + full_interval
+    )
     await forget_pass(connection, source_id=source_id)
     await connection.execute(
         sa.update(sources)
         .where(sources.c.source_id == source_id.value)
-        .values(pass_started_at=observed_at, checkpoint=None)
+        .values(
+            pass_started_at=observed_at,
+            pass_mode=_INCREMENTAL if incremental else _FULL,
+            checkpoint=None,
+        )
     )
-    return PassProgress(started_at=observed_at, checkpoint=None, resumed=False)
+    return PassProgress(
+        started_at=observed_at,
+        checkpoint=None,
+        resumed=False,
+        incremental=incremental,
+        since=cursor if incremental else None,
+    )
 
 
 async def advance_checkpoint(
@@ -121,13 +174,27 @@ async def remember_checkpoint(
 
 
 async def end_pass(
-    connection: AsyncConnection, *, source_id: SourceId, observed_at: datetime
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+    observed_at: datetime,
+    cursor: str | None,
+    full: bool,
 ) -> bool:
-    """Clear the stored resume point, if this pass holds the fence.
+    """Clear the pass's resume point and keep `cursor`, if it holds the fence.
 
-    The seen IDs stay until `forget_pass`, so the same transaction can still
-    tombstone what the pass did not see.
+    A full pass also records `observed_at` as the last full pass. The seen
+    IDs stay until `forget_pass`, so the same transaction can still tombstone
+    what the pass found gone.
     """
+    values: dict[str, object] = {
+        "checkpoint": None,
+        "pass_started_at": None,
+        "pass_mode": None,
+        "sync_cursor": cursor,
+    }
+    if full:
+        values["last_full_pass_at"] = observed_at
     held = await connection.scalar(
         sa.update(sources)
         .where(
@@ -135,38 +202,43 @@ async def end_pass(
             sources.c.synchronization_fence == observed_at,
             sources.c.pass_started_at.is_not(None),
         )
-        .values(checkpoint=None, pass_started_at=None)
+        .values(values)
         .returning(sources.c.source_id)
     )
     return held is not None
 
 
-async def record_seen(
-    connection: AsyncConnection, *, source_id: SourceId, external_ids: Collection[str]
+async def record_reports(
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+    offered: Collection[str],
+    deleted: Collection[str],
 ) -> None:
-    """Remember that the pass in progress saw these external IDs."""
-    for batch in _batches(external_ids):
-        await connection.execute(
-            insert(synchronization_seen)
-            .values(
-                [
-                    {"source_id": source_id.value, "external_id": external_id}
-                    for external_id in batch
-                ]
-            )
-            .on_conflict_do_nothing()
+    """Store each external ID's last report in the pass: offered or deleted.
+
+    A later report of the same ID replaces an earlier one.
+    """
+    reports = dict.fromkeys(offered, False)
+    reports.update(dict.fromkeys(deleted, True))
+    for batch in _batches(reports):
+        statement = insert(synchronization_seen).values(
+            [
+                {
+                    "source_id": source_id.value,
+                    "external_id": external_id,
+                    "deleted": reports[external_id],
+                }
+                for external_id in batch
+            ]
         )
-
-
-async def forget_seen(
-    connection: AsyncConnection, *, source_id: SourceId, external_ids: Collection[str]
-) -> None:
-    """Forget these external IDs: the Source reported them deleted."""
-    for batch in _batches(external_ids):
         await connection.execute(
-            sa.delete(synchronization_seen).where(
-                synchronization_seen.c.source_id == source_id.value,
-                synchronization_seen.c.external_id.in_(batch),
+            statement.on_conflict_do_update(
+                index_elements=[
+                    synchronization_seen.c.source_id,
+                    synchronization_seen.c.external_id,
+                ],
+                set_={"deleted": statement.excluded.deleted},
             )
         )
 
@@ -182,17 +254,39 @@ async def forget_pass(connection: AsyncConnection, *, source_id: SourceId) -> No
 async def load_unseen_available(
     connection: AsyncConnection, *, source_id: SourceId
 ) -> tuple[DocumentId, ...]:
-    """Available Documents of the Source the pass in progress has not seen."""
-    seen = sa.exists().where(
+    """Available Documents the pass never saw, or last saw reported deleted."""
+    offered = sa.exists().where(
         synchronization_seen.c.source_id == documents.c.source_id,
         synchronization_seen.c.external_id == documents.c.external_id,
+        synchronization_seen.c.deleted.is_(False),
     )
+    return await _available(connection, source_id=source_id, condition=~offered)
+
+
+async def load_reported_deleted_available(
+    connection: AsyncConnection, *, source_id: SourceId
+) -> tuple[DocumentId, ...]:
+    """Available Documents whose last report in the pass said deleted."""
+    deleted = sa.exists().where(
+        synchronization_seen.c.source_id == documents.c.source_id,
+        synchronization_seen.c.external_id == documents.c.external_id,
+        synchronization_seen.c.deleted.is_(True),
+    )
+    return await _available(connection, source_id=source_id, condition=deleted)
+
+
+async def _available(
+    connection: AsyncConnection,
+    *,
+    source_id: SourceId,
+    condition: sa.ColumnElement[bool],
+) -> tuple[DocumentId, ...]:
     rows = await connection.scalars(
         sa.select(documents.c.document_id)
         .where(
             documents.c.source_id == source_id.value,
             documents.c.availability == DocumentAvailability.AVAILABLE.value,
-            ~seen,
+            condition,
         )
         .order_by(documents.c.external_id)
     )

@@ -9,7 +9,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final
 
@@ -29,6 +29,12 @@ from knowledge_service.worker.broker import QueueName, WorkerConfigurationError
 logger = logging.getLogger(__name__)
 
 JOB_TIME_LIMIT_MS: Final = 60_000
+# How long one message may run on each queue. A synchronization pass reads a
+# whole Source; one cut off resumes from its checkpoint on its next attempt.
+TIME_LIMIT_MS_FOR_QUEUE: Final[Mapping[QueueName, int]] = {
+    QueueName.MAINTENANCE: JOB_TIME_LIMIT_MS,
+    QueueName.SYNCHRONIZATION: 30 * 60_000,
+}
 
 # The queue each kind of Job travels on.
 QUEUE_FOR_KIND: Final[Mapping[JobKind, QueueName]] = {
@@ -39,11 +45,14 @@ QUEUE_FOR_KIND: Final[Mapping[JobKind, QueueName]] = {
 
 type JobHandler = Callable[..., Awaitable[Job]]
 
-# The Jobs a worker can run today. Each handler claims a queued Job in its
-# own transaction and refuses one that is no longer queued.
+# The handlers that need nothing but the database. Each handler claims a
+# queued Job in its own transaction and refuses one that is no longer queued.
 HANDLERS: Final[Mapping[JobKind, JobHandler]] = {
     JobKind.PURGE_DOCUMENT_CHUNKS: purge_document_chunks,
 }
+# Every kind the worker runs: these and `synchronize_source`, whose handler
+# `worker.handlers.job_handlers` builds from settings.
+RUNNABLE_KINDS: Final = frozenset({*HANDLERS, JobKind.SYNCHRONIZE_SOURCE})
 
 
 class InvalidJobMessage(ValueError):
@@ -93,7 +102,7 @@ def declare_job_actors(
             broker=broker,
             actor_name=f"run_{queue}_job",
             queue_name=queue,
-            time_limit=JOB_TIME_LIMIT_MS,
+            time_limit=TIME_LIMIT_MS_FOR_QUEUE[queue],
             max_retries=0,
         )
         by_queue[queue] = declare(run)
@@ -172,6 +181,7 @@ class JobRunner:
     """Runs one Job per message, with a database connection of its own."""
 
     settings: Settings
+    handlers: Mapping[JobKind, JobHandler] = field(default_factory=lambda: HANDLERS)
 
     def __post_init__(self) -> None:
         if self.settings.database_url is None:
@@ -186,6 +196,8 @@ class JobRunner:
         # An engine belongs to one event loop, and each message gets its own.
         runtime = create_database_runtime(self.settings)
         try:
-            await run_stored_job(runtime, job_id, now=datetime.now(UTC))
+            await run_stored_job(
+                runtime, job_id, now=datetime.now(UTC), handlers=self.handlers
+            )
         finally:
             await runtime.dispose()

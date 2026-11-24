@@ -16,8 +16,8 @@ open-intent index (M08-T03). When more Sources are due than a pass may
 queue, the longest-waiting go first, so none is starved.
 
 A Source with an open synchronization Job is not scheduled again until that
-Job ends: a Job stuck running waits for M08-T08, and until the handler of
-M08-T10 runs these Jobs they stay queued, so each Source is queued once.
+Job ends: a Job stuck running waits for recovery (M08-T08). The worker runs
+these Jobs with `ingestion.synchronization_jobs`.
 """
 
 from dataclasses import dataclass

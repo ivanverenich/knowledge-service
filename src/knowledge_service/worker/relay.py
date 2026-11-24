@@ -33,7 +33,7 @@ from knowledge_service.job_recovery import RecoveryReport, recover_stuck_jobs
 from knowledge_service.settings import Settings
 from knowledge_service.worker.broker import broker_from_settings
 from knowledge_service.worker.jobs import (
-    HANDLERS,
+    RUNNABLE_KINDS,
     DramatiqJobPublisher,
     JobRunner,
     declare_job_actors,
@@ -112,7 +112,7 @@ def main() -> int:
     broker = broker_from_settings(settings)
     try:
         actors = declare_job_actors(
-            broker, run_job=JobRunner(settings), kinds=frozenset(HANDLERS)
+            broker, run_job=JobRunner(settings), kinds=RUNNABLE_KINDS
         )
         done = asyncio.run(_relay(settings, DramatiqJobPublisher(actors)))
     finally:

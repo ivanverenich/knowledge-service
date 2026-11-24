@@ -1,6 +1,7 @@
 """Statements over Sources, their synchronization runs, their fence, and schedule."""
 
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -12,6 +13,49 @@ from knowledge_service.identifiers import SourceId
 from knowledge_service.jobs import JobKind
 from knowledge_service.persistence.jobs import open_job
 from knowledge_service.persistence.schema import jobs, sources, synchronization_runs
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRow:
+    """A stored Source as a synchronization Job needs it, as plain values."""
+
+    source_id: SourceId
+    kind: str
+    location: str
+    credentials_reference: str | None
+    enabled: bool
+    default_public: bool
+    # PostgreSQL arrays may hold NULL elements; the caller decides.
+    default_principals: tuple[str | None, ...]
+
+
+async def load_source_row(
+    connection: AsyncConnection, *, source_id: SourceId
+) -> SourceRow | None:
+    """Read one stored Source, if it exists."""
+    row = (
+        await connection.execute(
+            sa.select(
+                sources.c.kind,
+                sources.c.location,
+                sources.c.credentials_reference,
+                sources.c.enabled,
+                sources.c.default_public,
+                sources.c.default_principals,
+            ).where(sources.c.source_id == source_id.value)
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return SourceRow(
+        source_id=source_id,
+        kind=row.kind,
+        location=row.location,
+        credentials_reference=row.credentials_reference,
+        enabled=row.enabled,
+        default_public=row.default_public,
+        default_principals=tuple(row.default_principals),
+    )
 
 
 def source_runs_statement(source_id: UUID, limit: int) -> sa.Select[Any]:

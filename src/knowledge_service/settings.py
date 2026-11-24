@@ -1,6 +1,7 @@
 """Validated application configuration."""
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, model_validator
@@ -37,6 +38,12 @@ class Settings(BaseSettings):
     database_statement_timeout_ms: int = Field(default=10_000, gt=0)
     # How often each enabled Source is synchronized (`ingestion.scheduling`).
     synchronization_interval_minutes: int = Field(default=60, ge=1, le=7 * 24 * 60)
+    # How long a Source that follows changes may go without a full pass.
+    full_synchronization_interval_hours: int = Field(default=24, ge=1, le=30 * 24)
+    # A JSON file mapping Source principals to identity-provider users and
+    # groups (`ingestion.grant_normalization.PrincipalDirectory`). Without
+    # it, only items a Source marks public are readable.
+    principal_directory_file: Path | None = None
     # The Redis broker that carries worker messages; it may hold a password.
     redis_url: SecretStr | None = None
     redis_health_timeout_seconds: float = Field(

@@ -24,15 +24,44 @@ sources = sa.Table(
     # When the pass whose progress `checkpoint` records started observing the
     # Source; NULL when no pass is in progress (`ingestion.checkpoints`).
     sa.Column("pass_started_at", sa.DateTime(timezone=True), nullable=True),
+    # Whether the pass in progress is `full` or `incremental`; NULL with no
+    # pass in progress (`ingestion.checkpoints`).
+    sa.Column("pass_mode", sa.String(length=16), nullable=True),
+    # The Source's own token for "changes after the last finished pass", kept
+    # between passes; NULL when the Source has no change feed.
+    sa.Column("sync_cursor", sa.Text(), nullable=True),
+    # When the last full pass finished; a full pass is due again after
+    # `full_synchronization_interval_hours`.
+    sa.Column("last_full_pass_at", sa.DateTime(timezone=True), nullable=True),
+    # Who may read every item of a Source whose items carry no access of
+    # their own, such as a local folder. The default lets nobody read.
+    sa.Column(
+        "default_public", sa.Boolean(), nullable=False, server_default=sa.false()
+    ),
+    sa.Column(
+        "default_principals",
+        ARRAY(sa.Text()),
+        nullable=False,
+        server_default=sa.text("'{}'::text[]"),
+    ),
     sa.UniqueConstraint("kind", "location", name="uq_sources_kind_location"),
     sa.CheckConstraint(
         "checkpoint is null or pass_started_at is not null",
         name="ck_sources_checkpoint_pass",
     ),
+    sa.CheckConstraint(
+        "(pass_started_at is null) = (pass_mode is null)"
+        " and (pass_mode is null or pass_mode in ('full', 'incremental'))",
+        name="ck_sources_pass_mode",
+    ),
+    sa.CheckConstraint(
+        "not (default_public and cardinality(default_principals) > 0)",
+        name="ck_sources_default_access",
+    ),
 )
 
-# The external IDs the pass in progress has seen so far, one row each, so a
-# resumed pass still knows them when it tombstones what it did not see.
+# Each external ID the pass in progress has met, with its last report in the
+# pass, so a resumed pass still knows them when it tombstones at the end.
 synchronization_seen = sa.Table(
     "synchronization_seen",
     metadata,
@@ -43,6 +72,8 @@ synchronization_seen = sa.Table(
         nullable=False,
     ),
     sa.Column("external_id", sa.Text(), nullable=False),
+    # True when the item's last report in the pass said it was deleted.
+    sa.Column("deleted", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.PrimaryKeyConstraint("source_id", "external_id", name="pk_synchronization_seen"),
 )
 

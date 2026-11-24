@@ -215,21 +215,24 @@ async def test_a_resumed_pass_does_not_tombstone_what_an_earlier_attempt_saw(
 async def test_a_page_commit_is_all_or_nothing(
     runtime: DatabaseRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    record_seen = checkpoints.record_seen
+    record_reports = checkpoints.record_reports
 
     async def crash_on_b(
         connection: AsyncConnection,
         *,
         source_id: SourceId,
-        external_ids: Collection[str],
+        offered: Collection[str],
+        deleted: Collection[str],
     ) -> None:
-        if "b.txt" in external_ids:
+        if "b.txt" in offered:
             raise Crash
-        await record_seen(connection, source_id=source_id, external_ids=external_ids)
+        await record_reports(
+            connection, source_id=source_id, offered=offered, deleted=deleted
+        )
 
     # Page two's commit dies after it moved the checkpoint, before it ends.
     with monkeypatch.context() as patched:
-        patched.setattr(checkpoints, "record_seen", crash_on_b)
+        patched.setattr(checkpoints, "record_reports", crash_on_b)
         with pytest.raises(Crash):
             await run(runtime, FakeSource(THREE_PAGES), OBSERVED_AT)
     # The checkpoint move rolled back with the rest of the commit.

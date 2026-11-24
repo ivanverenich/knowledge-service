@@ -264,7 +264,11 @@ def test_worker_entry_point_declares_ping_on_its_global_broker(
     entry = importlib.import_module("knowledge_service.worker.main")
     try:
         assert dramatiq.get_broker() is entry.broker
-        assert entry.broker.get_declared_actors() == {"ping", "run_maintenance_job"}
+        assert entry.broker.get_declared_actors() == {
+            "ping",
+            "run_maintenance_job",
+            "run_synchronization_job",
+        }
     finally:
         entry.broker.close()
         dramatiq.set_broker(StubBroker())

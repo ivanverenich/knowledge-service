@@ -15,15 +15,21 @@ crashes, the lease expires and the next pass runs. The lease errors are
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Final
 
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.identifiers import SourceId, SynchronizationRunId
+from knowledge_service.ingestion.checkpoints import (
+    FULL_PASS_INTERVAL,
+    MAX_RESUME_AGE,
+)
 from knowledge_service.ingestion.grant_normalization import PrincipalDirectory
 from knowledge_service.ingestion.sources import SourcePort, SourceUnavailable
 from knowledge_service.ingestion.synchronization import (
     PAGE_SIZE,
+    PassTotals,
     SynchronizationSummary,
     synchronize_source,
 )
@@ -65,6 +71,9 @@ async def synchronize_source_exclusively(
     page_size: int = PAGE_SIZE,
     run_id: SynchronizationRunId | None = None,
     ttl: timedelta = SYNC_LEASE_TTL,
+    on_page: Callable[[PassTotals], Awaitable[None]] | None = None,
+    max_resume_age: timedelta = MAX_RESUME_AGE,
+    full_pass_interval: timedelta = FULL_PASS_INTERVAL,
 ) -> SynchronizationSummary:
     """`synchronize_source`, while holding the Source's lease.
 
@@ -101,6 +110,9 @@ async def synchronize_source_exclusively(
             page_size=page_size,
             run_id=run_id,
             heartbeat=keep_lease,
+            on_page=on_page,
+            max_resume_age=max_resume_age,
+            full_pass_interval=full_pass_interval,
         )
     finally:
         try:

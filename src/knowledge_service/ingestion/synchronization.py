@@ -5,6 +5,13 @@ reconciles it. Only after the last page does it tombstone the available
 Documents it did not see: a failure part-way through raises before anything
 is tombstoned, so a broken run never makes documents disappear.
 
+A pass is full or incremental (`ingestion.checkpoints` decides). A full
+pass reads every page with `fetch_page` and, at the end, tombstones every
+available Document it did not see. An incremental pass, for a Source that
+follows changes (`ChangeFeed`), reads only what changed after the stored
+cursor with `fetch_changes`, and tombstones only what the Source reported
+deleted. The last page's cursor is kept for the next incremental pass.
+
 The pass is resumable (`ingestion.checkpoints`). After every record of a
 page is reconciled, one transaction stores the external IDs the page
 offered, forgets the ones it reported deleted, and moves the Source's
@@ -40,10 +47,11 @@ error's type name, in a transaction of its own. A pass that is cancelled
 records nothing; a failed pass whose record cannot be written logs that and
 raises its own error.
 
-A caller may pass a `heartbeat`, awaited after every page and so also just
-before the tombstones. Raising from it stops the pass there, as a failure:
-nothing is tombstoned. `synchronize_source_exclusively` uses it to keep its
-lease.
+A caller may pass `on_page`, awaited after every committed page with the
+running totals of this attempt, to report progress, and a `heartbeat`,
+awaited after it and so also just before the tombstones. Raising from either
+stops the pass there, as a failure: nothing is tombstoned.
+`synchronize_source_exclusively` uses the heartbeat to keep its lease.
 
 Every pass is fenced. Before it reads anything it claims the Source's fence
 with its observation time, which works only when that time is newer than
@@ -81,10 +89,12 @@ from knowledge_service.identifiers import (
     SynchronizationRunId,
 )
 from knowledge_service.ingestion.checkpoints import (
+    FULL_PASS_INTERVAL,
     MAX_RESUME_AGE,
     begin_pass,
     commit_page,
     finish_pass,
+    mode_of,
 )
 from knowledge_service.ingestion.deletions import (
     Tombstone,
@@ -105,11 +115,16 @@ from knowledge_service.ingestion.reconciliation import (
     removes_readers,
 )
 from knowledge_service.ingestion.sources import (
+    ChangeFeed,
     InvalidSource,
+    ObservedInTheFuture,
+    SourceMisconfigured,
+    SourcePage,
     SourcePort,
     SourceRecord,
     SourceRecordState,
     SynchronizationSuperseded,
+    SyncMode,
 )
 from knowledge_service.persistence.access import load_readers
 from knowledge_service.persistence.audit import record_audit_event
@@ -136,6 +151,19 @@ class UnresolvedAccess:
 
 
 @dataclass(frozen=True, slots=True)
+class PassTotals:
+    """How much this attempt of a pass has done so far; each total only grows."""
+
+    # Records handled: reconciled or quarantined.
+    processed: int
+    # Records whose content, readers, or metadata changed.
+    changed: int
+    quarantined: int
+    # Documents whose Source named readers the directory lacks.
+    unresolved: int
+
+
+@dataclass(frozen=True, slots=True)
 class SynchronizationSummary:
     """What one complete pass did."""
 
@@ -148,6 +176,7 @@ class SynchronizationSummary:
     # Whether this attempt resumed a pass from its stored checkpoint; the
     # counts above cover only the pages this attempt read.
     resumed: bool
+    mode: SyncMode
 
 
 async def synchronize_source(
@@ -160,16 +189,20 @@ async def synchronize_source(
     page_size: int = PAGE_SIZE,
     run_id: SynchronizationRunId | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
+    on_page: Callable[[PassTotals], Awaitable[None]] | None = None,
     max_resume_age: timedelta = MAX_RESUME_AGE,
+    full_pass_interval: timedelta = FULL_PASS_INTERVAL,
 ) -> SynchronizationSummary:
-    """Publish every record the Source offers, then tombstone the rest.
+    """Publish what the Source offers or changed, then tombstone what is gone.
 
     Readers come from `principal_directory`, which every caller names: with
     None, only public items are readable. A Source that returns a checkpoint
     it returned before raises `InvalidSource` instead of paging forever.
     The pass runs as `run_id`, or as a new run, and records how it ended.
     It resumes the stored pass when that started at most `max_resume_age`
-    before `observed_at`. Raises `SynchronizationSuperseded`, before reading
+    before `observed_at`; a new pass is incremental when the Source is a
+    `ChangeFeed` with a stored cursor and a full pass within
+    `full_pass_interval`. Raises `SynchronizationSuperseded`, before reading
     and recording anything, when a pass with the same or a later
     `observed_at` started.
     """
@@ -178,7 +211,9 @@ async def synchronize_source(
         runtime,
         source_id=source_id,
         observed_at=observed_at,
+        follows_changes=isinstance(source, ChangeFeed),
         max_resume_age=max_resume_age,
+        full_pass_interval=full_pass_interval,
     )
 
     async def guard(connection: AsyncConnection) -> None:
@@ -197,6 +232,7 @@ async def synchronize_source(
             page_size=page_size,
             run_id=run,
             heartbeat=heartbeat,
+            on_page=on_page,
             guard=guard,
             progress=progress,
         )
@@ -238,6 +274,7 @@ async def synchronize_source(
             "tombstoned": len(summary.tombstones),
             "unresolved": len(summary.unresolved),
             "resumed": summary.resumed,
+            "mode": summary.mode.value,
         },
     )
     return summary
@@ -248,17 +285,21 @@ async def _claim_fence(
     *,
     source_id: SourceId,
     observed_at: datetime,
+    follows_changes: bool,
     max_resume_age: timedelta,
+    full_pass_interval: timedelta,
 ) -> PassProgress:
     if observed_at.utcoffset() != timedelta(0):
         raise InvalidSource("observed_at must be a UTC-aware timestamp")
     if observed_at > datetime.now(UTC) + MAX_CLOCK_SKEW:
-        raise InvalidSource("observed_at is too far in the future to fence on")
+        raise ObservedInTheFuture("observed_at is too far in the future to fence on")
     return await begin_pass(
         runtime,
         source_id=source_id,
         observed_at=observed_at,
+        follows_changes=follows_changes,
         max_resume_age=max_resume_age,
+        full_pass_interval=full_pass_interval,
     )
 
 
@@ -301,17 +342,21 @@ async def _publish(
     page_size: int,
     run_id: SynchronizationRunId,
     heartbeat: Callable[[], Awaitable[None]] | None,
+    on_page: Callable[[PassTotals], Awaitable[None]] | None,
     guard: WriteGuard,
     progress: PassProgress,
 ) -> SynchronizationSummary:
     """Every page from the stored checkpoint, then the tombstones and purges."""
+    mode = mode_of(progress)
     checkpoint = progress.checkpoint
     changes: Counter[Change] = Counter()
     quarantined: list[Quarantined] = []
     # By external ID, so a record offered twice is reported as last seen.
     unresolved: dict[str, UnresolvedAccess] = {}
     while True:
-        page = await source.fetch_page(checkpoint=checkpoint, page_size=page_size)
+        page = await _fetch(
+            source, progress, checkpoint=checkpoint, page_size=page_size
+        )
         # By external ID, so a record offered twice in a page counts once.
         planned: dict[str, tuple[SourceRecord, NormalizedAccess]] = {}
         # What the page reports deleted, by each item's last report.
@@ -371,14 +416,23 @@ async def _publish(
             deleted=deleted,
             next_checkpoint=page.next_checkpoint,
         )
+        if on_page is not None:
+            await on_page(_totals(changes, quarantined, unresolved))
         if heartbeat is not None:
             # After the last page this runs just before the tombstones.
             await heartbeat()
         if page.next_checkpoint is None:
             break
         checkpoint = page.next_checkpoint
+    if mode is SyncMode.INCREMENTAL and page.cursor is None:
+        # Without a new cursor the next pass could not continue from here.
+        raise InvalidSource("an incremental pass ended without a cursor")
     tombstones = await finish_pass(
-        runtime, source_id=source_id, observed_at=observed_at
+        runtime,
+        source_id=source_id,
+        observed_at=observed_at,
+        mode=mode,
+        cursor=page.cursor,
     )
     requeued = await requeue_unfinished_purges(
         runtime, source_id=source_id, now=observed_at
@@ -398,6 +452,40 @@ async def _publish(
         requeued_purges=requeued,
         unresolved=tuple(unresolved.values()),
         resumed=progress.resumed,
+        mode=mode,
+    )
+
+
+async def _fetch(
+    source: SourcePort,
+    progress: PassProgress,
+    *,
+    checkpoint: str | None,
+    page_size: int,
+) -> SourcePage:
+    """The next page: of every item for a full pass, of changes otherwise."""
+    if progress.since is None:
+        return await source.fetch_page(checkpoint=checkpoint, page_size=page_size)
+    if not isinstance(source, ChangeFeed):
+        # `begin_pass` never makes a pass incremental for such a Source; this
+        # only tells the type checker so.
+        raise SourceMisconfigured("an incremental pass needs a change feed")
+    return await source.fetch_changes(
+        since=progress.since, checkpoint=checkpoint, page_size=page_size
+    )
+
+
+def _totals(
+    changes: Counter[Change],
+    quarantined: list[Quarantined],
+    unresolved: dict[str, UnresolvedAccess],
+) -> PassTotals:
+    reconciled = sum(changes.values())
+    return PassTotals(
+        processed=reconciled + len(quarantined),
+        changed=reconciled - changes[Change.UNCHANGED],
+        quarantined=len(quarantined),
+        unresolved=len(unresolved),
     )
 
 

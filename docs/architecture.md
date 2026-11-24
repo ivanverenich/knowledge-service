@@ -210,10 +210,9 @@ queues its Job. A Source with an open synchronization Job is not scheduled
 again until that Job ends, so a Job stuck running waits for M08-T08. A
 failure while scheduling is logged and makes the relay exit 1, but the relay
 still publishes. The Job carries the Source's ID only: its handler
-(M08-T10) reads the location, credentials reference, and checkpoint from
-PostgreSQL when it runs, so no configuration or secret travels through
-Redis. Until then the Jobs wait queued and unpublished, as no worker runs
-that kind yet.
+(`ingestion.synchronization_jobs`) reads the location, credentials
+reference, readers, and progress from PostgreSQL when it runs, so no
+configuration or secret travels through Redis.
 
 `telemetry` decides what leaves the process as logs. `configure_telemetry`
 installs one root handler that writes JSON lines, and its `TelemetryFilter`
@@ -404,6 +403,46 @@ sequenceDiagram
     Del->>DB: queue a new purge for each exhausted one
     Sync-->>Caller: SynchronizationSummary (with unresolved principals)
     Note over Del,DB: later, per Job: purge_document_chunks deletes Chunks of a still-tombstoned Document
+```
+
+#### Synchronization Jobs as built in M08-T10
+
+The worker runs each `synchronize_source` Job through one module,
+`ingestion.synchronization_jobs`. It claims the queued Job in a short
+transaction, reads the Source the Job names, opens it with a Source opener,
+and runs the pass under the Source's lease, observed at the attempt's start
+time. After every committed page it reports the attempt's totals, which is
+also the attempt's sign of life for recovery. It stores the end only if the
+Job still runs that attempt. A Source that is gone, disabled, or that no
+adapter opens fails the Job for good; an unavailable Source, database, or
+lease is retried, and the retry resumes from the checkpoint.
+
+A pass is full or incremental. A full pass reads every item and tombstones
+what it did not see. A Source that is a `ChangeFeed` gives a cursor on the
+last page of a full pass; the next pass then reads only the changes after
+it, with `fetch_changes`, and tombstones only what the Source reported
+deleted. A full pass comes back once `full_synchronization_interval_hours`
+(24 by default) has passed since the last one, to catch changes the feed
+missed. A local folder has no change feed, so it is always read in full.
+
+```mermaid
+sequenceDiagram
+    participant Relay as worker-relay
+    participant Worker
+    participant Jobs as synchronization_jobs
+    participant Sync as synchronize_source_exclusively
+    participant DB as PostgreSQL
+    Relay->>Worker: message with the Job's ID only
+    Worker->>Jobs: run_stored_job: the handler for synchronize_source
+    Jobs->>DB: claim: queued to running, store the attempt row, commit
+    Jobs->>DB: read the Source: kind, location, readers (gone or disabled fails for good)
+    Jobs->>Sync: the opened Source, observed at the attempt's start
+    loop each committed page
+        Sync->>Jobs: on_page with the attempt's totals
+        Jobs->>DB: report_progress (also the attempt's sign of life)
+    end
+    Sync->>DB: finish_pass: full tombstones the unseen, incremental the reported deleted; keep the cursor
+    Jobs->>DB: if still running this attempt: succeed, or fail and plan a retry
 ```
 
 #### Embedding publication as built in M04

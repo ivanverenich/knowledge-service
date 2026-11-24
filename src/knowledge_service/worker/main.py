@@ -10,12 +10,14 @@ import dramatiq
 from knowledge_service.settings import Settings
 from knowledge_service.worker.actors import declare_actors, log_ping
 from knowledge_service.worker.broker import broker_from_settings
-from knowledge_service.worker.jobs import HANDLERS, JobRunner, declare_job_actors
+from knowledge_service.worker.handlers import job_handlers
+from knowledge_service.worker.jobs import JobRunner, declare_job_actors
 
 settings = Settings()
 broker = broker_from_settings(settings)
 dramatiq.set_broker(broker)
 actors = declare_actors(broker, record_ping=log_ping)
+handlers = job_handlers(settings)
 job_actors = declare_job_actors(
-    broker, run_job=JobRunner(settings), kinds=frozenset(HANDLERS)
+    broker, run_job=JobRunner(settings, handlers), kinds=frozenset(handlers)
 )

@@ -310,6 +310,7 @@ async def test_a_synchronization_run_records_how_it_ended(
         "tombstoned": 0,
         "unresolved": 0,
         "resumed": False,
+        "mode": "full",
     }
     async with runtime.transaction() as connection:
         runs = (

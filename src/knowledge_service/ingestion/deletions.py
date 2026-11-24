@@ -2,11 +2,13 @@
 
 Deletion happens in two steps:
 
-1. At the end of a complete Synchronization Run, every available Document
-   the run did not see, or last saw reported deleted, is tombstoned:
-   `tombstone_unseen` reads the seen IDs the run stored page by page;
-   `tombstone_missing` takes them as a set in memory, for callers that hold
-   a complete pass themselves. For each such Document, one transaction marks
+1. At the end of a Synchronization Run, a full run tombstones every
+   available Document it did not see, or last saw reported deleted
+   (`tombstone_unseen` reads the reports the run stored page by page;
+   `tombstone_missing` takes the seen IDs as a set in memory, for callers
+   that hold a complete pass themselves). An incremental run sees only
+   changes, so it tombstones only what the Source reported deleted
+   (`tombstone_reported_deleted`). For each such Document, one transaction marks
    it tombstoned, records an audit event, and queues a purge Job. Retrieval
    reads only Chunks of available Documents, so the content disappears from
    reads at that commit, while the Chunks are still stored.
@@ -61,6 +63,7 @@ from knowledge_service.persistence.documents import (
 from knowledge_service.persistence.job_attempts import finish_attempt
 from knowledge_service.persistence.jobs import enqueue_job, load_job, save_job
 from knowledge_service.persistence.synchronization_progress import (
+    load_reported_deleted_available,
     load_unseen_available,
 )
 
@@ -113,14 +116,35 @@ async def tombstone_missing(
 async def tombstone_unseen(
     connection: AsyncConnection, *, source_id: SourceId, observed_at: datetime
 ) -> tuple[Tombstone, ...]:
-    """Tombstone the available Documents the stored pass never saw.
+    """Tombstone the available Documents the stored full pass never saw.
 
-    The seen IDs are the ones every committed page of the pass stored, so a
-    pass resumed after a crash still counts the pages before it. The caller
+    A Document counts as seen when its last stored report said present. The
+    reports are the ones every committed page of the pass stored, so a pass
+    resumed after a crash still counts the pages before it. The caller
     owns the transaction and has checked its fence.
     """
     tombstones: list[Tombstone] = []
     for document_id in await load_unseen_available(connection, source_id=source_id):
+        tombstone = await _tombstone(
+            connection, document_id=document_id, observed_at=observed_at
+        )
+        if tombstone is not None:
+            tombstones.append(tombstone)
+    return tuple(tombstones)
+
+
+async def tombstone_reported_deleted(
+    connection: AsyncConnection, *, source_id: SourceId, observed_at: datetime
+) -> tuple[Tombstone, ...]:
+    """Tombstone the available Documents whose last report said deleted.
+
+    An incremental pass uses this: it sees only changes, so absence means
+    nothing. The caller owns the transaction and has checked its fence.
+    """
+    tombstones: list[Tombstone] = []
+    for document_id in await load_reported_deleted_available(
+        connection, source_id=source_id
+    ):
         tombstone = await _tombstone(
             connection, document_id=document_id, observed_at=observed_at
         )

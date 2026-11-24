@@ -7,7 +7,7 @@ credential its adapter needs, never the credential itself.
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from knowledge_service.identifiers import SourceId, SynchronizationRunId
 
@@ -26,6 +26,29 @@ class SourceUnavailable(SourceError):
 
 class SourceUnauthorized(SourceError):
     """The Source refused the configured credentials."""
+
+
+class ObservedInTheFuture(InvalidSource):
+    """A pass's observation time is too far ahead of this machine's clock.
+
+    A clock that ran ahead queued or claimed the Job; trying again later,
+    when the clocks agree, can help.
+    """
+
+
+class SourceGone(SourceError):
+    """The Source no longer exists, or is disabled, so there is nothing to sync.
+
+    Trying again cannot help until someone registers or enables it.
+    """
+
+
+class SourceMisconfigured(SourceError):
+    """The Source's stored configuration cannot be opened, such as a kind no
+    adapter reads yet or a folder that does not exist.
+
+    Trying again cannot help until someone fixes the configuration.
+    """
 
 
 class SynchronizationSuperseded(SourceError):
@@ -239,14 +262,26 @@ class SourceRecord:
 
 @dataclass(frozen=True, slots=True)
 class SourcePage:
-    """One page of records plus the checkpoint that resumes after it."""
+    """One page of records plus the checkpoint that resumes after it.
+
+    A Source with a change feed gives a `cursor` on the last page only: its
+    token for "changes after everything this pass read". It must not miss a
+    change made while the pass was reading, so a Source usually takes it
+    from the moment the pass began.
+    """
 
     records: tuple[SourceRecord, ...]
     next_checkpoint: str | None
+    cursor: str | None = None
 
     def __post_init__(self) -> None:
         if self.next_checkpoint is not None and not self.next_checkpoint.strip():
             raise InvalidSource("a next checkpoint must not be empty when provided")
+        if self.cursor is not None:
+            if not self.cursor.strip():
+                raise InvalidSource("a cursor must not be empty when provided")
+            if self.next_checkpoint is not None:
+                raise InvalidSource("only the last page may carry a cursor")
 
 
 class SourcePort(Protocol):
@@ -260,6 +295,36 @@ class SourcePort(Protocol):
     ) -> SourcePage:
         """Return the page after `checkpoint`, or the first page when None."""
         ...
+
+
+@runtime_checkable
+class ChangeFeed(Protocol):
+    """A Source that can list only what changed after a cursor it gave.
+
+    Its pages hold changed items: present ones were created or updated,
+    deleted ones were removed. The last page carries the next cursor. A
+    Source without this protocol is always read in full.
+    """
+
+    async def fetch_changes(
+        self,
+        *,
+        since: str,
+        checkpoint: str | None,
+        page_size: int,
+    ) -> SourcePage:
+        """Return the page of changes after `since`, resuming at `checkpoint`."""
+        ...
+
+
+class SyncMode(StrEnum):
+    """How a pass reads its Source."""
+
+    # Every item; what the pass did not see is tombstoned at the end.
+    FULL = "full"
+    # Only what changed after the stored cursor; only items the Source
+    # reported deleted are tombstoned.
+    INCREMENTAL = "incremental"
 
 
 class RunStatus(StrEnum):

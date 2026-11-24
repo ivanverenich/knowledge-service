@@ -7,7 +7,7 @@ depends_on: ["M08-T09"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["synchronization module"]
-status: planned
+status: completed
 ---
 
 # M08-T10 — Orchestrate full and incremental sync

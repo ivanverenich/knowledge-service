@@ -27,6 +27,9 @@ from knowledge_service.embeddings.port import (
 )
 from knowledge_service.errors import database_unavailable
 from knowledge_service.ingestion.sources import (
+    ObservedInTheFuture,
+    SourceGone,
+    SourceMisconfigured,
     SourceUnauthorized,
     SourceUnavailable,
     SynchronizationSuperseded,
@@ -47,6 +50,12 @@ class JobFailure(StrEnum):
 
     SOURCE_UNAVAILABLE = "source_unavailable"
     SOURCE_REFUSED = "source_refused"
+    # A clock that ran ahead stamped the Job; it may pass once clocks agree.
+    CLOCK_AHEAD = "clock_ahead"
+    # The Source is missing or disabled.
+    SOURCE_GONE = "source_gone"
+    # The Source's stored configuration cannot be opened.
+    SOURCE_MISCONFIGURED = "source_misconfigured"
     DATABASE_UNAVAILABLE = "database_unavailable"
     DATABASE_REJECTED = "database_rejected"
     MODEL_UNAVAILABLE = "model_unavailable"
@@ -68,6 +77,7 @@ class JobFailure(StrEnum):
 _TRANSIENT: Final = frozenset(
     {
         JobFailure.SOURCE_UNAVAILABLE,
+        JobFailure.CLOCK_AHEAD,
         JobFailure.DATABASE_UNAVAILABLE,
         JobFailure.MODEL_UNAVAILABLE,
         JobFailure.WORKER_LOST,
@@ -88,6 +98,12 @@ def classify_job_failure(error: Exception) -> JobFailure:
     """The failure an attempt's error stands for; unknown errors are bugs."""
     if isinstance(error, SynchronizationSuperseded):
         return JobFailure.SUPERSEDED
+    if isinstance(error, ObservedInTheFuture):
+        return JobFailure.CLOCK_AHEAD
+    if isinstance(error, SourceGone):
+        return JobFailure.SOURCE_GONE
+    if isinstance(error, SourceMisconfigured):
+        return JobFailure.SOURCE_MISCONFIGURED
     if isinstance(error, SourceUnavailable):
         return JobFailure.SOURCE_UNAVAILABLE
     if isinstance(error, SourceUnauthorized):

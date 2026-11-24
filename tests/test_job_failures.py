@@ -92,9 +92,11 @@ def test_every_failure_is_classified(error: Exception, failure: JobFailure) -> N
 
 
 def test_only_failures_that_may_pass_later_are_transient() -> None:
-    # A dependency that may answer later, or a worker or message lost on the way.
+    # A dependency that may answer later, a clock that may come back in line,
+    # or a worker or message lost on the way.
     assert {failure for failure in JobFailure if failure.transient} == {
         JobFailure.SOURCE_UNAVAILABLE,
+        JobFailure.CLOCK_AHEAD,
         JobFailure.DATABASE_UNAVAILABLE,
         JobFailure.MODEL_UNAVAILABLE,
         JobFailure.WORKER_LOST,
