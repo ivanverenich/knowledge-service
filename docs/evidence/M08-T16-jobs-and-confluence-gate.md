@@ -84,7 +84,24 @@ above is the target" is replaced.
 
 ## Injected crash
 
-DRILL_PLACEHOLDER
+Drill on 2026-11-24, on its own database (`knowledge_service_drill`) and
+Redis database 12: a folder Source of 150 files, page size 100, with
+`os._exit(1)` injected in `_publish` just before `doc-120.md` is reconciled.
+
+| Time (UTC) | What happened | PostgreSQL afterwards |
+|---|---|---|
+| 18:14:28 | `make worker` boots; the relay schedules the pass and publishes its message | Job `queued` |
+| 18:14:29 | the worker process ends with `os._exit(1)` before `doc-120.md`; `make: *** [worker] Error 1` | Job `running`, attempt 1 `(processed 100, changed 100)`, checkpoint `doc-100.md`, 119 available |
+| 18:14:29 onward | a normal worker restarts with the injection removed; the dead worker's message stays in `__acks__` and does not come back | unchanged |
+| 18:19:40 | `make worker-relay`: `stale 1` | Job `failed` (`worker_lost`), attempt 1 `retry_scheduled` |
+| 18:20:08 | `make worker-relay`: `requeued 1 ... published 1`; the worker logs `ran: succeeded` | Job `succeeded`; attempt 2 `(processed 50, changed 31)`; checkpoint cleared; 150 available |
+
+Attempt 2 reread page 2 from `doc-101.md`: the 19 records stored before the
+kill compared equal, and 31 were new. The leftover key
+`knowledge-service.v1:__acks__.<worker>.synchronization` was still in Redis at
+the end; Dramatiq returns such a message only during occasional maintenance,
+and the claim would log it as a duplicate. The injection was removed (0
+occurrences), the drill database dropped, and Redis database 12 flushed.
 
 ## New Source field
 
@@ -193,7 +210,19 @@ that fails without the fix:
    kill points were added at page commits and the finish, and one item's
    readers narrow in the second pass.
 
-REVIEW_PLACEHOLDER
+Closing review (2026-11-24), Standards and Spec run separately: no blocking
+findings. Applied: the Job state diagram's terminal edge now says a failed Job
+ends only when permanent or out of attempts, until an operator reopens it;
+the relay line also names orphaned queued Jobs (`delivery_lost` after 30
+minutes); the docs say the test cancels a worker and the drill kills one; the
+kill test waits at most 30 seconds for its hang point.
+
+Not applied, as notes: `normalization._shown_url` shares its name with the
+provenance helper; no end-to-end test follows a `web_url` to a Citation's
+`source_link` (covered through `display_text` unit tests); an operator cannot
+cancel a `running` Job (existing behaviour); `provenance._shown_url` now keeps
+an anchor fragment in any displayed text, not only anchors (low risk, the
+fragment is digits only).
 
 Known limits:
 
