@@ -174,13 +174,23 @@ class SourceAccess:
             raise InvalidSource("source principals must be unique")
 
 
+# Longer links are refused: no real page address comes near it.
+MAX_WEB_URL_CHARACTERS = 2048
+
+
 @dataclass(frozen=True, slots=True)
 class SourceMetadata:
-    """Descriptive facts a Source reports about one item, before normalization."""
+    """Descriptive facts a Source reports about one item, before normalization.
+
+    `web_url` is where a person opens the item in its Source, such as a wiki
+    page's address, or None when the Source has no such page. It is taken
+    as the Source gives it; normalization keeps it only if it is safe to show.
+    """
 
     title: str
     modified_at: datetime
     size_bytes: int
+    web_url: str | None = None
 
     def __post_init__(self) -> None:
         if not self.title.strip():
@@ -188,6 +198,15 @@ class SourceMetadata:
         _require_utc(self.modified_at, "modified_at")
         if self.size_bytes < 0:
             raise InvalidSource("source metadata size must not be negative")
+        if self.web_url is not None:
+            if type(self.web_url) is not str:
+                raise InvalidSource("a web URL must be text")
+            if not self.web_url.strip():
+                raise InvalidSource("a web URL must not be empty when provided")
+            if len(self.web_url) > MAX_WEB_URL_CHARACTERS:
+                raise InvalidSource(
+                    f"a web URL must be at most {MAX_WEB_URL_CHARACTERS} characters"
+                )
 
 
 class SourceRecordState(StrEnum):

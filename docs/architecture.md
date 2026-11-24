@@ -319,29 +319,70 @@ because a check constraint can only see the row it is written on.
 
 ### Synchronization
 
+Two systems carry a synchronization, and only one of them holds the truth.
+Redis holds **delivery**: a message that says "run Job J" and whether a
+worker has acknowledged it. PostgreSQL holds **business state**: the Job's
+status and attempts, the Source's checkpoint and seen IDs, and the
+Documents. A message can arrive twice, late, or after its worker died; every
+decision is made from PostgreSQL, so a message only ever asks a question.
+
 ```mermaid
 sequenceDiagram
-    participant Scheduler
-    participant Queue
+    participant Relay as worker-relay
+    participant DB as PostgreSQL (business state)
+    participant Redis as Redis (delivery)
     participant Worker
     participant Source
-    participant DB as PostgreSQL
-    participant Embedder
-    Scheduler->>Queue: enqueue source + checkpoint
-    Queue->>Worker: at-least-once delivery
-    Worker->>Source: fetch page
-    Source-->>Worker: records + next checkpoint
-    Worker->>DB: compare content/auth versions
-    Worker->>Embedder: embed changed chunks only
-    Worker->>DB: transactionally publish current state
-    Worker->>DB: save checkpoint and run outcome
+    Relay->>DB: fail attempts silent for five minutes and queued Jobs whose message is 30 minutes old, requeue due retries, store due synchronize_source Jobs
+    Relay->>Redis: publish one message per unpublished Job: its ID only
+    Redis->>Worker: deliver at least once; again if a worker died before acknowledging
+    Worker->>DB: claim: queued to running with an attempt row; any other status runs nothing
+    Worker->>Redis: take the Source's lease
+    loop each page, from the stored checkpoint
+        Worker->>Source: fetch_page, or fetch_changes in an incremental pass
+        Worker->>DB: narrow removed readers, then reconcile each record, one transaction each
+        Worker->>DB: commit_page: checkpoint and seen IDs, one fenced transaction
+        Worker->>DB: report the attempt's progress, its sign of life
+    end
+    Worker->>DB: finish_pass: tombstones, purge Jobs, cursor
+    Worker->>DB: store the end only if the Job still runs this attempt
+    Worker->>Redis: acknowledge the message
 ```
+
+A Job's status moves only in PostgreSQL, and every move is checked under
+the Job's row lock:
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: stored, then published
+    queued --> running: a worker claims it
+    running --> succeeded: the pass ended
+    running --> failed: a typed failure, or recovery after five silent minutes
+    failed --> queued: retry time reached with attempts left (worker-relay), or an operator reopens it
+    queued --> cancelled: an operator cancels it
+    failed --> cancelled: an operator cancels it
+    succeeded --> [*]
+    failed --> [*]: permanent, or no attempts left, until an operator reopens it
+    cancelled --> [*]
+```
+
+A worker killed in the middle of a page loses only that page's uncommitted
+work. Its message stays unacknowledged in Redis, and a redelivery finds the
+Job running and runs nothing. Recovery fails the silent attempt as
+`worker_lost`, the relay requeues it at its retry time, and the next attempt
+resumes from the last committed page; records of the killed page that had
+already landed compare equal and change nothing.
+`tests/test_synchronization_gate_integration.py` stops a worker for good,
+by cancelling it, at every step of a pass and compares the result with a
+pass nobody interrupted; a cancellation still runs cleanup that a killed
+process skips, so the real kill is a drill (`docs/operations.md`).
+Embeddings are not part of the pass: `publish_document_embeddings` runs
+separately.
 
 #### Synchronization as built in M03
 
-The diagram above is the target. Today one call, `synchronize_source`, runs a
-complete pass in-process, with no scheduler, queue, embeddings, or
-Synchronization Run record yet.
+One call, `synchronize_source`, runs a complete pass; since M08-T10 the
+worker runs it for every `synchronize_source` Job, as drawn above.
 
 Since M08-T09 the pass is resumable (`ingestion.checkpoints`). Its progress
 lives in PostgreSQL: `sources.pass_started_at`, `sources.checkpoint`, every
@@ -404,6 +445,15 @@ sequenceDiagram
     Sync-->>Caller: SynchronizationSummary (with unresolved principals)
     Note over Del,DB: later, per Job: purge_document_chunks deletes Chunks of a still-tombstoned Document
 ```
+
+A Source may report an item's `web_url` (since M08-T16): where a person
+opens the item in the Source, such as a wiki page. Normalization keeps only
+its safe form, without credentials, query, or fragment, and only when a
+Citation would show it unchanged; otherwise the item has none. Every Chunk's
+anchor then leads to it, as `<web_url>#offset=START-END` or `#page=N`, and
+a Citation keeps that fragment. The link counts in the content fingerprint
+only when present, so items without one keep their fingerprints; a moved
+page rewrites its Chunks once.
 
 #### Synchronization Jobs as built in M08-T10
 

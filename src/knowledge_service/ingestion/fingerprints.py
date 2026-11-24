@@ -19,11 +19,13 @@ _CONTENT_LABEL = "knowledge-service/content/v1"
 _AUTHORIZATION_LABEL = "knowledge-service/authorization/v1"
 
 
-def content_fingerprint(parsed: ParsedDocument) -> str:
+def content_fingerprint(parsed: ParsedDocument, *, web_url: str | None = None) -> str:
     """Return the fingerprint of a document's text and structure.
 
     Everything the chunker reads counts: the parsed text and every field of
     every block, including offsets, because citations point into the text.
+    So does `web_url`, the page every Chunk's anchor links to; without one
+    the fingerprint is the same as before the field existed.
     """
     blocks = [
         {
@@ -39,7 +41,10 @@ def content_fingerprint(parsed: ParsedDocument) -> str:
         }
         for block in parsed.blocks
     ]
-    return canonical_hash(_CONTENT_LABEL, {"text": parsed.text, "blocks": blocks})
+    value: dict[str, object] = {"text": parsed.text, "blocks": blocks}
+    if web_url is not None:
+        value["web_url"] = web_url
+    return canonical_hash(_CONTENT_LABEL, value)
 
 
 def authorization_fingerprint(

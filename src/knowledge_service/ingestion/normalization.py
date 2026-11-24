@@ -29,6 +29,7 @@ from knowledge_service.ingestion.parsers.structure import (
     ParsedDocument,
 )
 from knowledge_service.ingestion.parsers.text_parser import parse_text
+from knowledge_service.ingestion.provenance import display_text, display_url
 from knowledge_service.ingestion.sources import (
     InvalidSource,
     SourceAccess,
@@ -78,6 +79,8 @@ class NormalizedDocument:
     parser_version: str
     language: LanguageProfile
     parsed: ParsedDocument
+    # The item's page in its Source, already safe to show, or None.
+    web_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +193,18 @@ def normalize(record: SourceRecord, *, source_id: SourceId) -> NormalizationOutc
         parser_version=parser.version,
         language=detect_language(parsed),
         parsed=parsed,
+        web_url=_shown_url(metadata.web_url if metadata is not None else None),
     )
+
+
+def _shown_url(web_url: str | None) -> str | None:
+    """Keep a web URL only in the safe form a Citation shows unchanged.
+
+    A link a Citation would show differently, such as a path segment shaped
+    like `name:password@`, is dropped, so what is stored is what is shown.
+    """
+    shown = None if web_url is None else display_url(web_url)
+    return shown if shown is not None and display_text(shown) == shown else None
 
 
 def _canonical_media_type(media_type: str) -> str:

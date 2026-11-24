@@ -7,7 +7,7 @@ depends_on: ["M08-T15"]
 estimate: 90m
 topics: ["redis","dramatiq","confluence"]
 deliverables: ["M08 gate evidence"]
-status: planned
+status: completed
 ---
 
 # M08-T16 — Pass the jobs-and-Confluence understanding gate

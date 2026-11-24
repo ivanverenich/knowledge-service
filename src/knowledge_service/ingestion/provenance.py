@@ -50,6 +50,8 @@ _WEB_ADDRESS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
 # `mailto:` address. It starts a word or follows a slash, as in `http://`.
 _CREDENTIALS = re.compile(r"(?i)(?<![^\s/])(?!mailto:)[^\s/@:]+:[^\s/@]*@")
 _QUERY_OR_FRAGMENT = re.compile(r"[?#]")
+# The fragment an anchor adds after its location: where the Chunk starts.
+_ANCHOR_FRAGMENT = re.compile(r"#(?:offset=\d+-\d+|page=\d+)")
 _HOST = re.compile(r"[a-z0-9.-]+")
 # Characters a displayed address must not contain: they can end an HTML
 # attribute or confuse a reader about where the link leads.
@@ -233,8 +235,16 @@ def _clean(value: str) -> str:
 
 
 def _shown_url(url: str) -> str:
-    """Show an address found in text; its query and fragment are cut off first."""
-    return display_url(_QUERY_OR_FRAGMENT.split(url, 1)[0]) or "[link]"
+    """Show an address found in text; its query and fragment are cut off first.
+
+    Only an anchor's own fragment, `#offset=START-END` or `#page=N`, is kept,
+    so a Citation of a page with a web URL still leads to its place in it.
+    """
+    shown = display_url(_QUERY_OR_FRAGMENT.split(url, 1)[0])
+    if shown is None:
+        return "[link]"
+    fragment = url[url.find("#") :] if "#" in url else ""
+    return shown + fragment if _ANCHOR_FRAGMENT.fullmatch(fragment) else shown
 
 
 def _links(blocks: Sequence[StructuralBlock], chunk_text: str) -> tuple[Link, ...]:

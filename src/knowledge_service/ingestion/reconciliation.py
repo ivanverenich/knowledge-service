@@ -119,7 +119,7 @@ async def reconcile_document(
     the transaction; raising from it writes nothing.
     """
     provenance = normalized.provenance
-    content = content_fingerprint(normalized.parsed)
+    content = content_fingerprint(normalized.parsed, web_url=normalized.web_url)
     # Only the readers count in this fingerprint, so a provisional ID will do.
     provisional = DocumentId.new()
     access = authorization_fingerprint(
@@ -275,6 +275,7 @@ def build_chunks(
         normalized.parsed,
         drafts,
         external_id=normalized.provenance.external_id,
+        source_url=normalized.web_url,
     )
     return tuple(
         Chunk(
