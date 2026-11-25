@@ -7,7 +7,7 @@ depends_on: ["M09-T02"]
 estimate: 90m
 topics: ["rest","openai-compatible","open-webui"]
 deliverables: ["sync administration routes"]
-status: planned
+status: completed
 ---
 
 # M09-T03 — Implement synchronization administration

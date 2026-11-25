@@ -109,6 +109,27 @@ scheduler that is queueing a Job for the Source, but does not cancel a
 Job already queued or running. New default readers reach stored
 Documents at the Source's next pass.
 
+`POST /v1/sources/{source_id}/synchronizations` and
+`GET /v1/sources/{source_id}/synchronizations` require
+`start_synchronization_runs` (the content-manager role) before the ID or
+page is read. `synchronization_administration` starts a synchronization
+the way the scheduler does: it share-locks the Source, refuses one that
+is missing (404) or disabled (409 `source_disabled`), and asks
+`enqueue_job` for one Job; while the Source has an open Job (queued,
+running, or failed with a retry planned) that Job comes back with 200,
+and only a start that queues one answers 202 and records `job.queued`
+with the operator as actor. The start commits before it tries once to
+publish, so a refused message is sent later by the relay. The history
+lists a Source's synchronization Jobs a page at a time, the newest
+made first, each with its newest attempt, from one snapshot. It pages
+on the Job's ID, a UUIDv7 that never changes, not on `queued_at`,
+which every retry rewrites. Status, retry, and cancel stay on
+`/v1/jobs/{job_id}`; a retry of a synchronization Job, once its status
+fits, share-locks the Source as a start does and refuses one that is
+missing or disabled with 409 `source_disabled`. Every refusal of these
+five operations has one fixed status, code, and message. A Source's
+history pages on `ix_jobs_synchronization_target (target_id, job_id)`.
+
 `api_routes` is the native API's design. `ROUTES` lists every route the
 service serves or plans under `/v1`, each with the Operation an
 Application Role must permit, the task that builds it, and whether it

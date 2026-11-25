@@ -95,6 +95,16 @@ class SynchronizationJobReport(BaseModel):
     latest_attempt: JobAttemptProgress | None
 
 
+class SynchronizationHistory(BaseModel):
+    """A page of a Source's synchronization Jobs, newest first.
+
+    `next_cursor` starts the next page; None on the last one.
+    """
+
+    items: list[SynchronizationJobReport]
+    next_cursor: str | None
+
+
 class OperatorJob(BaseModel):
     """A Job as an operator decides about it: what it is, and how it ended."""
 

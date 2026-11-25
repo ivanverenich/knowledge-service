@@ -76,6 +76,14 @@ class SourceNotFound(LookupError):
     """No Source has this ID."""
 
 
+class SourceDisabled(Exception):
+    """The Source is turned off, so nothing may synchronize it.
+
+    A retry also raises it for a Job whose Source is gone: a retry names the
+    Job, not the Source, so its missing Source is not a missing resource.
+    """
+
+
 class SourceNeedsRepair(Exception):
     """The stored Source breaks a rule it was not checked against when stored.
 

@@ -140,6 +140,31 @@ async def load_job(
     return job_from_record(dict(record))
 
 
+async def load_target_jobs(
+    connection: AsyncConnection,
+    *,
+    kind: JobKind,
+    target_id: UUID,
+    limit: int,
+    after: JobId | None = None,
+) -> tuple[Job, ...]:
+    """Up to `limit` Jobs of `kind` for one target, the newest made first.
+
+    A Job's ID is a UUIDv7, which starts with the time it was made and never
+    changes; `queued_at` does, on every retry. So the order and `after`, the
+    Job the list starts after, use the ID alone, and a retry between two
+    pages never moves a Job past the place a page ended.
+    """
+    statement = sa.select(jobs).where(
+        jobs.c.kind == kind.value, jobs.c.target_id == target_id
+    )
+    if after is not None:
+        statement = statement.where(jobs.c.job_id < after.value)
+    statement = statement.order_by(jobs.c.job_id.desc()).limit(limit)
+    records = (await connection.execute(statement)).mappings().all()
+    return tuple(job_from_record(dict(record)) for record in records)
+
+
 async def lock_running_job(connection: AsyncConnection, *, job_id: JobId) -> Job | None:
     """Share-lock a running Job's row, or return None if it is not running.
 

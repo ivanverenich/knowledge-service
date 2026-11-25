@@ -31,6 +31,7 @@ from knowledge_service.contracts import (
     SourcePage,
     SourceRegistration,
     SourceView,
+    SynchronizationHistory,
     SynchronizationJobReport,
 )
 from knowledge_service.errors import (
@@ -72,11 +73,17 @@ from knowledge_service.roles import Operation, PermissionDenied, require
 from knowledge_service.source_administration import (
     InvalidSourceSettings,
     SourceDefinition,
+    SourceDisabled,
     SourceExists,
     SourceNeedsRepair,
     SourceNotFound,
     source_cursor,
     source_position,
+)
+from knowledge_service.synchronization_administration import (
+    SynchronizationStart,
+    history_cursor,
+    history_position,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,6 +189,23 @@ class SourceAdministration(Protocol):
     async def set_enabled(
         self, *, source_id: SourceId, enabled: bool, operator: UserId, request_id: UUID
     ) -> SourceRecord: ...
+
+
+class Synchronizations(Protocol):
+    """A Source's synchronizations as an operator starts and follows them.
+
+    `DatabaseSynchronizations` is the implementation. Both raise
+    `SourceNotFound` for a missing Source; `start` raises `SourceDisabled`
+    for one turned off, and returns the open Job when there is one.
+    """
+
+    async def start(
+        self, *, source_id: SourceId, operator: UserId, request_id: UUID
+    ) -> SynchronizationStart: ...
+
+    async def history(
+        self, *, source_id: SourceId, limit: int, after: JobId | None = None
+    ) -> tuple[JobReport, ...]: ...
 
 
 def source_view(record: SourceRecord) -> SourceView:
@@ -405,6 +429,7 @@ def create_app(
     job_reports: JobReports | None = None,
     job_decisions: JobDecisions | None = None,
     sources: SourceAdministration | None = None,
+    synchronizations: Synchronizations | None = None,
 ) -> FastAPI:
     """The HTTP application.
 
@@ -758,6 +783,8 @@ def create_app(
             )
         except JobStillRunning:
             return _conflict("job_running", "The job is still running", request_id)
+        except SourceDisabled:
+            return _source_disabled(request_id)
         except JobNotRetryable, IllegalJobTransition:
             return _conflict(
                 "decision_not_allowed",
@@ -961,6 +988,91 @@ def create_app(
             return failure_response(kind=classify_failure(error), request_id=request_id)
         return source_view(record)
 
+    @app.post(
+        "/v1/sources/{source_id}/synchronizations",
+        status_code=202,
+        response_model=SynchronizationJobReport,
+        responses={
+            200: {
+                "model": SynchronizationJobReport,
+                "description": "The Source's open Job; nothing new was queued",
+            },
+            **error_responses(404, 409),
+        },
+    )
+    async def start_synchronization(
+        request: Request, source_id: Identifier
+    ) -> JSONResponse:
+        # Who, then whether they may, then which Source.
+        caller = await authenticate(request)
+        require(caller.roles, Operation.START_SYNCHRONIZATION_RUNS)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(source_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if synchronizations is None:
+            return _jobs_unavailable(request_id)
+        try:
+            started = await synchronizations.start(
+                source_id=SourceId.parse(source_id),
+                operator=caller.reader.user_id,
+                request_id=request_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except SourceNotFound:
+            return _source_not_found(request_id)
+        except SourceDisabled:
+            return _source_disabled(request_id)
+        except Exception as error:
+            logger.error("synchronization start failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        job_id = started.report.job.job_id.value
+        # 202: queued now; 200: the open Job, so a repeated start is harmless.
+        return JSONResponse(
+            status_code=202 if started.queued else 200,
+            content=synchronization_job_report(started.report).model_dump(mode="json"),
+            headers={"Location": f"/v1/jobs/{job_id}"},
+        )
+
+    @app.get(
+        "/v1/sources/{source_id}/synchronizations",
+        response_model=SynchronizationHistory,
+        responses=error_responses(404),
+        openapi_extra={"parameters": PAGE_PARAMETERS},
+    )
+    async def list_synchronizations(
+        request: Request, source_id: Identifier
+    ) -> SynchronizationHistory | JSONResponse:
+        caller = await authenticate(request)
+        require(caller.roles, Operation.START_SYNCHRONIZATION_RUNS)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(source_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        try:
+            limit, cursor = page_request(request)
+            after = None if cursor is None else history_position(cursor)
+        except InvalidPage:
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if synchronizations is None:
+            return _jobs_unavailable(request_id)
+        try:
+            # One more than the page, to learn whether another page follows.
+            reports = await synchronizations.history(
+                source_id=SourceId.parse(source_id), limit=limit + 1, after=after
+            )
+        except asyncio.CancelledError:
+            raise
+        except SourceNotFound:
+            return _source_not_found(request_id)
+        except Exception as error:
+            logger.error("synchronization history failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        page = reports[:limit]
+        return SynchronizationHistory(
+            items=[synchronization_job_report(report) for report in page],
+            next_cursor=history_cursor(page[-1].job) if len(reports) > limit else None,
+        )
+
     return app
 
 
@@ -1068,6 +1180,10 @@ def _invalid_source(invalid: InvalidSourceSettings, request_id: UUID) -> JSONRes
         message=str(invalid),
         request_id=request_id,
     )
+
+
+def _source_disabled(request_id: UUID) -> JSONResponse:
+    return _conflict("source_disabled", "The Source is missing or disabled", request_id)
 
 
 def _conflict(code: str, message: str, request_id: UUID) -> JSONResponse:

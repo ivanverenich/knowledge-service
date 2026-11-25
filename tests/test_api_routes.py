@@ -62,6 +62,8 @@ ROUTE_ERRORS = {
     ("PATCH", "/v1/sources/{source_id}"): {404, 409, 413},
     ("POST", "/v1/sources/{source_id}/enable"): {404},
     ("POST", "/v1/sources/{source_id}/disable"): {404},
+    ("POST", "/v1/sources/{source_id}/synchronizations"): {404, 409},
+    ("GET", "/v1/sources/{source_id}/synchronizations"): {404},
 }
 GOOD = Route(
     Method.GET,

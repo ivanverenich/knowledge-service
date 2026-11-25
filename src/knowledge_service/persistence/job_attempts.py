@@ -7,6 +7,7 @@ from typing import Final, cast
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -112,6 +113,26 @@ async def load_latest_attempt(
     )
     record = (await connection.execute(statement)).mappings().one_or_none()
     return None if record is None else _progress_from(dict(record))
+
+
+async def load_latest_attempts(
+    connection: AsyncConnection, *, job_ids: Iterable[JobId]
+) -> dict[JobId, JobProgress]:
+    """The newest attempt of each of `job_ids` that ever started one, in one query."""
+    values = [job_id.value for job_id in job_ids]
+    if not values:
+        return {}
+    statement = (
+        sa.select(job_attempts)
+        .where(job_attempts.c.job_id.in_(values))
+        .ext(postgresql.distinct_on(job_attempts.c.job_id))
+        .order_by(job_attempts.c.job_id, job_attempts.c.attempt.desc())
+    )
+    records = (await connection.execute(statement)).mappings().all()
+    return {
+        JobId(cast(UUID, record["job_id"])): _progress_from(dict(record))
+        for record in records
+    }
 
 
 async def begin_attempt(connection: AsyncConnection, *, job: Job) -> JobProgress:

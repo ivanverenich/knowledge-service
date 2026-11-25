@@ -23,12 +23,14 @@ from knowledge_service.audit import (
     AuditTargetKind,
 )
 from knowledge_service.database import DatabaseRuntime
-from knowledge_service.identifiers import AuditEventId, JobId, UserId
-from knowledge_service.jobs import InvalidJob, Job
+from knowledge_service.identifiers import AuditEventId, JobId, SourceId, UserId
+from knowledge_service.jobs import InvalidJob, Job, JobKind
 from knowledge_service.pagination import InvalidPage, decode_cursor, encode_cursor
 from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.job_recovery import load_failed_for_good
 from knowledge_service.persistence.jobs import load_job, save_job
+from knowledge_service.persistence.sources import lock_enabled_sources
+from knowledge_service.source_administration import SourceDisabled
 
 MAX_DECISION_LIST: Final = 500
 _DECISION_LIST = "job-decisions"
@@ -104,12 +106,21 @@ async def retry_job(
     A Job with a retry planned, or one that did not fail, is refused by the
     domain. While another Job for the same work is open, the retry is
     refused with `JobIntentAlreadyOpen`, so one piece of work never has two
-    open Jobs.
+    open Jobs. A synchronization Job whose Source is missing or disabled is
+    refused with `SourceDisabled`, after the Job's own status is checked.
     """
     _require_utc(now)
     async with runtime.transaction() as connection:
         job = await _lock(connection, job_id=job_id)
+        # The Job's status first: a retry that never fits says so, whatever
+        # state its Source is in.
         reopened = job.reopen(queued_at=now)
+        if job.kind is JobKind.SYNCHRONIZE_SOURCE:
+            # Share-locked, as a start does, so a disable waits for this retry.
+            source_id = SourceId(job.target_id)
+            enabled = await lock_enabled_sources(connection, source_ids={source_id})
+            if source_id not in enabled:
+                raise SourceDisabled("the source is missing or disabled")
         try:
             # A savepoint, so the refused update leaves the transaction usable.
             async with connection.begin_nested():

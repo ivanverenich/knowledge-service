@@ -550,10 +550,12 @@ jobs = sa.Table(
         unique=True,
         postgresql_where=sa.text(OPEN_JOB_PREDICATE),
     ),
-    # Finds each Source's synchronization Jobs for the schedule.
+    # Finds each Source's synchronization Jobs for the schedule, and pages a
+    # Source's history in ID order without sorting every Job it ever had.
     sa.Index(
         "ix_jobs_synchronization_target",
         "target_id",
+        "job_id",
         postgresql_where=sa.text("kind = 'synchronize_source'"),
     ),
     sa.Index(

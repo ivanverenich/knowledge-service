@@ -32,6 +32,7 @@ from knowledge_service.jobs import Job, JobKind
 from knowledge_service.persistence.sources import SourceRecord
 from knowledge_service.roles import ApplicationRole, Operation
 from knowledge_service.source_administration import SourceExists, SourceNotFound
+from knowledge_service.synchronization_administration import SynchronizationStart
 from test_authorization_context import (
     ALICE,
     ISSUER,
@@ -510,6 +511,21 @@ class Configuring:
         raise SourceNotFound("no source has this ID")
 
 
+class Synchronizing:
+    """A synchronization store that records each request, and finds no Source."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def start(self, **request: Any) -> SynchronizationStart:
+        self.calls.append(request)
+        raise SourceNotFound("no source has this ID")
+
+    async def history(self, **request: Any) -> tuple[JobReport, ...]:
+        self.calls.append(request)
+        raise SourceNotFound("no source has this ID")
+
+
 def full_app(
     source: Source,
     tokens: dict[str, Any] | None = None,
@@ -517,6 +533,7 @@ def full_app(
     jobs: Reading | None = None,
     decisions: Deciding | None = None,
     sources: Configuring | None = None,
+    synchronizations: Synchronizing | None = None,
 ) -> Any:
     """The app with every endpoint wired, so every route is real."""
     return create_app(
@@ -526,6 +543,7 @@ def full_app(
         job_reports=jobs or Reading(),
         job_decisions=decisions or Deciding(),
         sources=sources or Configuring(),
+        synchronizations=synchronizations or Synchronizing(),
     )
 
 
@@ -552,8 +570,17 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
 ) -> None:
     source, conversations = Source(), Deleting()
     jobs, decisions, sources = Reading(), Deciding(), Configuring()
+    synchronizations = Synchronizing()
     token = verified(realm_access={"roles": sorted(roles)})
-    app = full_app(source, {"token": token}, conversations, jobs, decisions, sources)
+    app = full_app(
+        source,
+        {"token": token},
+        conversations,
+        jobs,
+        decisions,
+        sources,
+        synchronizations,
+    )
     method, path = route
     for name in ("{conversation_id}", "{job_id}", "{source_id}"):
         path = path.replace(name, str(uuid4()))
@@ -574,6 +601,7 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
         or jobs.calls
         or decisions.calls
         or sources.calls
+        or synchronizations.calls
     )
     assert bool(reached) is allowed
 
