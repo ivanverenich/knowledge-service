@@ -7,7 +7,7 @@ depends_on: ["M09-T01"]
 estimate: 90m
 topics: ["rest","openai-compatible","open-webui"]
 deliverables: ["Source administration routes"]
-status: planned
+status: completed
 ---
 
 # M09-T02 — Implement Source administration

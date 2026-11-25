@@ -654,7 +654,8 @@ audit_events = sa.Table(
         " 'evaluation_run.started', 'question.asked', 'document.read',"
         " 'document.access_changed', 'synchronization.finished',"
         " 'message.rated', 'embedding_migration.started',"
-        " 'embedding_migration.switched', 'job.retried', 'job.cancelled')",
+        " 'embedding_migration.switched', 'job.retried', 'job.cancelled',"
+        " 'source.updated', 'source.enabled', 'source.disabled')",
         name="ck_audit_events_action",
     ),
     sa.CheckConstraint(

@@ -1,9 +1,18 @@
 """Pydantic models for the knowledge service."""
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from knowledge_service.source_administration import (
+    MAX_CREDENTIALS_REFERENCE,
+    MAX_DISPLAY_NAME,
+    MAX_LOCATION,
+    MAX_PRINCIPAL,
+    MAX_PRINCIPALS,
+)
 
 
 class Question(BaseModel):
@@ -110,4 +119,75 @@ class JobsNeedingDecision(BaseModel):
     """
 
     items: list[OperatorJob]
+    next_cursor: str | None
+
+
+# A request body that names a field the API does not know, or gives a value
+# of another JSON type, is refused, never coerced or ignored.
+_STRICT_BODY = ConfigDict(extra="forbid", strict=True)
+Principal = Annotated[str, Field(max_length=MAX_PRINCIPAL)]
+
+
+class SourceRegistration(BaseModel):
+    """What registers a Source: what it is, where, and who may read its items.
+
+    `credentials_reference` names a secret in the service's secret store; the
+    secret itself never passes through the API. `default_public` and
+    `default_principals` say who may read the items of a Source that carries
+    no access of its own, such as a local folder; by default, nobody.
+    """
+
+    model_config = _STRICT_BODY
+
+    kind: str = Field(max_length=32)
+    location: str = Field(max_length=MAX_LOCATION)
+    display_name: str = Field(max_length=MAX_DISPLAY_NAME)
+    credentials_reference: str | None = Field(
+        default=None, max_length=MAX_CREDENTIALS_REFERENCE
+    )
+    default_public: bool = False
+    default_principals: list[Principal] = Field(
+        default_factory=list, max_length=MAX_PRINCIPALS
+    )
+
+
+class SourceChanges(BaseModel):
+    """The settings a change may set; a field left out keeps its value.
+
+    `kind` and `location` are what a Source is, so they never change: a
+    different folder is a different Source.
+    """
+
+    model_config = _STRICT_BODY
+
+    display_name: str | None = Field(default=None, max_length=MAX_DISPLAY_NAME)
+    credentials_reference: str | None = Field(
+        default=None, max_length=MAX_CREDENTIALS_REFERENCE
+    )
+    default_public: bool | None = None
+    default_principals: list[Principal] | None = Field(
+        default=None, max_length=MAX_PRINCIPALS
+    )
+
+
+class SourceView(BaseModel):
+    """A Source as an operator configures it; never a secret."""
+
+    source_id: UUID
+    kind: str
+    location: str
+    display_name: str
+    credentials_reference: str | None
+    enabled: bool
+    default_public: bool
+    # A null names nobody: the Source needs repair before it can synchronize.
+    default_principals: list[str | None]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourcePage(BaseModel):
+    """A page of Sources, newest first; `next_cursor` is None on the last one."""
+
+    items: list[SourceView]
     next_cursor: str | None

@@ -91,6 +91,24 @@ failed for good and that no newer Job replaced, a page at a time, and retry or c
 `DatabaseJobDecisions` (`job_decisions`), which records each decision in the
 audit log with the operator as its actor.
 
+The Source routes, `GET` and `POST /v1/sources`, `GET` and
+`PATCH /v1/sources/{source_id}`, and `POST .../enable` and
+`POST .../disable`, require `configure_sources` (the content-manager
+role) before the ID, page, or body is read. `source_administration`
+checks every setting (`SourceDefinition`): a folder is an absolute path
+and a Confluence site an https address with a host name, each in its one
+spelling, so the kind and location, unique in `sources`, are the
+Source's identity and never change. `credentials_reference` names a
+secret in the secret store and never holds one; default readers are
+`user:<id>` or `group:<id>`. A refusal names the rule, never the value.
+Each change locks the Source, stores it, and records `source.registered`,
+`source.updated` (which settings changed, never their values),
+`source.enabled`, or `source.disabled` in the same transaction; a change
+to the values a Source has records nothing. Disabling waits for a
+scheduler that is queueing a Job for the Source, but does not cancel a
+Job already queued or running. New default readers reach stored
+Documents at the Source's next pass.
+
 `api_routes` is the native API's design. `ROUTES` lists every route the
 service serves or plans under `/v1`, each with the Operation an
 Application Role must permit, the task that builds it, and whether it

@@ -29,7 +29,9 @@ from knowledge_service.identity.oidc import IdentityProviderUnavailable
 from knowledge_service.job_decisions import JobNotFound
 from knowledge_service.job_reporting import JobReport
 from knowledge_service.jobs import Job, JobKind
+from knowledge_service.persistence.sources import SourceRecord
 from knowledge_service.roles import ApplicationRole, Operation
+from knowledge_service.source_administration import SourceExists, SourceNotFound
 from test_authorization_context import (
     ALICE,
     ISSUER,
@@ -167,14 +169,16 @@ async def test_a_malformed_authorization_header_is_a_400(
 
 
 def raw_scope(
-    headers: list[tuple[bytes, bytes]], path: str = "/v1/questions"
+    headers: list[tuple[bytes, bytes]],
+    path: str = "/v1/questions",
+    method: str = "POST",
 ) -> dict[str, Any]:
     """An ASGI request scope, for what an HTTP client would never send."""
     return {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "POST",
+        "method": method,
         "scheme": "http",
         "path": path,
         "raw_path": path.encode(),
@@ -428,8 +432,17 @@ ROUTES: dict[tuple[str, str], Operation | None] = {
     **{(route.method.value, route.path): route.operation for route in served_routes()},
 }
 PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
-# The routes that read a body, to check none is read before the role.
-WITH_BODY = [path for (method, path), _ in PROTECTED if method == "POST"]
+# The routes that may read a body, to check none is read before the role.
+WITH_BODY = [route for route, _ in PROTECTED if route[0] in ("POST", "PATCH")]
+# A body each route accepts, so a permitted caller reaches the store.
+BODIES: dict[tuple[str, str], dict[str, Any]] = {
+    ("POST", "/v1/sources"): {
+        "kind": "local_directory",
+        "location": "/srv/handbook",
+        "display_name": "Handbook",
+    },
+    ("PATCH", "/v1/sources/{source_id}"): {"display_name": "Handbook"},
+}
 
 
 class Deleting:
@@ -471,12 +484,39 @@ class Deciding:
         raise JobNotFound("no job has this ID")
 
 
+class Configuring:
+    """A Source store that records each request, and finds no Source."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def page(self, **request: Any) -> tuple[SourceRecord, ...]:
+        self.calls.append(request)
+        return ()
+
+    async def load(self, **request: Any) -> None:
+        self.calls.append(request)
+
+    async def register(self, **request: Any) -> SourceRecord:
+        self.calls.append(request)
+        raise SourceExists("a source of this kind and location is registered")
+
+    async def change(self, **request: Any) -> SourceRecord:
+        self.calls.append(request)
+        raise SourceNotFound("no source has this ID")
+
+    async def set_enabled(self, **request: Any) -> SourceRecord:
+        self.calls.append(request)
+        raise SourceNotFound("no source has this ID")
+
+
 def full_app(
     source: Source,
     tokens: dict[str, Any] | None = None,
     conversations: Deleting | None = None,
     jobs: Reading | None = None,
     decisions: Deciding | None = None,
+    sources: Configuring | None = None,
 ) -> Any:
     """The app with every endpoint wired, so every route is real."""
     return create_app(
@@ -485,6 +525,7 @@ def full_app(
         conversations=conversations or Deleting(),
         job_reports=jobs or Reading(),
         job_decisions=decisions or Deciding(),
+        sources=sources or Configuring(),
     )
 
 
@@ -510,29 +551,37 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
     roles: frozenset[ApplicationRole],
 ) -> None:
     source, conversations = Source(), Deleting()
-    jobs, decisions = Reading(), Deciding()
+    jobs, decisions, sources = Reading(), Deciding(), Configuring()
     token = verified(realm_access={"roles": sorted(roles)})
-    app = full_app(source, {"token": token}, conversations, jobs, decisions)
+    app = full_app(source, {"token": token}, conversations, jobs, decisions, sources)
     method, path = route
+    for name in ("{conversation_id}", "{job_id}", "{source_id}"):
+        path = path.replace(name, str(uuid4()))
 
     async with client(app) as http:
         response = await http.request(
             method,
-            path.replace("{conversation_id}", str(uuid4())).replace(
-                "{job_id}", str(uuid4())
-            ),
-            json={"text": QUESTION.text},
+            path,
+            json=BODIES.get(route, {"text": QUESTION.text}),
             headers={"Authorization": "Bearer token"},
         )
 
     allowed = bool(roles & MATRIX[operation])
     assert (response.status_code == 403) is not allowed
-    reached = source.readers or conversations.calls or jobs.calls or decisions.calls
+    reached = (
+        source.readers
+        or conversations.calls
+        or jobs.calls
+        or decisions.calls
+        or sources.calls
+    )
     assert bool(reached) is allowed
 
 
-@pytest.mark.parametrize("path", WITH_BODY)
-async def test_the_role_is_checked_before_the_body_is_read(path: str) -> None:
+@pytest.mark.parametrize("route", WITH_BODY, ids=" ".join)
+async def test_the_role_is_checked_before_the_body_is_read(
+    route: tuple[str, str],
+) -> None:
     read: list[int] = []
     sent: list[dict[str, Any]] = []
 
@@ -544,7 +593,8 @@ async def test_the_role_is_checked_before_the_body_is_read(path: str) -> None:
         sent.append(message)
 
     headers = [(b"authorization", b"Bearer roleless-token")]
-    await full_app(Source())(raw_scope(headers, path), receive, send)
+    method, path = route
+    await full_app(Source())(raw_scope(headers, path, method), receive, send)
 
     assert sent[0]["status"] == 403
     assert read == []

@@ -2,16 +2,16 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import UTC, datetime
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Protocol, cast
 from uuid import UUID, uuid4
 
 import anyio
 from fastapi import FastAPI, Path, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Message, Receive, Scope, Send
 
@@ -27,6 +27,10 @@ from knowledge_service.contracts import (
     JobsNeedingDecision,
     OperatorJob,
     Question,
+    SourceChanges,
+    SourcePage,
+    SourceRegistration,
+    SourceView,
     SynchronizationJobReport,
 )
 from knowledge_service.errors import (
@@ -34,7 +38,7 @@ from knowledge_service.errors import (
     classify_failure,
     policy_for,
 )
-from knowledge_service.identifiers import ConversationId, JobId, UserId
+from knowledge_service.identifiers import ConversationId, JobId, SourceId, UserId
 from knowledge_service.identity.context import (
     AuthenticationError,
     Caller,
@@ -63,7 +67,17 @@ from knowledge_service.pagination import (
     InvalidPage,
     page_size,
 )
+from knowledge_service.persistence.sources import SourceRecord
 from knowledge_service.roles import Operation, PermissionDenied, require
+from knowledge_service.source_administration import (
+    InvalidSourceSettings,
+    SourceDefinition,
+    SourceExists,
+    SourceNeedsRepair,
+    SourceNotFound,
+    source_cursor,
+    source_position,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +149,55 @@ class JobDecisions(Protocol):
     async def cancel(
         self, *, job_id: JobId, operator: UserId, request_id: UUID
     ) -> Job: ...
+
+
+class SourceAdministration(Protocol):
+    """Sources as an operator registers and changes them.
+
+    `DatabaseSourceAdministration` is the implementation. `register` raises
+    `SourceExists` for a kind and location already registered; `change` and
+    `set_enabled` raise `SourceNotFound` for a missing Source, and `change`
+    raises `InvalidSourceSettings` for a result that breaks a rule.
+    """
+
+    async def page(
+        self, *, limit: int, after: tuple[datetime, SourceId] | None = None
+    ) -> tuple[SourceRecord, ...]: ...
+
+    async def load(self, *, source_id: SourceId) -> SourceRecord | None: ...
+
+    async def register(
+        self, *, definition: SourceDefinition, operator: UserId, request_id: UUID
+    ) -> SourceRecord: ...
+
+    async def change(
+        self,
+        *,
+        source_id: SourceId,
+        changes: Mapping[str, object],
+        operator: UserId,
+        request_id: UUID,
+    ) -> SourceRecord: ...
+
+    async def set_enabled(
+        self, *, source_id: SourceId, enabled: bool, operator: UserId, request_id: UUID
+    ) -> SourceRecord: ...
+
+
+def source_view(record: SourceRecord) -> SourceView:
+    """The API view of a stored Source."""
+    return SourceView(
+        source_id=record.source_id.value,
+        kind=record.kind,
+        location=record.location,
+        display_name=record.display_name,
+        credentials_reference=record.credentials_reference,
+        enabled=record.enabled,
+        default_public=record.default_public,
+        default_principals=list(record.default_principals),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def operator_job(job: Job, *, now: datetime) -> OperatorJob:
@@ -341,6 +404,7 @@ def create_app(
     conversations: ConversationStore | None = None,
     job_reports: JobReports | None = None,
     job_decisions: JobDecisions | None = None,
+    sources: SourceAdministration | None = None,
 ) -> FastAPI:
     """The HTTP application.
 
@@ -494,14 +558,7 @@ def create_app(
             },
             **error_responses(413, 429),
         },
-        openapi_extra={
-            "requestBody": {
-                "required": True,
-                "content": {
-                    "application/json": {"schema": Question.model_json_schema()}
-                },
-            }
-        },
+        openapi_extra=body_schema(Question),
     )
     async def ask_question(request: Request) -> Response:
         caller, question = await admit(request, Operation.ASK_QUESTIONS)
@@ -712,6 +769,198 @@ def create_app(
             return failure_response(kind=classify_failure(error), request_id=request_id)
         return operator_job(decided, now=datetime.now(UTC))
 
+    @app.get(
+        "/v1/sources",
+        response_model=SourcePage,
+        responses=error_responses(),
+        openapi_extra={"parameters": PAGE_PARAMETERS},
+    )
+    async def list_sources(request: Request) -> SourcePage | JSONResponse:
+        caller = await authenticate(request)
+        require(caller.roles, Operation.CONFIGURE_SOURCES)
+        request_id = request_id_from(request)
+        try:
+            limit, cursor = page_request(request)
+            after = None if cursor is None else source_position(cursor)
+        except InvalidPage:
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if sources is None:
+            return _sources_unavailable(request_id)
+        try:
+            # One more than the page, to learn whether another page follows.
+            records = await sources.page(limit=limit + 1, after=after)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.error("source list failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        page = records[:limit]
+        return SourcePage(
+            items=[source_view(record) for record in page],
+            next_cursor=source_cursor(page[-1]) if len(records) > limit else None,
+        )
+
+    @app.post(
+        "/v1/sources",
+        status_code=201,
+        response_model=SourceView,
+        responses=error_responses(409, 413),
+        openapi_extra=body_schema(SourceRegistration),
+    )
+    async def register_source(request: Request) -> JSONResponse:
+        # Who, then whether they may, then what they send.
+        caller = await authenticate(request)
+        require(caller.roles, Operation.CONFIGURE_SOURCES)
+        registration = cast(
+            SourceRegistration, await read_body(request, SourceRegistration)
+        )
+        request_id = request_id_from(request)
+        try:
+            definition = SourceDefinition.of(**registration.model_dump())
+        except InvalidSourceSettings as invalid:
+            return _invalid_source(invalid, request_id)
+        if sources is None:
+            return _sources_unavailable(request_id)
+        try:
+            record = await sources.register(
+                definition=definition,
+                operator=caller.reader.user_id,
+                request_id=request_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except SourceExists:
+            return _conflict(
+                "source_exists",
+                "A Source of this kind and location is registered",
+                request_id,
+            )
+        except Exception as error:
+            logger.error("source registration failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        return JSONResponse(
+            status_code=201,
+            content=source_view(record).model_dump(mode="json"),
+            headers={"Location": f"/v1/sources/{record.source_id.value}"},
+        )
+
+    @app.get(
+        "/v1/sources/{source_id}",
+        response_model=SourceView,
+        responses=error_responses(404),
+    )
+    async def read_source(
+        request: Request, source_id: Identifier
+    ) -> SourceView | JSONResponse:
+        caller = await authenticate(request)
+        require(caller.roles, Operation.CONFIGURE_SOURCES)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(source_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if sources is None:
+            return _sources_unavailable(request_id)
+        try:
+            record = await sources.load(source_id=SourceId.parse(source_id))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.error("source read failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        if record is None:
+            return _source_not_found(request_id)
+        return source_view(record)
+
+    @app.patch(
+        "/v1/sources/{source_id}",
+        response_model=SourceView,
+        responses=error_responses(404, 409, 413),
+        openapi_extra=body_schema(SourceChanges),
+    )
+    async def change_source(
+        request: Request, source_id: Identifier
+    ) -> SourceView | JSONResponse:
+        caller = await authenticate(request)
+        require(caller.roles, Operation.CONFIGURE_SOURCES)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(source_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        requested = cast(SourceChanges, await read_body(request, SourceChanges))
+        # Only the fields the body names: one left out keeps its value.
+        changes = {
+            name: getattr(requested, name) for name in requested.model_fields_set
+        }
+        if sources is None:
+            return _sources_unavailable(request_id)
+        try:
+            record = await sources.change(
+                source_id=SourceId.parse(source_id),
+                changes=changes,
+                operator=caller.reader.user_id,
+                request_id=request_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except SourceNotFound:
+            return _source_not_found(request_id)
+        except SourceNeedsRepair:
+            return _conflict(
+                "source_needs_repair",
+                "The stored Source breaks a rule; register it again",
+                request_id,
+            )
+        except InvalidSourceSettings as invalid:
+            return _invalid_source(invalid, request_id)
+        except Exception as error:
+            logger.error("source change failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        return source_view(record)
+
+    @app.post(
+        "/v1/sources/{source_id}/enable",
+        response_model=SourceView,
+        responses=error_responses(404),
+    )
+    async def enable_source(
+        request: Request, source_id: Identifier
+    ) -> SourceView | JSONResponse:
+        return await switch(request, source_id, enabled=True)
+
+    @app.post(
+        "/v1/sources/{source_id}/disable",
+        response_model=SourceView,
+        responses=error_responses(404),
+    )
+    async def disable_source(
+        request: Request, source_id: Identifier
+    ) -> SourceView | JSONResponse:
+        return await switch(request, source_id, enabled=False)
+
+    async def switch(
+        request: Request, source_id: str, *, enabled: bool
+    ) -> SourceView | JSONResponse:
+        caller = await authenticate(request)
+        require(caller.roles, Operation.CONFIGURE_SOURCES)
+        request_id = request_id_from(request)
+        if not CANONICAL_ID.fullmatch(source_id):
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
+        if sources is None:
+            return _sources_unavailable(request_id)
+        try:
+            record = await sources.set_enabled(
+                source_id=SourceId.parse(source_id),
+                enabled=enabled,
+                operator=caller.reader.user_id,
+                request_id=request_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except SourceNotFound:
+            return _source_not_found(request_id)
+        except Exception as error:
+            logger.error("source switch failed: %s", type(error).__name__)
+            return failure_response(kind=classify_failure(error), request_id=request_id)
+        return source_view(record)
+
     return app
 
 
@@ -793,14 +1042,57 @@ def _jobs_unavailable(request_id: UUID) -> JSONResponse:
     )
 
 
+def _sources_unavailable(request_id: UUID) -> JSONResponse:
+    return error_response(
+        status_code=503,
+        code="sources_unavailable",
+        message="Sources are unavailable",
+        request_id=request_id,
+    )
+
+
+def _source_not_found(request_id: UUID) -> JSONResponse:
+    return error_response(
+        status_code=404,
+        code="source_not_found",
+        message="No such Source",
+        request_id=request_id,
+    )
+
+
+def _invalid_source(invalid: InvalidSourceSettings, request_id: UUID) -> JSONResponse:
+    # The message names a rule and never a value, so it is safe to send.
+    return error_response(
+        status_code=422,
+        code="invalid_source_settings",
+        message=str(invalid),
+        request_id=request_id,
+    )
+
+
 def _conflict(code: str, message: str, request_id: UUID) -> JSONResponse:
     return error_response(
         status_code=409, code=code, message=message, request_id=request_id
     )
 
 
+def body_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """The OpenAPI request body of a route that reads its body itself."""
+    return {
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": model.model_json_schema()}},
+        }
+    }
+
+
 async def read_question(request: Request) -> Question:
     """The body as a Question, read only up to `MAX_BODY_BYTES`."""
+    return cast(Question, await read_body(request, Question))
+
+
+async def read_body(request: Request, model: type[BaseModel]) -> BaseModel:
+    """The body as a `model`, read only up to `MAX_BODY_BYTES`."""
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise _BodyTooLarge
@@ -810,6 +1102,6 @@ async def read_question(request: Request) -> Question:
         if len(body) > MAX_BODY_BYTES:
             raise _BodyTooLarge
     try:
-        return Question.model_validate_json(bytes(body))
+        return model.model_validate_json(bytes(body))
     except ValidationError as invalid:
         raise RequestValidationError(invalid.errors()) from None

@@ -56,6 +56,12 @@ ROUTE_ERRORS = {
     ("GET", "/v1/job-decisions"): set[int](),
     ("POST", "/v1/jobs/{job_id}/retry"): {404, 409},
     ("POST", "/v1/jobs/{job_id}/cancel"): {404, 409},
+    ("GET", "/v1/sources"): set[int](),
+    ("POST", "/v1/sources"): {409, 413},
+    ("GET", "/v1/sources/{source_id}"): {404},
+    ("PATCH", "/v1/sources/{source_id}"): {404, 409, 413},
+    ("POST", "/v1/sources/{source_id}/enable"): {404},
+    ("POST", "/v1/sources/{source_id}/disable"): {404},
 }
 GOOD = Route(
     Method.GET,

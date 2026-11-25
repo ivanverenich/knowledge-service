@@ -63,6 +63,9 @@ class AuditAction(StrEnum):
     EMBEDDING_MIGRATION_SWITCHED = "embedding_migration.switched"
     JOB_RETRIED = "job.retried"
     JOB_CANCELLED = "job.cancelled"
+    SOURCE_UPDATED = "source.updated"
+    SOURCE_ENABLED = "source.enabled"
+    SOURCE_DISABLED = "source.disabled"
 
 
 class AuditTargetKind(StrEnum):

@@ -2,11 +2,12 @@
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from knowledge_service.identifiers import SourceId
@@ -56,6 +57,131 @@ async def load_source_row(
         default_public=row.default_public,
         default_principals=tuple(row.default_principals),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecord:
+    """A stored Source as an operator configures it, as plain values."""
+
+    source_id: SourceId
+    kind: str
+    location: str
+    display_name: str
+    credentials_reference: str | None
+    enabled: bool
+    default_public: bool
+    # PostgreSQL arrays may hold NULL elements; such a Source needs repair.
+    default_principals: tuple[str | None, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
+_RECORD_COLUMNS = (
+    sources.c.source_id,
+    sources.c.kind,
+    sources.c.location,
+    sources.c.display_name,
+    sources.c.credentials_reference,
+    sources.c.enabled,
+    sources.c.default_public,
+    sources.c.default_principals,
+    sources.c.created_at,
+    sources.c.updated_at,
+)
+
+
+def _source_record(row: sa.RowMapping) -> SourceRecord:
+    return SourceRecord(
+        source_id=SourceId(cast(UUID, row["source_id"])),
+        kind=row["kind"],
+        location=row["location"],
+        display_name=row["display_name"],
+        credentials_reference=row["credentials_reference"],
+        enabled=row["enabled"],
+        default_public=row["default_public"],
+        default_principals=tuple(row["default_principals"]),
+        # The session's time zone decides the offset psycopg returns.
+        created_at=cast(datetime, row["created_at"]).astimezone(UTC),
+        updated_at=cast(datetime, row["updated_at"]).astimezone(UTC),
+    )
+
+
+async def insert_source_record(
+    connection: AsyncConnection, record: SourceRecord
+) -> bool:
+    """Store a new Source; False, storing nothing, when its kind and location exist.
+
+    The unique constraint decides, so two registrations of the same folder
+    at the same moment store one Source, never two.
+    """
+    inserted = await connection.scalar(
+        postgresql.insert(sources)
+        .values(
+            source_id=record.source_id.value,
+            kind=record.kind,
+            location=record.location,
+            display_name=record.display_name,
+            credentials_reference=record.credentials_reference,
+            enabled=record.enabled,
+            default_public=record.default_public,
+            default_principals=list(record.default_principals),
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+        .on_conflict_do_nothing(constraint="uq_sources_kind_location")
+        .returning(sources.c.source_id)
+    )
+    return inserted is not None
+
+
+async def load_source_record(
+    connection: AsyncConnection, *, source_id: SourceId, for_update: bool = False
+) -> SourceRecord | None:
+    """One stored Source; with `for_update`, locked until the transaction ends."""
+    statement = sa.select(*_RECORD_COLUMNS).where(
+        sources.c.source_id == source_id.value
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    row = (await connection.execute(statement)).mappings().one_or_none()
+    return None if row is None else _source_record(row)
+
+
+async def save_source_record(connection: AsyncConnection, record: SourceRecord) -> None:
+    """Store what an operator may change of an existing Source."""
+    await connection.execute(
+        sa.update(sources)
+        .where(sources.c.source_id == record.source_id.value)
+        .values(
+            display_name=record.display_name,
+            credentials_reference=record.credentials_reference,
+            enabled=record.enabled,
+            default_public=record.default_public,
+            default_principals=list(record.default_principals),
+            updated_at=record.updated_at,
+        )
+    )
+
+
+async def load_source_page(
+    connection: AsyncConnection,
+    *,
+    limit: int,
+    after: tuple[datetime, SourceId] | None = None,
+) -> tuple[SourceRecord, ...]:
+    """Up to `limit` Sources, newest first; with `after`, those after that one."""
+    statement = sa.select(*_RECORD_COLUMNS)
+    if after is not None:
+        created_at, source_id = after
+        statement = statement.where(
+            sa.tuple_(sources.c.created_at, sources.c.source_id)
+            < sa.tuple_(sa.literal(created_at), sa.literal(source_id.value))
+        )
+    statement = statement.order_by(
+        sources.c.created_at.desc(), sources.c.source_id.desc()
+    ).limit(limit)
+    rows = (await connection.execute(statement)).mappings().all()
+    return tuple(_source_record(row) for row in rows)
 
 
 def source_runs_statement(source_id: UUID, limit: int) -> sa.Select[Any]:
