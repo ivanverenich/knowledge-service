@@ -16,6 +16,7 @@ import pytest
 
 from knowledge_service.access import AuthorizationContext
 from knowledge_service.answering.generation import InvalidAnswerRequest
+from knowledge_service.api_routes import served_routes
 from knowledge_service.app import create_app
 from knowledge_service.identifiers import JobId
 from knowledge_service.identity.context import (
@@ -29,7 +30,6 @@ from knowledge_service.job_decisions import JobNotFound
 from knowledge_service.job_reporting import JobReport
 from knowledge_service.jobs import Job, JobKind
 from knowledge_service.roles import ApplicationRole, Operation
-from knowledge_service.workflow import AnswerWorkflow
 from test_authorization_context import (
     ALICE,
     ISSUER,
@@ -57,17 +57,6 @@ TOKENS = {
 }
 
 
-class Workflow:
-    """Counts the ungrounded answers it was asked for."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def answer(self, question: Any, *, request_id: Any) -> Any:
-        self.calls += 1
-        raise AssertionError("an unauthenticated request reached the workflow")
-
-
 def app_with(
     source: Source, verifier: Verifier | None = None, *, authenticated: bool = True
 ) -> Any:
@@ -88,7 +77,7 @@ def client(app: Any) -> httpx.AsyncClient:
 async def ask(app: Any, headers: Any = None, **body: Any) -> httpx.Response:
     async with client(app) as http:
         return await http.post(
-            "/v1/answer/stream",
+            "/v1/questions",
             json={"text": QUESTION.text, **body},
             headers=headers,
         )
@@ -178,7 +167,7 @@ async def test_a_malformed_authorization_header_is_a_400(
 
 
 def raw_scope(
-    headers: list[tuple[bytes, bytes]], path: str = "/v1/answer/stream"
+    headers: list[tuple[bytes, bytes]], path: str = "/v1/questions"
 ) -> dict[str, Any]:
     """An ASGI request scope, for what an HTTP client would never send."""
     return {
@@ -262,13 +251,12 @@ async def test_identity_is_decided_before_the_body_is_parsed(
     app = app_with(Source(), verifier, authenticated=authenticated)
 
     async with client(app) as http:
-        for path in ("/v1/answer", "/v1/answer/stream"):
-            response = await http.post(
-                path,
-                content=body,
-                headers={"Content-Type": "application/json", **headers},
-            )
-            assert response.status_code == status
+        response = await http.post(
+            "/v1/questions",
+            content=body,
+            headers={"Content-Type": "application/json", **headers},
+        )
+        assert response.status_code == status
 
 
 async def test_an_authenticated_body_over_the_limit_is_a_413() -> None:
@@ -309,7 +297,7 @@ async def test_an_authenticated_invalid_body_is_still_a_422() -> None:
 
     async with client(app_with(source)) as http:
         response = await http.post(
-            "/v1/answer/stream",
+            "/v1/questions",
             json={"text": ""},
             headers={"Authorization": "Bearer alice-token"},
         )
@@ -384,40 +372,38 @@ async def test_the_streamer_refuses_a_reader_that_is_not_a_context() -> None:
         )
 
 
-async def test_the_ungrounded_endpoint_needs_a_token_too() -> None:
-    workflow = Workflow()
-    app = create_app(
-        workflow=cast(AnswerWorkflow, workflow),
-        authenticator=Authenticator(Verifier(TOKENS), POLICY),
-    )
+@pytest.mark.parametrize("path", ["/v1/answer", "/v1/answer/stream"])
+async def test_the_old_answer_routes_are_gone(path: str) -> None:
+    source = Source()
 
-    async with client(app) as http:
-        response = await http.post("/v1/answer", json={"text": QUESTION.text})
+    async with client(app_with(source)) as http:
+        response = await http.post(
+            path,
+            json={"text": QUESTION.text},
+            headers={"Authorization": "Bearer alice-token"},
+        )
 
-    assert response.status_code == 401
-    assert workflow.calls == 0
+    assert response.status_code == 404
+    assert source.readers == []
 
 
 # --- Application Roles: who may ask, never what they may read -------------------------
 
 
 @pytest.mark.parametrize("token", ["roleless-token", "staff-token"])
-@pytest.mark.parametrize("path", ["/v1/answer", "/v1/answer/stream"])
 async def test_a_caller_without_the_user_role_gets_403_and_nothing_runs(
-    path: str, token: str, caplog: pytest.LogCaptureFixture
+    token: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
     source = Source()
-    workflow = Workflow()
     app = create_app(
-        workflow=cast(AnswerWorkflow, workflow),
         streamer=streamer(Model(), source=source),
         authenticator=Authenticator(Verifier(TOKENS), POLICY),
     )
 
     async with client(app) as http:
         response = await http.post(
-            path,
+            "/v1/questions",
             json={"text": QUESTION.text},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -425,13 +411,13 @@ async def test_a_caller_without_the_user_role_gets_403_and_nothing_runs(
     assert response.status_code == 403
     assert response.json()["code"] == "forbidden"
     assert "www-authenticate" not in response.headers
-    assert (source.readers, workflow.calls) == ([], 0)
+    assert source.readers == []
     assert "request not permitted: ask_questions" in caplog.messages
 
 
-# Every route the app serves, written out by hand, and the operation it needs;
-# None marks a route anyone may call. A new route fails the first test below
-# until someone decides who may call it.
+# Every route the app serves and the operation it needs: the served rows of
+# the route table, and the public routes outside `/v1`, marked None. A new
+# route fails the first test below until the table lists it.
 ROUTES: dict[tuple[str, str], Operation | None] = {
     ("GET", "/health/live"): None,
     ("GET", "/health/ready"): None,
@@ -439,30 +425,11 @@ ROUTES: dict[tuple[str, str], Operation | None] = {
     ("GET", "/docs"): None,
     ("GET", "/docs/oauth2-redirect"): None,
     ("GET", "/redoc"): None,
-    ("POST", "/v1/answer"): Operation.ASK_QUESTIONS,
-    ("POST", "/v1/answer/stream"): Operation.ASK_QUESTIONS,
-    ("DELETE", "/v1/conversations/{conversation_id}"): (
-        Operation.MANAGE_OWN_CONVERSATIONS
-    ),
-    ("GET", "/v1/jobs/{job_id}"): Operation.START_SYNCHRONIZATION_RUNS,
-    ("GET", "/v1/job-decisions"): Operation.RECOVER_JOBS,
-    ("POST", "/v1/jobs/{job_id}/retry"): Operation.RECOVER_JOBS,
-    ("POST", "/v1/jobs/{job_id}/cancel"): Operation.RECOVER_JOBS,
+    **{(route.method.value, route.path): route.operation for route in served_routes()},
 }
 PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
 # The routes that read a body, to check none is read before the role.
 WITH_BODY = [path for (method, path), _ in PROTECTED if method == "POST"]
-
-
-class Counting:
-    """A workflow that records that it was reached, then stops."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def answer(self, question: Any, *, request_id: Any) -> Any:
-        self.calls += 1
-        raise RuntimeError("reached")
 
 
 class Deleting:
@@ -506,7 +473,6 @@ class Deciding:
 
 def full_app(
     source: Source,
-    workflow: Any = None,
     tokens: dict[str, Any] | None = None,
     conversations: Deleting | None = None,
     jobs: Reading | None = None,
@@ -514,7 +480,6 @@ def full_app(
 ) -> Any:
     """The app with every endpoint wired, so every route is real."""
     return create_app(
-        workflow=cast(AnswerWorkflow, workflow or Counting()),
         streamer=streamer(Model(), source=source),
         authenticator=Authenticator(Verifier(tokens or TOKENS), POLICY),
         conversations=conversations or Deleting(),
@@ -544,10 +509,10 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
     operation: Operation,
     roles: frozenset[ApplicationRole],
 ) -> None:
-    source, workflow, conversations = Source(), Counting(), Deleting()
+    source, conversations = Source(), Deleting()
     jobs, decisions = Reading(), Deciding()
     token = verified(realm_access={"roles": sorted(roles)})
-    app = full_app(source, workflow, {"token": token}, conversations, jobs, decisions)
+    app = full_app(source, {"token": token}, conversations, jobs, decisions)
     method, path = route
 
     async with client(app) as http:
@@ -562,13 +527,7 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
 
     allowed = bool(roles & MATRIX[operation])
     assert (response.status_code == 403) is not allowed
-    reached = (
-        source.readers
-        or workflow.calls
-        or conversations.calls
-        or jobs.calls
-        or decisions.calls
-    )
+    reached = source.readers or conversations.calls or jobs.calls or decisions.calls
     assert bool(reached) is allowed
 
 
@@ -618,14 +577,13 @@ async def test_an_unavailable_identity_provider_is_a_503_with_retry_after() -> N
     assert source.readers == []
 
 
-@pytest.mark.parametrize("path", ["/v1/answer", "/v1/answer/stream"])
-async def test_an_app_without_an_authenticator_answers_nobody(path: str) -> None:
+async def test_an_app_without_an_authenticator_answers_nobody() -> None:
     source = Source()
     app = app_with(source, authenticated=False)
 
     async with client(app) as http:
         response = await http.post(
-            path,
+            "/v1/questions",
             json={"text": QUESTION.text},
             headers={"Authorization": "Bearer alice-token"},
         )

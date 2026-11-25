@@ -150,7 +150,7 @@ async def observe(
         transport=httpx.ASGITransport(app=app), base_url="http://t"
     ) as http:
         response = await http.post(
-            "/v1/answer/stream", json={"text": QUESTION.text}, headers=AUTHORIZATION
+            "/v1/questions", json={"text": QUESTION.text}, headers=AUTHORIZATION
         )
     return (
         response.status_code,

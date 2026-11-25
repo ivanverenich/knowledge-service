@@ -822,7 +822,7 @@ async def test_the_endpoint_streams_events_a_client_can_rebuild() -> None:
     app = create_app(authenticator=TRUSTED, streamer=streamer(Model()))
     async with client(app) as http:
         response = await http.post(
-            "/v1/answer/stream",
+            "/v1/questions",
             json={"text": QUESTION.text},
             headers={"X-Request-ID": str(REQUEST_ID)},
         )
@@ -836,7 +836,7 @@ async def test_the_endpoint_streams_events_a_client_can_rebuild() -> None:
 @pytest.mark.parametrize(
     ("answering", "status", "code"),
     [
-        (None, 503, "workflow_unavailable"),
+        (None, 503, "answering_unavailable"),
         ("denied", 403, "authorization_denied"),
         ("slow", 503, "dependency_unavailable"),
     ],
@@ -855,7 +855,7 @@ async def test_a_failure_before_the_first_byte_is_a_plain_http_error(
         else streamer(Model(), source=sources[answering], timeout_seconds=0.1),
     )
     async with client(app) as http:
-        response = await http.post("/v1/answer/stream", json={"text": "Leave?"})
+        response = await http.post("/v1/questions", json={"text": "Leave?"})
 
     assert response.status_code == status
     assert response.json()["code"] == code
@@ -865,7 +865,7 @@ async def test_an_empty_question_is_refused_before_any_work() -> None:
     model = Model()
     app = create_app(authenticator=TRUSTED, streamer=streamer(model))
     async with client(app) as http:
-        response = await http.post("/v1/answer/stream", json={"text": ""})
+        response = await http.post("/v1/questions", json={"text": ""})
 
     assert response.status_code == 422
     assert model.calls == 0
@@ -911,8 +911,8 @@ def scope(spec_version: str) -> dict[str, Any]:
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/v1/answer/stream",
-        "raw_path": b"/v1/answer/stream",
+        "path": "/v1/questions",
+        "raw_path": b"/v1/questions",
         "query_string": b"",
         "root_path": "",
         "headers": [

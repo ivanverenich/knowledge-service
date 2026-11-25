@@ -7,7 +7,7 @@ depends_on: ["M08-T16"]
 estimate: 75m
 topics: ["rest","openai-compatible","open-webui"]
 deliverables: ["native API route design"]
-status: planned
+status: completed
 ---
 
 # M09-T01 — Design native resource routes

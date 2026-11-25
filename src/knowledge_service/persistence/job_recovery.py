@@ -132,20 +132,33 @@ def _newer_of_same_intent() -> sa.Exists:
 
 
 async def load_failed_for_good(
-    connection: AsyncConnection, *, limit: int
+    connection: AsyncConnection,
+    *,
+    limit: int,
+    after: tuple[datetime, JobId] | None = None,
 ) -> tuple[Job, ...]:
     """Jobs that failed with no retry planned, that no newer Job replaced.
 
     Newest failure first. A Job for the same work queued after it, such as
     the next scheduled synchronization, replaces it, so it is not listed.
+    With `after`, the list starts after the Job that finished then with
+    that ID, so pages never repeat or skip a Job, even one that finished at
+    the same moment.
     """
+    conditions = [
+        jobs.c.status == JobStatus.FAILED.value,
+        jobs.c.retry_at.is_(None),
+        ~_newer_of_same_intent(),
+    ]
+    if after is not None:
+        finished_at, job_id = after
+        conditions.append(
+            sa.tuple_(jobs.c.finished_at, jobs.c.job_id)
+            < sa.tuple_(sa.literal(finished_at), sa.literal(job_id.value))
+        )
     statement = (
         sa.select(jobs)
-        .where(
-            jobs.c.status == JobStatus.FAILED.value,
-            jobs.c.retry_at.is_(None),
-            ~_newer_of_same_intent(),
-        )
+        .where(*conditions)
         .order_by(jobs.c.finished_at.desc(), jobs.c.job_id.desc())
         .limit(limit)
     )

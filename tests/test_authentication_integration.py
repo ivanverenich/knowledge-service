@@ -72,7 +72,7 @@ async def ask(app: Any, token: str | None) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
         return await http.post(
-            "/v1/answer/stream", json={"text": QUESTION.text}, headers=headers
+            "/v1/questions", json={"text": QUESTION.text}, headers=headers
         )
 
 

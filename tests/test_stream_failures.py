@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import psycopg.errors as pg
@@ -28,7 +28,6 @@ from knowledge_service.answering.stream_failures import (
 )
 from knowledge_service.answering.streaming import FinishedAnswer
 from knowledge_service.app import create_app
-from knowledge_service.contracts import Question
 from knowledge_service.embeddings.port import (
     EmbeddingInputRejected,
     EmbeddingRateLimited,
@@ -41,7 +40,6 @@ from knowledge_service.errors import (
     classify_failure,
 )
 from knowledge_service.model import ChatModelRateLimited, ChatModelUnavailable
-from knowledge_service.workflow import AnswerWorkflow
 from test_streaming import (
     ANSWER,
     CITED,
@@ -307,7 +305,7 @@ async def test_a_failure_in_the_search_is_an_http_error_with_retry_guidance(
     )
 
     async with client(app) as http:
-        response = await http.post("/v1/answer/stream", json={"text": QUESTION.text})
+        response = await http.post("/v1/questions", json={"text": QUESTION.text})
 
     assert response.status_code == status
     assert response.json()["code"] == code
@@ -513,7 +511,7 @@ async def test_a_database_error_retrying_cannot_fix_is_internal_without_retry_af
     )
 
     async with client(app) as http:
-        response = await http.post("/v1/answer/stream", json={"text": QUESTION.text})
+        response = await http.post("/v1/questions", json={"text": QUESTION.text})
 
     assert classify_failure(error) is FailureKind.INTERNAL
     assert response.status_code == 500
@@ -597,20 +595,3 @@ async def test_a_client_that_read_the_terminal_event_and_left_is_not_cancelled(
 
     record = ended(caplog)
     assert (record["audit_outcome"], record["partial_text"]) == (outcome, partial)
-
-
-class FailingWorkflow:
-    async def answer(self, question: Question, *, request_id: UUID) -> Any:
-        raise ChatModelUnavailable(MARKER)
-
-
-async def test_the_answer_endpoint_gives_the_same_retry_guidance() -> None:
-    app = create_app(
-        authenticator=TRUSTED, workflow=cast(AnswerWorkflow, FailingWorkflow())
-    )
-
-    async with client(app) as http:
-        response = await http.post("/v1/answer", json={"text": QUESTION.text})
-
-    assert response.status_code == 503
-    assert response.headers["retry-after"] == str(RETRY_AFTER_SECONDS)

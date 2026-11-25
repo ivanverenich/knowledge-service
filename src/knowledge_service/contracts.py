@@ -104,6 +104,10 @@ class OperatorJob(BaseModel):
 
 
 class JobsNeedingDecision(BaseModel):
-    """Jobs that failed for good and that no newer Job replaced, newest first."""
+    """A page of Jobs that failed for good and no newer Job replaced.
 
-    jobs: list[OperatorJob]
+    Newest first. `next_cursor` starts the next page; None on the last one.
+    """
+
+    items: list[OperatorJob]
+    next_cursor: str | None

@@ -25,11 +25,14 @@ from knowledge_service.audit import (
 from knowledge_service.database import DatabaseRuntime
 from knowledge_service.identifiers import AuditEventId, JobId, UserId
 from knowledge_service.jobs import InvalidJob, Job
+from knowledge_service.pagination import InvalidPage, decode_cursor, encode_cursor
 from knowledge_service.persistence.audit import record_audit_event
 from knowledge_service.persistence.job_recovery import load_failed_for_good
 from knowledge_service.persistence.jobs import load_job, save_job
 
 MAX_DECISION_LIST: Final = 500
+_DECISION_LIST = "job-decisions"
+_DECISION_CURSOR_KEYS = frozenset({"finished_at", "job_id"})
 
 
 class JobNotFound(LookupError):
@@ -41,13 +44,51 @@ class JobIntentAlreadyOpen(InvalidJob):
 
 
 async def load_jobs_needing_decision(
-    runtime: DatabaseRuntime, *, limit: int = 100
+    runtime: DatabaseRuntime,
+    *,
+    limit: int = 100,
+    after: tuple[datetime, JobId] | None = None,
 ) -> tuple[Job, ...]:
-    """Jobs that failed for good and that no newer Job replaced, newest first."""
+    """Jobs that failed for good and that no newer Job replaced, newest first.
+
+    With `after`, from a `decision_position`, the list starts after that Job.
+    """
     if type(limit) is not int or not 1 <= limit <= MAX_DECISION_LIST:
         raise ValueError(f"limit must be an integer from 1 to {MAX_DECISION_LIST}")
     async with runtime.transaction() as connection:
-        return await load_failed_for_good(connection, limit=limit)
+        return await load_failed_for_good(connection, limit=limit, after=after)
+
+
+def decision_cursor(job: Job) -> str:
+    """The cursor of the page that starts after `job` in the decision list."""
+    if job.finished_at is None:
+        raise ValueError("only a finished Job ends a page of decisions")
+    return encode_cursor(
+        _DECISION_LIST,
+        {"finished_at": job.finished_at.isoformat(), "job_id": str(job.job_id.value)},
+    )
+
+
+def decision_position(cursor: str) -> tuple[datetime, JobId]:
+    """Where a `decision_cursor` says the next page starts.
+
+    Only the exact text `decision_cursor` writes is accepted, so an offset
+    other than UTC or another spelling of the same ID raises `InvalidPage`.
+    """
+    position = decode_cursor(cursor, listing=_DECISION_LIST, keys=_DECISION_CURSOR_KEYS)
+    finished_text, job_text = position["finished_at"], position["job_id"]
+    try:
+        finished_at = datetime.fromisoformat(finished_text)
+        job_id = UUID(job_text)
+    except ValueError:
+        raise InvalidPage("the cursor is not one this API gave") from None
+    if (
+        finished_at.utcoffset() != timedelta(0)
+        or finished_at.isoformat() != finished_text
+        or str(job_id) != job_text
+    ):
+        raise InvalidPage("the cursor is not one this API gave")
+    return finished_at, JobId(job_id)
 
 
 async def retry_job(
@@ -191,8 +232,10 @@ class DatabaseJobDecisions:
     runtime: DatabaseRuntime
     clock: Callable[[], datetime] = field(default=_utc_now)
 
-    async def needing_decision(self, *, limit: int) -> tuple[Job, ...]:
-        return await load_jobs_needing_decision(self.runtime, limit=limit)
+    async def needing_decision(
+        self, *, limit: int, after: tuple[datetime, JobId] | None = None
+    ) -> tuple[Job, ...]:
+        return await load_jobs_needing_decision(self.runtime, limit=limit, after=after)
 
     async def retry(self, *, job_id: JobId, operator: UserId, request_id: UUID) -> Job:
         return await retry_job(

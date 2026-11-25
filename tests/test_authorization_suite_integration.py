@@ -441,7 +441,7 @@ async def ask(
         transport=httpx.ASGITransport(app=app), base_url="http://t"
     ) as http:
         response = await http.post(
-            "/v1/answer/stream",
+            "/v1/questions",
             json={"text": question},
             headers={**person.authorization, "X-Request-ID": str(REQUEST_ID)},
         )

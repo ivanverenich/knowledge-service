@@ -84,7 +84,7 @@ async def search_fails(
     app = create_app(authenticator=TRUSTED, streamer=streamer(model, source=source))
 
     async with client(app) as http:
-        response = await http.post("/v1/answer/stream", json={"text": QUESTION.text})
+        response = await http.post("/v1/questions", json={"text": QUESTION.text})
 
     assert response.status_code == 503
     assert response.json()["code"] == "dependency_unavailable"

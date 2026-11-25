@@ -130,7 +130,7 @@ async def ask(runtime: DatabaseRuntime, model: Model) -> StreamedAnswer:
         transport=httpx.ASGITransport(app=app), base_url="http://t"
     ) as http:
         response = await http.post(
-            "/v1/answer/stream",
+            "/v1/questions",
             json={"text": QUESTION.text},
             headers={"Authorization": "Bearer any"},
         )

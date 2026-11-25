@@ -657,12 +657,61 @@ async def test_the_decision_list_shows_only_failures_nothing_replaced(
     response = await over_http(runtime, "GET", "/v1/job-decisions")
 
     assert response.status_code == 200
-    [listed] = response.json()["jobs"]
+    [listed] = response.json()["items"]
     assert listed["job_id"] == str(newer.value)
     assert (listed["condition"], listed["decisions"]) == (
         "exhausted",
         ["retry", "cancel"],
     )
+
+
+async def failed_purge_at(runtime: DatabaseRuntime, finished_at: datetime) -> Job:
+    """A purge of a Document of its own, failed for good at `finished_at`."""
+    async with runtime.transaction() as connection:
+        queued = await enqueue_job(
+            connection,
+            Job.request(
+                job_id=JobId.new(),
+                kind=JobKind.PURGE_DOCUMENT_CHUNKS,
+                target_id=uuid.uuid4(),
+                queued_at=OBSERVED_AT,
+            ),
+        )
+        failed = queued.job.start(started_at=STARTED_AT).fail(
+            error_code="database_rejected", finished_at=finished_at
+        )
+        await save_job(connection, job=failed)
+    return failed
+
+
+async def test_pages_of_decisions_never_repeat_or_skip_a_job(
+    runtime: DatabaseRuntime,
+) -> None:
+    # Three Jobs fail in the same microsecond, so only their IDs order them.
+    for minutes in (1, 2, 2, 2, 3):
+        await failed_purge_at(runtime, STARTED_AT + timedelta(minutes=minutes))
+    expected = [
+        str(job.job_id.value) for job in await load_jobs_needing_decision(runtime)
+    ]
+    seen: list[str] = []
+    query = "?limit=2"
+
+    for _ in range(10):
+        response = await over_http(runtime, "GET", f"/v1/job-decisions{query}")
+        page = response.json()
+        if not seen:
+            # A Job that fails while the operator reads goes before the first
+            # page, so it moves none of the pages after it.
+            await failed_purge_at(runtime, STARTED_AT + timedelta(minutes=10))
+        seen += [item["job_id"] for item in page["items"]]
+        if page["next_cursor"] is None:
+            break
+        query = f"?limit=2&cursor={page['next_cursor']}"
+    else:
+        pytest.fail("the pages never ended")
+
+    assert seen == expected
+    assert len(set(seen)) == 5
 
 
 # The relay and the migration.

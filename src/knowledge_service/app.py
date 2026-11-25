@@ -4,14 +4,15 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
 import anyio
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Path, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Message, Receive, Scope, Send
 
 from knowledge_service.answering.stream_failures import StreamPhase, stream_failure
@@ -21,7 +22,6 @@ from knowledge_service.answering.streaming import (
     AnswerStreamer,
 )
 from knowledge_service.contracts import (
-    Answer,
     ErrorResponse,
     JobAttemptProgress,
     JobsNeedingDecision,
@@ -42,7 +42,12 @@ from knowledge_service.identity.context import (
 )
 from knowledge_service.identity.oidc import IdentityProviderUnavailable
 from knowledge_service.job_conditions import allowed_decisions, condition_of
-from knowledge_service.job_decisions import JobIntentAlreadyOpen, JobNotFound
+from knowledge_service.job_decisions import (
+    JobIntentAlreadyOpen,
+    JobNotFound,
+    decision_cursor,
+    decision_position,
+)
 from knowledge_service.job_reporting import JobReport
 from knowledge_service.jobs import (
     IllegalJobTransition,
@@ -51,8 +56,14 @@ from knowledge_service.jobs import (
     JobNotRetryable,
     JobStillRunning,
 )
+from knowledge_service.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_CURSOR_CHARACTERS,
+    MAX_PAGE_SIZE,
+    InvalidPage,
+    page_size,
+)
 from knowledge_service.roles import Operation, PermissionDenied, require
-from knowledge_service.workflow import AnswerWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +75,11 @@ MAX_BODY_BYTES = 65_536
 CANONICAL_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
 )
+
+
+# A path ID, documented as a UUID but read as text: the route checks its
+# spelling itself, after the caller's role, so it never answers first.
+Identifier = Annotated[str, Path(json_schema_extra={"format": "uuid"})]
 
 
 class RequestAuthenticator(Protocol):
@@ -108,7 +124,9 @@ class JobDecisions(Protocol):
     decision does not fit.
     """
 
-    async def needing_decision(self, *, limit: int) -> tuple[Job, ...]: ...
+    async def needing_decision(
+        self, *, limit: int, after: tuple[datetime, JobId] | None = None
+    ) -> tuple[Job, ...]: ...
 
     async def retry(
         self, *, job_id: JobId, operator: UserId, request_id: UUID
@@ -117,10 +135,6 @@ class JobDecisions(Protocol):
     async def cancel(
         self, *, job_id: JobId, operator: UserId, request_id: UUID
     ) -> Job: ...
-
-
-# How many Jobs the decision list shows at most.
-DECISION_LIST_LIMIT = 100
 
 
 def operator_job(job: Job, *, now: datetime) -> OperatorJob:
@@ -322,7 +336,6 @@ async def _unless_client_leaves(
 
 def create_app(
     readiness_check: ReadinessCheck | None = None,
-    workflow: AnswerWorkflow | None = None,
     streamer: AnswerStreamer | None = None,
     authenticator: RequestAuthenticator | None = None,
     conversations: ConversationStore | None = None,
@@ -335,7 +348,8 @@ def create_app(
     operation: without an `authenticator` they answer 503, and the reader or
     owner is only ever the one in the context it returns.
     """
-    app = FastAPI(title="knowledge-service")
+    # No redirect from `/v1/x/` to `/v1/x`: a redirect answers before identity.
+    app = FastAPI(title="knowledge-service", redirect_slashes=False)
 
     async def admit(request: Request, operation: Operation) -> tuple[Caller, Question]:
         """The caller, their permission, then the Question, in that order.
@@ -428,6 +442,23 @@ def create_app(
             request_id=request_id_from(request),
         )
 
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error_handler(
+        request: Request, error: StarletteHTTPException
+    ) -> JSONResponse:
+        # An unknown path or method: the same error shape as every other.
+        code, message = HTTP_ERRORS.get(
+            error.status_code, ("http_error", "The request cannot be served")
+        )
+        response = error_response(
+            status_code=error.status_code,
+            code=code,
+            message=message,
+            request_id=request_id_from(request),
+        )
+        response.headers.update(error.headers or {})
+        return response
+
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
         request: Request,
@@ -454,43 +485,32 @@ def create_app(
             content={"status": "ready"},
         )
 
-    @app.post("/v1/answer", response_model=Answer)
-    async def answer(request: Request) -> Answer | JSONResponse:
-        # The ungrounded M01 path searches nothing, so it needs proof of
-        # identity and the role, but no reader; M09-T01 replaces it.
-        _caller, question = await admit(request, Operation.ASK_QUESTIONS)
-        request_id = request_id_from(request)
-
-        if workflow is None:
-            return error_response(
-                status_code=503,
-                code="workflow_unavailable",
-                message="Answer workflow is unavailable",
-                request_id=request_id,
-            )
-
-        try:
-            return await workflow.answer(
-                question,
-                request_id=request_id,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return failure_response(
-                kind=classify_failure(error),
-                request_id=request_id,
-            )
-
-    @app.post("/v1/answer/stream")
-    async def answer_stream(request: Request) -> Response:
+    @app.post(
+        "/v1/questions",
+        responses={
+            200: {
+                "description": "The Answer as Server-Sent Events",
+                "content": {"text/event-stream": {}},
+            },
+            **error_responses(413, 429),
+        },
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {"schema": Question.model_json_schema()}
+                },
+            }
+        },
+    )
+    async def ask_question(request: Request) -> Response:
         caller, question = await admit(request, Operation.ASK_QUESTIONS)
         request_id = request_id_from(request)
         if streamer is None:
             return error_response(
                 status_code=503,
-                code="workflow_unavailable",
-                message="Answer workflow is unavailable",
+                code="answering_unavailable",
+                message="Answering is unavailable",
                 request_id=request_id,
             )
         try:
@@ -515,9 +535,13 @@ def create_app(
             },
         )
 
-    @app.delete("/v1/conversations/{conversation_id}", status_code=204)
+    @app.delete(
+        "/v1/conversations/{conversation_id}",
+        status_code=204,
+        responses=error_responses(),
+    )
     async def delete_own_conversation(
-        request: Request, conversation_id: str
+        request: Request, conversation_id: Identifier
     ) -> Response:
         # Who, then whether they may, then which Conversation: the ID is not
         # even parsed for a caller who may not delete Conversations.
@@ -550,9 +574,13 @@ def create_app(
         # The same whether it was deleted, missing, or another User's.
         return Response(status_code=204)
 
-    @app.get("/v1/jobs/{job_id}", response_model=SynchronizationJobReport)
+    @app.get(
+        "/v1/jobs/{job_id}",
+        response_model=SynchronizationJobReport,
+        responses=error_responses(404),
+    )
     async def read_synchronization_job(
-        request: Request, job_id: str
+        request: Request, job_id: Identifier
     ) -> SynchronizationJobReport | JSONResponse:
         # Who, then whether they may, then which Job.
         caller = await authenticate(request)
@@ -586,34 +614,57 @@ def create_app(
             )
         return synchronization_job_report(report)
 
-    @app.get("/v1/job-decisions", response_model=JobsNeedingDecision)
+    @app.get(
+        "/v1/job-decisions",
+        response_model=JobsNeedingDecision,
+        responses=error_responses(),
+        openapi_extra={"parameters": PAGE_PARAMETERS},
+    )
     async def list_jobs_needing_decision(
         request: Request,
     ) -> JobsNeedingDecision | JSONResponse:
         caller = await authenticate(request)
         require(caller.roles, Operation.RECOVER_JOBS)
         request_id = request_id_from(request)
+        try:
+            limit, cursor = page_request(request)
+            after = None if cursor is None else decision_position(cursor)
+        except InvalidPage:
+            return failure_response(kind=FailureKind.VALIDATION, request_id=request_id)
         if job_decisions is None:
             return _jobs_unavailable(request_id)
         try:
-            jobs = await job_decisions.needing_decision(limit=DECISION_LIST_LIMIT)
+            # One more than the page, to learn whether another page follows.
+            jobs = await job_decisions.needing_decision(limit=limit + 1, after=after)
         except asyncio.CancelledError:
             raise
         except Exception as error:
             logger.error("job decision list failed: %s", type(error).__name__)
             return failure_response(kind=classify_failure(error), request_id=request_id)
+        page = jobs[:limit]
         now = datetime.now(UTC)
-        return JobsNeedingDecision(jobs=[operator_job(job, now=now) for job in jobs])
+        return JobsNeedingDecision(
+            items=[operator_job(job, now=now) for job in page],
+            next_cursor=decision_cursor(page[-1]) if len(jobs) > limit else None,
+        )
 
-    @app.post("/v1/jobs/{job_id}/retry", response_model=OperatorJob)
+    @app.post(
+        "/v1/jobs/{job_id}/retry",
+        response_model=OperatorJob,
+        responses=error_responses(404, 409),
+    )
     async def retry_failed_job(
-        request: Request, job_id: str
+        request: Request, job_id: Identifier
     ) -> OperatorJob | JSONResponse:
         return await decide(request, job_id, retry=True)
 
-    @app.post("/v1/jobs/{job_id}/cancel", response_model=OperatorJob)
+    @app.post(
+        "/v1/jobs/{job_id}/cancel",
+        response_model=OperatorJob,
+        responses=error_responses(404, 409),
+    )
     async def cancel_unfinished_job(
-        request: Request, job_id: str
+        request: Request, job_id: Identifier
     ) -> OperatorJob | JSONResponse:
         return await decide(request, job_id, retry=False)
 
@@ -662,6 +713,75 @@ def create_app(
         return operator_job(decided, now=datetime.now(UTC))
 
     return app
+
+
+# What each error status means; every `/v1` route can answer the first six.
+ERROR_STATUSES: dict[int, str] = {
+    400: "The Authorization header is malformed",
+    401: "No valid access token",
+    403: "No role of the caller permits this operation",
+    422: "The request is not valid",
+    500: "An internal error",
+    503: "A service it needs is unavailable",
+    404: "Nothing with this ID",
+    409: "The request does not fit the resource's current state",
+    413: "The request body is too large",
+    429: "Too many requests, or the service is at capacity",
+}
+COMMON_ERRORS = (400, 401, 403, 422, 500, 503)
+# The error code and message for a path or method the API does not have.
+HTTP_ERRORS: dict[int, tuple[str, str]] = {
+    404: ("not_found", "No such resource"),
+    405: ("method_not_allowed", "This resource does not allow this method"),
+}
+
+# `limit` and `cursor`, described by hand: the route reads them itself, after
+# the caller's role, so a bad one never answers 422 before the 401 or 403.
+PAGE_PARAMETERS: list[dict[str, Any]] = [
+    {
+        "name": "limit",
+        "in": "query",
+        "required": False,
+        "description": "How many items to return",
+        "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_PAGE_SIZE,
+            "default": DEFAULT_PAGE_SIZE,
+        },
+    },
+    {
+        "name": "cursor",
+        "in": "query",
+        "required": False,
+        "description": "`next_cursor` of the page before; absent for the first page",
+        "schema": {"type": "string", "maxLength": MAX_CURSOR_CHARACTERS},
+    },
+]
+
+
+def error_responses(*extra: int) -> dict[int | str, dict[str, Any]]:
+    """OpenAPI responses for every error status a route may answer."""
+    return {
+        status: {"model": ErrorResponse, "description": ERROR_STATUSES[status]}
+        for status in (*COMMON_ERRORS, *extra)
+    }
+
+
+def page_request(request: Request) -> tuple[int, str | None]:
+    """`limit` and `cursor`, each at most once and nothing else, else `InvalidPage`.
+
+    A misspelled parameter, such as `Limit`, is refused rather than ignored.
+    """
+    if set(request.query_params) - {"limit", "cursor"}:
+        raise InvalidPage("only limit and cursor are accepted")
+    for name in ("limit", "cursor"):
+        if len(request.query_params.getlist(name)) > 1:
+            raise InvalidPage(f"{name} is given more than once")
+    return (
+        page_size(request.query_params.get("limit")),
+        request.query_params.get("cursor"),
+    )
 
 
 def _jobs_unavailable(request_id: UUID) -> JSONResponse:

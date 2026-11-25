@@ -286,7 +286,7 @@ async def test_a_hidden_exact_match_never_reaches_the_model_or_the_client(
         transport=httpx.ASGITransport(app=app), base_url="http://t"
     ) as http:
         response = await http.post(
-            "/v1/answer/stream", json={"text": QUESTION.text}, headers=AUTHORIZATION
+            "/v1/questions", json={"text": QUESTION.text}, headers=AUTHORIZATION
         )
 
     assert response.status_code == 200
