@@ -7,6 +7,12 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from knowledge_service.compatibility.models import (
+    DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_NAME,
+    CompatibleModel,
+)
+
 
 class Environment(StrEnum):
     """Environment enum for the application."""
@@ -49,6 +55,22 @@ class Settings(BaseSettings):
     redis_health_timeout_seconds: float = Field(
         default=2.0, ge=0.05, le=30.0, allow_inf_nan=False
     )
+    # The one model the OpenAI-compatible adapter offers, as clients see it
+    # (`compatibility.models`). Changing the ID makes saved choices stale.
+    compatible_model_id: str = DEFAULT_MODEL_ID
+    compatible_model_name: str = DEFAULT_MODEL_NAME
+
+    @model_validator(mode="after")
+    def check_compatible_model(self) -> Self:
+        # Raises `InvalidCompatibleModel`, a ValueError, naming the rule.
+        self.compatible_model()
+        return self
+
+    def compatible_model(self) -> CompatibleModel:
+        """The virtual model the OpenAI-compatible adapter offers."""
+        return CompatibleModel(
+            model_id=self.compatible_model_id, name=self.compatible_model_name
+        )
 
     @model_validator(mode="after")
     def require_production_secret(self) -> Self:

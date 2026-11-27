@@ -60,7 +60,8 @@ The zones are the ones drawn under "Trust zones" in `docs/security.md`. The boun
 | Model replies | The API | Answer, rewrite, ranking, and support replies, each checked on the server |
 | Jobs | Workers | Stored jobs with typed errors. A queue message, JSON and never pickle, carries only the harmless `ping` token or one canonical Job ID; the worker reads what to do from PostgreSQL. A stored Job is committed before any message names it, and a Job that is no longer queued is not run again. A Job whose message was sent but then lost (a Redis restart, a message dead-lettered before the Job was claimed, or one dropped by the one-day age limit) stays queued and published until recovery, 30 minutes after it was published, counts it as a lost attempt |
 | Scripts | Developers | Retrieval and rewrite evaluations over `datasets/` |
-| OpenAI-compatible adapter, Open WebUI | Users | M09 |
+| `GET /openai/v1/models` | Any client that reaches the API, Open WebUI among them | Lists the one virtual knowledge model. Needs a bearer token and the `ask_questions` operation (the `user` role), checked as on the native routes; refusals have OpenAI's error shape with the native codes and never quote the token; the list names no provider or language model |
+| Chat completions through the adapter, Open WebUI | Users | M09-T05 to M09-T08 |
 | MCP server and agent tools | Agents | M11 |
 
 ## Abuse cases and mitigations

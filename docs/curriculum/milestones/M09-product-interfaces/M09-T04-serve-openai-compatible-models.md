@@ -7,7 +7,7 @@ depends_on: ["M09-T03"]
 estimate: 60m
 topics: ["rest","openai-compatible","open-webui"]
 deliverables: ["models compatibility endpoint"]
-status: planned
+status: completed
 ---
 
 # M09-T04 — Serve OpenAI-compatible models

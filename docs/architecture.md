@@ -146,6 +146,20 @@ Every `/v1` route documents its errors in OpenAPI with the one
 `ErrorResponse` shape. A provider's protocol is an adapter's business: no
 native route or schema uses its field names (ADR 0004).
 
+`compatibility` is the OpenAI-compatible adapter. It lives under
+`/openai/v1`, so an OpenAI client's base URL ends there, outside the
+native `/v1` design and out of the native OpenAPI document. Its
+`GET /openai/v1/models` needs a bearer token and `ask_questions` (the
+user role), checked exactly as on the native routes, and lists one
+virtual model: the configured `compatible_model_id` and
+`compatible_model_name` (`knowledge-base`, "Knowledge base"), with a
+fixed creation time and owner, so a client's saved choice survives
+restarts and nothing names the provider or the language model behind
+it. Every refusal under `/openai/v1`, unknown paths and methods
+included, has OpenAI's error shape, `{"error": {...}}`, with the
+native code and message, and the request ID as the `X-Request-ID`
+header; the prefix is read without the server's `root_path`.
+
 `job_dispatch` puts a Job on the queue without ever losing it. `submit_job`
 commits the Job to PostgreSQL first, then sends one message naming only its
 ID, under a lock on its row, and records the send in `published_at`. When

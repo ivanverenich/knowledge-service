@@ -431,7 +431,11 @@ ROUTES: dict[tuple[str, str], Operation | None] = {
     ("GET", "/docs/oauth2-redirect"): None,
     ("GET", "/redoc"): None,
     **{(route.method.value, route.path): route.operation for route in served_routes()},
+    # The OpenAI-compatible adapter, outside the native route table.
+    ("GET", "/openai/v1/models"): Operation.ASK_QUESTIONS,
 }
+# Routes that ask no store: a permitted caller is seen by the answer alone.
+STORELESS = {("GET", "/openai/v1/models")}
 PROTECTED = [(route, operation) for route, operation in ROUTES.items() if operation]
 # The routes that may read a body, to check none is read before the role.
 WITH_BODY = [route for route, _ in PROTECTED if route[0] in ("POST", "PATCH")]
@@ -595,6 +599,9 @@ async def test_each_protected_route_admits_exactly_the_roles_that_permit_it(
 
     allowed = bool(roles & MATRIX[operation])
     assert (response.status_code == 403) is not allowed
+    if route in STORELESS:
+        assert (response.status_code == 200) is allowed
+        return
     reached = (
         source.readers
         or conversations.calls

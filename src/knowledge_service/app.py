@@ -3,6 +3,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol, cast
 from uuid import UUID, uuid4
@@ -20,6 +21,12 @@ from knowledge_service.answering.streaming import (
     CLOSE_SECONDS,
     AnswerStream,
     AnswerStreamer,
+)
+from knowledge_service.compatibility.models import (
+    CompatibleModel,
+    ModelList,
+    compatible_error,
+    model_list,
 )
 from knowledge_service.contracts import (
     ErrorResponse,
@@ -308,32 +315,105 @@ def error_response(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """What a refused request is told, whichever error shape carries it."""
+
+    status_code: int
+    code: str
+    message: str
+    headers: dict[str, str] = field(default_factory=dict[str, str])
+
+
+def failure_refusal(kind: FailureKind) -> Refusal:
+    """The refusal for `kind`: a response not yet started has no stream."""
+    policy = policy_for(kind)
+    status_code = policy.status_code
+    public_code = policy.public_code
+    client_message = policy.client_message
+    if status_code is None or public_code is None or client_message is None:
+        raise RuntimeError("Failure policy has no public HTTP response")
+    # An outage or a limit says when to send the request again.
+    retry_after = stream_failure(kind, StreamPhase.BEFORE_HEADERS).retry_after_seconds
+    headers = {} if retry_after is None else {"Retry-After": str(retry_after)}
+    return Refusal(status_code, public_code, client_message, headers)
+
+
+def not_authenticated_refusal(error: AuthenticationError) -> Refusal:
+    """A missing, invalid, or malformed bearer token, with its RFC 6750 challenge."""
+    malformed = error is AuthenticationError.INVALID_REQUEST
+    # RFC 6750 §3: no error code when no Bearer token was sent.
+    challenge = f'Bearer error="{error}"' if error else "Bearer"
+    if malformed:
+        return Refusal(
+            400,
+            "invalid_request",
+            "The Authorization header is malformed",
+            {"WWW-Authenticate": challenge},
+        )
+    return Refusal(
+        401,
+        "unauthenticated",
+        "A valid access token is required",
+        {"WWW-Authenticate": challenge},
+    )
+
+
+# Not an RFC 6750 challenge: another token for the same User has the same
+# roles, so there is nothing for the client to retry.
+FORBIDDEN = Refusal(403, "forbidden", "Your role does not permit this operation")
+
+
+def native_error(refusal: Refusal, request_id: UUID) -> JSONResponse:
+    """`refusal` in the native API's `ErrorResponse` shape."""
+    response = error_response(
+        status_code=refusal.status_code,
+        code=refusal.code,
+        message=refusal.message,
+        request_id=request_id,
+    )
+    response.headers.update(refusal.headers)
+    return response
+
+
 def failure_response(
     *,
     kind: FailureKind,
     request_id: UUID,
 ) -> JSONResponse:
-    """The JSON error for `kind`: a response not yet started has no stream."""
-    policy = policy_for(kind)
-    # An outage or a limit says when to send the request again.
-    retry_after = stream_failure(kind, StreamPhase.BEFORE_HEADERS).retry_after_seconds
+    """The native JSON error for `kind`."""
+    return native_error(failure_refusal(kind), request_id)
 
-    status_code = policy.status_code
-    public_code = policy.public_code
-    client_message = policy.client_message
 
-    if status_code is None or public_code is None or client_message is None:
-        raise RuntimeError("Failure policy has no public HTTP response")
+# Where the OpenAI-compatible adapter lives; a client's base URL ends here.
+COMPATIBLE_PREFIX = "/openai/v1"
 
-    response = error_response(
-        status_code=status_code,
-        code=public_code,
-        message=client_message,
-        request_id=request_id,
+
+def is_compatible(request: Request) -> bool:
+    """Whether a request is for the OpenAI-compatible adapter.
+
+    The path is read without `root_path`, as routing reads it, so a service
+    behind a path prefix such as `/api` still answers in OpenAI's shape.
+    """
+    path = request.url.path
+    root_path: str = request.scope.get("root_path", "")
+    if root_path and path.startswith(root_path):
+        path = path[len(root_path) :]
+    return path == COMPATIBLE_PREFIX or path.startswith(f"{COMPATIBLE_PREFIX}/")
+
+
+def compatible_refusal(refusal: Refusal, request: Request) -> JSONResponse:
+    """`refusal` in OpenAI's error shape.
+
+    OpenAI's body has no field for a request ID, so it travels as the
+    `X-Request-ID` header, for matching a client's error with the logs.
+    """
+    return compatible_error(
+        status_code=refusal.status_code,
+        code=refusal.code,
+        message=refusal.message,
+        headers={**refusal.headers, "X-Request-ID": str(request_id_from(request))},
     )
-    if retry_after is not None:
-        response.headers["Retry-After"] = str(retry_after)
-    return response
 
 
 def request_id_from(request: Request) -> UUID:
@@ -430,6 +510,7 @@ def create_app(
     job_decisions: JobDecisions | None = None,
     sources: SourceAdministration | None = None,
     synchronizations: Synchronizations | None = None,
+    compatible_model: CompatibleModel | None = None,
 ) -> FastAPI:
     """The HTTP application.
 
@@ -439,6 +520,7 @@ def create_app(
     """
     # No redirect from `/v1/x/` to `/v1/x`: a redirect answers before identity.
     app = FastAPI(title="knowledge-service", redirect_slashes=False)
+    offered_model = compatible_model or CompatibleModel()
 
     async def admit(request: Request, operation: Operation) -> tuple[Caller, Question]:
         """The caller, their permission, then the Question, in that order.
@@ -481,36 +563,16 @@ def create_app(
     async def not_authenticated_handler(
         request: Request, refused: _NotAuthenticated
     ) -> JSONResponse:
-        malformed = refused.error is AuthenticationError.INVALID_REQUEST
-        response = error_response(
-            status_code=400 if malformed else 401,
-            code="invalid_request" if malformed else "unauthenticated",
-            message=(
-                "The Authorization header is malformed"
-                if malformed
-                else "A valid access token is required"
-            ),
-            request_id=request_id_from(request),
+        return native_error(
+            not_authenticated_refusal(refused.error), request_id_from(request)
         )
-        # RFC 6750 §3: no error code when no Bearer token was sent.
-        response.headers["WWW-Authenticate"] = (
-            f'Bearer error="{refused.error}"' if refused.error else "Bearer"
-        )
-        return response
 
     @app.exception_handler(PermissionDenied)
     async def permission_denied_handler(
         request: Request, denied: PermissionDenied
     ) -> JSONResponse:
         logger.info("request not permitted: %s", denied.operation)
-        # Not an RFC 6750 challenge: another token for the same User has the
-        # same roles, so there is nothing for the client to retry.
-        return error_response(
-            status_code=403,
-            code="forbidden",
-            message="Your role does not permit this operation",
-            request_id=request_id_from(request),
-        )
+        return native_error(FORBIDDEN, request_id_from(request))
 
     @app.exception_handler(_CannotAuthenticate)
     async def cannot_authenticate_handler(
@@ -535,18 +597,15 @@ def create_app(
     async def http_error_handler(
         request: Request, error: StarletteHTTPException
     ) -> JSONResponse:
-        # An unknown path or method: the same error shape as every other.
+        # An unknown path or method: the same error shape as every other
+        # route under that prefix, OpenAI's for the compatible adapter.
         code, message = HTTP_ERRORS.get(
             error.status_code, ("http_error", "The request cannot be served")
         )
-        response = error_response(
-            status_code=error.status_code,
-            code=code,
-            message=message,
-            request_id=request_id_from(request),
-        )
-        response.headers.update(error.headers or {})
-        return response
+        refusal = Refusal(error.status_code, code, message, dict(error.headers or {}))
+        if is_compatible(request):
+            return compatible_refusal(refusal, request)
+        return native_error(refusal, request_id_from(request))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -556,6 +615,28 @@ def create_app(
         return failure_response(
             kind=FailureKind.VALIDATION, request_id=request_id_from(request)
         )
+
+    # The OpenAI-compatible adapter (ADR 0004): OpenAI's shapes, so it stays
+    # out of the native OpenAPI document.
+    @app.get(
+        f"{COMPATIBLE_PREFIX}/models", response_model=ModelList, include_in_schema=False
+    )
+    async def list_compatible_models(request: Request) -> ModelList | JSONResponse:
+        # Who, then whether they may: the same checks as the native routes,
+        # answered in OpenAI's error shape.
+        try:
+            caller = await authenticate(request)
+            require(caller.roles, Operation.ASK_QUESTIONS)
+        except _NotAuthenticated as refused:
+            refusal = not_authenticated_refusal(refused.error)
+        except _CannotAuthenticate:
+            refusal = failure_refusal(FailureKind.DEPENDENCY)
+        except PermissionDenied as denied:
+            logger.info("request not permitted: %s", denied.operation)
+            refusal = FORBIDDEN
+        else:
+            return model_list(offered_model)
+        return compatible_refusal(refusal, request)
 
     @app.get("/health/live")
     async def liveness() -> dict[str, str]:
